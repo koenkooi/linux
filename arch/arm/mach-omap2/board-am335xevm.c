@@ -1389,6 +1389,63 @@ static void bonew1_gpio_init(int evm_id, int profile )
 		pr_info("w1-gpio connected to P8_6\n");
 }
 
+/* Nano init */
+
+#define NANO_FRAM_CS	0
+
+/* Pin mux for nano module */
+static struct pinmux_config nano_pin_mux[] = {
+	{"gpmc_ad0.gpmc_ad0",	  OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLUP},
+	{"gpmc_ad1.gpmc_ad1",	  OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLUP},
+	{"gpmc_ad2.gpmc_ad2",	  OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLUP},
+	{"gpmc_ad3.gpmc_ad3",	  OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLUP},
+	{"gpmc_ad4.gpmc_ad4",	  OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLUP},
+	{"gpmc_ad5.gpmc_ad5",	  OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLUP},
+	{"gpmc_ad6.gpmc_ad6",	  OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLUP},
+	{"gpmc_ad7.gpmc_ad7",	  OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLUP},
+	{"gpmc_ad8.gpmc_ad8",	  OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLUP},
+	{"gpmc_ad9.gpmc_ad9",	  OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLUP},
+	{"gpmc_ad10.gpmc_ad10",	  OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLUP},
+	{"gpmc_ad11.gpmc_ad11",	  OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLUP},
+	{"gpmc_ad12.gpmc_ad12",	  OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLUP},
+	{"gpmc_ad13.gpmc_ad13",	  OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLUP},
+	{"gpmc_ad14.gpmc_ad14",	  OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLUP},
+	{"gpmc_ad15.gpmc_ad15",	  OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLUP},
+
+	//{"lcd_data1.gpmc_a1",	  OMAP_MUX_MODE1 | AM33XX_PULL_DISA},
+	{"lcd_data2.gpmc_a2",	  OMAP_MUX_MODE1 | AM33XX_PULL_DISA},
+	{"lcd_data3.gpmc_a3",	  OMAP_MUX_MODE1 | AM33XX_PULL_DISA},
+	{"lcd_data4.gpmc_a4",	  OMAP_MUX_MODE1 | AM33XX_PULL_DISA},
+	{"lcd_data5.gpmc_a5",	  OMAP_MUX_MODE1 | AM33XX_PULL_DISA},
+	{"lcd_data6.gpmc_a6",	  OMAP_MUX_MODE1 | AM33XX_PULL_DISA},
+	{"lcd_data7.gpmc_a7",	  OMAP_MUX_MODE1 | AM33XX_PULL_DISA},
+	{"lcd_vsync.gpmc_a8",	  OMAP_MUX_MODE1 | AM33XX_PULL_DISA},
+	{"lcd_hsync.gpmc_a9",	  OMAP_MUX_MODE1 | AM33XX_PULL_DISA},
+	{"lcd_pclk.gpmc_a10",	  OMAP_MUX_MODE1 | AM33XX_PULL_DISA},
+
+	{"gpmc_csn0.gpmc_csn0",	  OMAP_MUX_MODE0 | AM33XX_PULL_DISA},
+	{"gpmc_csn1.gpmc_csn1",	  OMAP_MUX_MODE0 | AM33XX_PULL_DISA},
+	{"gpmc_advn_ale.gpmc_advn_ale",  OMAP_MUX_MODE0 | AM33XX_PULL_DISA},
+	{"gpmc_oen_ren.gpmc_oen_ren",	 OMAP_MUX_MODE0 | AM33XX_PULL_DISA},
+	{"gpmc_wen.gpmc_wen",     OMAP_MUX_MODE0 | AM33XX_PULL_DISA},
+	{NULL, 0},
+};
+
+static void nano_init(int evm_id, int profile )
+{
+	unsigned long fram_base;
+
+	setup_pin_mux(nano_pin_mux);
+	printk(KERN_INFO "Nano Pin Mux Complete\n");
+
+	if (gpmc_cs_request(NANO_FRAM_CS, SZ_16M, &fram_base) < 0)
+		printk(KERN_ERR "Failed to request GPMC mem for FRAM\n");
+	else
+		printk(KERN_INFO "GPMC mem for FRAM @ %lu\n", fram_base);
+}
+
+/* Nano init - end */
+
 static void rgmii1_init(int evm_id, int profile)
 {
 	setup_pin_mux(rgmii1_pin_mux);
@@ -2311,6 +2368,7 @@ static struct evm_dev_cfg beaglebone_dev_cfg[] = {
 	{mmc0_init,	DEV_ON_BASEBOARD, PROFILE_NONE},
 	{boneleds_init,	DEV_ON_BASEBOARD, PROFILE_ALL},
 	{bonew1_gpio_init, DEV_ON_BASEBOARD, PROFILE_ALL},
+	{nano_init,	DEV_ON_BASEBOARD, PROFILE_ALL},
 	{NULL, 0, 0},
 };
 
