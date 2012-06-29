@@ -37,6 +37,8 @@
 #define ECCTL2_SYNC_SEL_DISA	(BIT(7) | BIT(6))
 #define ECCTL2_TSCTR_FREERUN	BIT(4)
 
+#define PWM_CELL_SIZE	3
+
 struct ecap_pwm_chip {
 	struct pwm_chip	chip;
 	unsigned int	clk_rate;
@@ -184,6 +186,26 @@ static const struct pwm_ops ecap_pwm_ops = {
 	.owner		= THIS_MODULE,
 };
 
+static struct pwm_device *of_ecap_xlate(struct pwm_chip *chip,
+		const struct of_phandle_args *args)
+{
+	struct pwm_device *pwm;
+
+	if (chip->of_pwm_n_cells < PWM_CELL_SIZE)
+		return ERR_PTR(-EINVAL);
+
+	if (args->args[0] >= chip->npwm)
+		return ERR_PTR(-EINVAL);
+
+	pwm = pwm_request_from_chip(chip, args->args[0], NULL);
+	if (IS_ERR(pwm))
+		return pwm;
+
+	pwm_set_period(pwm, args->args[1]);
+	pwm_set_polarity(pwm, args->args[2]);
+	return pwm;
+}
+
 static int __devinit ecap_pwm_probe(struct platform_device *pdev)
 {
 	int ret;
@@ -211,6 +233,8 @@ static int __devinit ecap_pwm_probe(struct platform_device *pdev)
 
 	pc->chip.dev = &pdev->dev;
 	pc->chip.ops = &ecap_pwm_ops;
+	pc->chip.of_xlate = of_ecap_xlate;
+	pc->chip.of_pwm_n_cells = PWM_CELL_SIZE;
 	pc->chip.base = -1;
 	pc->chip.npwm = 1;
 
@@ -244,9 +268,20 @@ static int __devexit ecap_pwm_remove(struct platform_device *pdev)
 	return pwmchip_remove(&pc->chip);
 }
 
+#if defined(CONFIG_OF)
+static const struct of_device_id omap_ecap_of_match[] = {
+	{ .compatible = "ti,ecap" },
+	{},
+};
+MODULE_DEVICE_TABLE(of, omap_ecap_of_match);
+#endif
+
 static struct platform_driver ecap_pwm_driver = {
 	.driver = {
 		.name = "ecap",
+#if defined(CONFIG_OF)
+		.of_match_table = of_match_ptr(omap_ecap_of_match),
+#endif
 	},
 	.probe = ecap_pwm_probe,
 	.remove = __devexit_p(ecap_pwm_remove),
