@@ -1,0 +1,24 @@
+TI SOC ECAP based APWM controller
+
+Required properties:
+- compatible : Must be "ti, ecap"
+- ti,hwmods : Must be "ecap<n>", n being the instance number (0-based)
+- #pwm-cells: On ECAP the number of cells used to specify a PWM is 3. The
+  first cell specifies the per-chip index of the PWM to use, the second
+  cell is the period cycle in nanoseconds and the third cell is the
+  polarity of PWM output. Polarity 0 gives normal polarity and 1 gives
+  inversed polarity (inverse duty cycle)
+
+Note: Current implementation will fetch base address, irq and dma
+from omap hwmod data base during device registration.
+Future plan is to migrate hwmod data base contents into device tree
+blob so that, all the required data will be used from device tree dts
+file.
+
+Example:
+
+	ecap0: ecap@0 {
+		compatible = "ti, ecap";
+		ti,hwmods = "ecap0";
+		#pwm-cells = <3>;
+	};
