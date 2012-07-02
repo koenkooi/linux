@@ -108,6 +108,7 @@
 #define AQCSFRC_CSFA_DISSWFRC	(BIT(1) | BIT(0))
 
 #define NUM_PWM_CHANNEL		2	/* EHRPWM channels */
+#define PWM_CELL_SIZE		3
 
 struct ehrpwm_pwm_chip {
 	struct pwm_chip	chip;
@@ -393,6 +394,26 @@ static const struct pwm_ops ehrpwm_pwm_ops = {
 	.owner		= THIS_MODULE,
 };
 
+static struct pwm_device *of_ehrpwm_xlate(struct pwm_chip *chip,
+		const struct of_phandle_args *args)
+{
+	struct pwm_device *pwm;
+
+	if (chip->of_pwm_n_cells < PWM_CELL_SIZE)
+		return ERR_PTR(-EINVAL);
+
+	if (args->args[0] >= chip->npwm)
+		return ERR_PTR(-EINVAL);
+
+	pwm = pwm_request_from_chip(chip, args->args[0], NULL);
+	if (IS_ERR(pwm))
+		return pwm;
+
+	pwm_set_period(pwm, args->args[1]);
+	pwm_set_polarity(pwm, args->args[2]);
+	return pwm;
+}
+
 static int __devinit ehrpwm_pwm_probe(struct platform_device *pdev)
 {
 	int ret;
@@ -420,6 +441,8 @@ static int __devinit ehrpwm_pwm_probe(struct platform_device *pdev)
 
 	pc->chip.dev = &pdev->dev;
 	pc->chip.ops = &ehrpwm_pwm_ops;
+	pc->chip.of_xlate = of_ehrpwm_xlate;
+	pc->chip.of_pwm_n_cells = PWM_CELL_SIZE;
 	pc->chip.base = -1;
 	pc->chip.npwm = NUM_PWM_CHANNEL;
 
@@ -453,9 +476,20 @@ static int __devexit ehrpwm_pwm_remove(struct platform_device *pdev)
 	return pwmchip_remove(&pc->chip);
 }
 
+#if defined(CONFIG_OF)
+static const struct of_device_id omap_ehrpwm_of_match[] = {
+	{ .compatible = "ti,omap2-ehrpwm" },
+	{},
+};
+MODULE_DEVICE_TABLE(of, omap_ehrpwm_of_match);
+#endif
+
 static struct platform_driver ehrpwm_pwm_driver = {
 	.driver = {
 		.name = "ehrpwm",
+#if defined(CONFIG_OF)
+		.of_match_table = of_match_ptr(omap_ehrpwm_of_match),
+#endif
 	},
 	.probe = ehrpwm_pwm_probe,
 	.remove = __devexit_p(ehrpwm_pwm_remove),
