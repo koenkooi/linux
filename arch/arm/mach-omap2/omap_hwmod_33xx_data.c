@@ -2549,17 +2549,17 @@ static struct omap_hwmod_ocp_if am33xx_l4_ls__elm = {
 
 /*
  * Splitting the resources to handle access of PWMSS config space
- * and module specific part independently
+ * and module specific part independently. Also resources being
+ * arranged to be compatible with driver
  */
 static struct omap_hwmod_addr_space am33xx_ehrpwm0_addr_space[] = {
 	{
-		.pa_start	= 0x48300000,
-		.pa_end		= 0x48300000 + SZ_16 - 1,
-		.flags		= ADDR_TYPE_RT
-	},
-	{
 		.pa_start	= 0x48300200,
 		.pa_end		= 0x48300200 + SZ_256 - 1,
+	},
+	{
+		.pa_start	= 0x48300000,
+		.pa_end		= 0x48300000 + SZ_16 - 1,
 		.flags		= ADDR_TYPE_RT
 	},
 	{ }
@@ -2575,17 +2575,17 @@ static struct omap_hwmod_ocp_if am33xx_l4_ls__ehrpwm0 = {
 
 /*
  * Splitting the resources to handle access of PWMSS config space
- * and module specific part independently
+ * and module specific part independently. Also resources being
+ * arranged to be compatible with driver
  */
 static struct omap_hwmod_addr_space am33xx_ehrpwm1_addr_space[] = {
 	{
-		.pa_start	= 0x48302000,
-		.pa_end		= 0x48302000 + SZ_16 - 1,
-		.flags		= ADDR_TYPE_RT
-	},
-	{
 		.pa_start	= 0x48302200,
 		.pa_end		= 0x48302200 + SZ_256 - 1,
+	},
+	{
+		.pa_start	= 0x48302000,
+		.pa_end		= 0x48302000 + SZ_16 - 1,
 		.flags		= ADDR_TYPE_RT
 	},
 	{ }
@@ -2601,17 +2601,17 @@ static struct omap_hwmod_ocp_if am33xx_l4_ls__ehrpwm1 = {
 
 /*
  * Splitting the resources to handle access of PWMSS config space
- * and module specific part independently
+ * and module specific part independently. Also resources being
+ * arranged to be compatible with driver
  */
 static struct omap_hwmod_addr_space am33xx_ehrpwm2_addr_space[] = {
 	{
-		.pa_start	= 0x48304000,
-		.pa_end		= 0x48304000 + SZ_16 - 1,
-		.flags		= ADDR_TYPE_RT
-	},
-	{
 		.pa_start	= 0x48304200,
 		.pa_end		= 0x48304200 + SZ_256 - 1,
+	},
+	{
+		.pa_start	= 0x48304000,
+		.pa_end		= 0x48304000 + SZ_16 - 1,
 		.flags		= ADDR_TYPE_RT
 	},
 	{ }
@@ -2627,17 +2627,17 @@ static struct omap_hwmod_ocp_if am33xx_l4_ls__ehrpwm2 = {
 
 /*
  * Splitting the resources to handle access of PWMSS config space
- * and module specific part independently
+ * and module specific part independently. Also resources being
+ * arranged to be compatible with driver
  */
 static struct omap_hwmod_addr_space am33xx_ecap0_addr_space[] = {
 	{
-		.pa_start	= 0x48300000,
-		.pa_end		= 0x48300000 + SZ_16 - 1,
-		.flags		= ADDR_TYPE_RT
-	},
-	{
 		.pa_start	= 0x48300100,
 		.pa_end		= 0x48300100 + SZ_256 - 1,
+	},
+	{
+		.pa_start	= 0x48300000,
+		.pa_end		= 0x48300000 + SZ_16 - 1,
 		.flags		= ADDR_TYPE_RT
 	},
 	{ }
@@ -2653,17 +2653,17 @@ static struct omap_hwmod_ocp_if am33xx_l4_ls__ecap0 = {
 
 /*
  * Splitting the resources to handle access of PWMSS config space
- * and module specific part independently
+ * and module specific part independently. Also resources being
+ * arranged to be compatible with driver
  */
 static struct omap_hwmod_addr_space am33xx_ecap1_addr_space[] = {
 	{
-		.pa_start	= 0x48302000,
-		.pa_end		= 0x48302000 + SZ_16 - 1,
-		.flags		= ADDR_TYPE_RT
-	},
-	{
 		.pa_start	= 0x48302100,
 		.pa_end		= 0x48302100 + SZ_256 - 1,
+	},
+	{
+		.pa_start	= 0x48302000,
+		.pa_end		= 0x48302000 + SZ_16 - 1,
 		.flags		= ADDR_TYPE_RT
 	},
 	{ }
@@ -2679,17 +2679,17 @@ static struct omap_hwmod_ocp_if am33xx_l4_ls__ecap1 = {
 
 /*
  * Splitting the resources to handle access of PWMSS config space
- * and module specific part independently
+ * and module specific part independently. Also resources being
+ * arranged to be compatible with driver
  */
 static struct omap_hwmod_addr_space am33xx_ecap2_addr_space[] = {
 	{
-		.pa_start	= 0x48304000,
-		.pa_end		= 0x48304000 + SZ_16 - 1,
-		.flags		= ADDR_TYPE_RT
-	},
-	{
 		.pa_start	= 0x48304100,
 		.pa_end		= 0x48304100 + SZ_256 - 1,
+	},
+	{
+		.pa_start	= 0x48304000,
+		.pa_end		= 0x48304000 + SZ_16 - 1,
 		.flags		= ADDR_TYPE_RT
 	},
 	{ }
