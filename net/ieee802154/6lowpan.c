@@ -62,6 +62,8 @@
 
 #include "6lowpan.h"
 
+static bool req_802154_ack;
+
 /* TTL uncompression values */
 static const u8 lowpan_ttl_values[] = {0, 1, 64, 255};
 
@@ -596,7 +598,8 @@ static int lowpan_header_create(struct sk_buff *skb,
 			memcpy(&(da.hwaddr), daddr, 8);
 
 			/* request acknowledgment */
-			mac_cb(skb)->flags |= MAC_CB_FLAG_ACKREQ;
+			if (req_802154_ack)
+				mac_cb(skb)->flags |= MAC_CB_FLAG_ACKREQ;
 		}
 
 		return dev_hard_header(skb, lowpan_dev_info(dev)->real_dev,
@@ -1366,6 +1369,10 @@ static void __exit lowpan_cleanup_module(void)
 }
 
 module_init(lowpan_init_module);
+
+module_param(req_802154_ack, bool, 0644);
+MODULE_PARM_DESC(req_802154_ack, "request link-layer (i.e. IEEE 802.15.4) acknowledgments");
+
 module_exit(lowpan_cleanup_module);
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_RTNL_LINK("lowpan");
