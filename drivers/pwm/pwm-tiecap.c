@@ -206,12 +206,16 @@ static struct pwm_device *of_ecap_xlate(struct pwm_chip *chip,
 	return pwm;
 }
 
+#define	CLKCONFIG	8
+#define ECAP_CLK_EN	1
 static int __devinit ecap_pwm_probe(struct platform_device *pdev)
 {
-	int ret;
+	int ret, len;
 	struct resource *r;
 	struct clk *clk;
 	struct ecap_pwm_chip *pc;
+	void __iomem	*mmio_base;
+	unsigned long regval;
 
 	pc = devm_kzalloc(&pdev->dev, sizeof(*pc), GFP_KERNEL);
 	if (!pc) {
@@ -255,6 +259,37 @@ static int __devinit ecap_pwm_probe(struct platform_device *pdev)
 	}
 
 	pm_runtime_enable(&pdev->dev);
+
+	/*
+	 * Some IP's have config space and require special handling of
+	 * clock gating from config space. So enabling clock gating
+	 * at config space.
+	 */
+	if (pdev->dev.of_node && of_find_property(pdev->dev.of_node,
+				"has_configspace", &len)) {
+
+		r = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+		if (!r) {
+			pm_runtime_disable(&pdev->dev);
+			dev_err(&pdev->dev, "no memory resource defined\n");
+			return -ENODEV;
+		}
+
+		mmio_base = devm_ioremap(&pdev->dev, r->start,
+				resource_size(r));
+		if (!mmio_base) {
+			pm_runtime_disable(&pdev->dev);
+			dev_err(&pdev->dev, "failed to ioremap() registers\n");
+			return -EADDRNOTAVAIL;
+		}
+
+		pm_runtime_get_sync(&pdev->dev);
+		regval = readw(mmio_base + CLKCONFIG);
+		regval |= ECAP_CLK_EN;
+		writew(regval, mmio_base + CLKCONFIG);
+		pm_runtime_put_sync(&pdev->dev);
+	}
+
 	platform_set_drvdata(pdev, pc);
 	return 0;
 }
