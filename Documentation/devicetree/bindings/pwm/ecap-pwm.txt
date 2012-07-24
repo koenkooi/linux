@@ -9,6 +9,11 @@ Required properties:
   polarity of PWM output. Polarity 0 gives normal polarity and 1 gives
   inversed polarity (inverse duty cycle)
 
+Optional properties:
+- has_configspace: Some ECAP hardwares has config space memory region
+  to enable clock gating to individual modules. Adding this as optional
+  properties.
+
 Note: Current implementation will fetch base address, irq and dma
 from omap hwmod data base during device registration.
 Future plan is to migrate hwmod data base contents into device tree
@@ -21,4 +26,11 @@ Example:
 		compatible = "ti, ecap";
 		ti,hwmods = "ecap0";
 		#pwm-cells = <3>;
+	};
+Example with has_configspace:
+	ecap0: ecap@0 {
+		compatible = "ti, ecap";
+		ti,hwmods = "ecap0";
+		#pwm-cells = <3>;
+		has_configspace = <1>;
 	};
