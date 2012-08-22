@@ -69,11 +69,6 @@ struct edmacc_param {
 	unsigned int ccnt;
 };
 
-#define CCINT0_INTERRUPT     16
-#define CCERRINT_INTERRUPT   17
-#define TCERRINT0_INTERRUPT   18
-#define TCERRINT1_INTERRUPT   19
-
 /* fields in edmacc_param.opt */
 #define SAM		BIT(0)
 #define DAM		BIT(1)
@@ -86,70 +81,6 @@ struct edmacc_param {
 #define ITCINTEN	BIT(21)
 #define TCCHEN		BIT(22)
 #define ITCCHEN		BIT(23)
-
-#define TRWORD (0x7<<2)
-#define PAENTRY (0x1ff<<5)
-
-/* Drivers should avoid using these symbolic names for dm644x
- * channels, and use platform_device IORESOURCE_DMA resources
- * instead.  (Other DaVinci chips have different peripherals
- * and thus have different DMA channel mappings.)
- */
-#define DAVINCI_DMA_MCBSP_TX              2
-#define DAVINCI_DMA_MCBSP_RX              3
-#define DAVINCI_DMA_VPSS_HIST             4
-#define DAVINCI_DMA_VPSS_H3A              5
-#define DAVINCI_DMA_VPSS_PRVU             6
-#define DAVINCI_DMA_VPSS_RSZ              7
-#define DAVINCI_DMA_IMCOP_IMXINT          8
-#define DAVINCI_DMA_IMCOP_VLCDINT         9
-#define DAVINCI_DMA_IMCO_PASQINT         10
-#define DAVINCI_DMA_IMCOP_DSQINT         11
-#define DAVINCI_DMA_SPI_SPIX             16
-#define DAVINCI_DMA_SPI_SPIR             17
-#define DAVINCI_DMA_UART0_URXEVT0        18
-#define DAVINCI_DMA_UART0_UTXEVT0        19
-#define DAVINCI_DMA_UART1_URXEVT1        20
-#define DAVINCI_DMA_UART1_UTXEVT1        21
-#define DAVINCI_DMA_UART2_URXEVT2        22
-#define DAVINCI_DMA_UART2_UTXEVT2        23
-#define DAVINCI_DMA_MEMSTK_MSEVT         24
-#define DAVINCI_DMA_MMCRXEVT             26
-#define DAVINCI_DMA_MMCTXEVT             27
-#define DAVINCI_DMA_I2C_ICREVT           28
-#define DAVINCI_DMA_I2C_ICXEVT           29
-#define DAVINCI_DMA_GPIO_GPINT0          32
-#define DAVINCI_DMA_GPIO_GPINT1          33
-#define DAVINCI_DMA_GPIO_GPINT2          34
-#define DAVINCI_DMA_GPIO_GPINT3          35
-#define DAVINCI_DMA_GPIO_GPINT4          36
-#define DAVINCI_DMA_GPIO_GPINT5          37
-#define DAVINCI_DMA_GPIO_GPINT6          38
-#define DAVINCI_DMA_GPIO_GPINT7          39
-#define DAVINCI_DMA_GPIO_GPBNKINT0       40
-#define DAVINCI_DMA_GPIO_GPBNKINT1       41
-#define DAVINCI_DMA_GPIO_GPBNKINT2       42
-#define DAVINCI_DMA_GPIO_GPBNKINT3       43
-#define DAVINCI_DMA_GPIO_GPBNKINT4       44
-#define DAVINCI_DMA_TIMER0_TINT0         48
-#define DAVINCI_DMA_TIMER1_TINT1         49
-#define DAVINCI_DMA_TIMER2_TINT2         50
-#define DAVINCI_DMA_TIMER3_TINT3         51
-#define DAVINCI_DMA_PWM0                 52
-#define DAVINCI_DMA_PWM1                 53
-#define DAVINCI_DMA_PWM2                 54
-
-/* DA830 specific EDMA3 information */
-#define EDMA_DA830_NUM_DMACH		32
-#define EDMA_DA830_NUM_TCC		32
-#define EDMA_DA830_NUM_PARAMENTRY	128
-#define EDMA_DA830_NUM_EVQUE		2
-#define EDMA_DA830_NUM_TC		2
-#define EDMA_DA830_CHMAP_EXIST		0
-#define EDMA_DA830_NUM_REGIONS		4
-#define DA830_DMACH2EVENT_MAP0		0x000FC03Fu
-#define DA830_DMACH2EVENT_MAP1		0x00000000u
-#define DA830_EDMA_ARM_OWN		0x30FFCCFFu
 
 /*ch_status paramater of callback function possible values*/
 #define DMA_COMPLETE 1
