@@ -16,6 +16,7 @@
 #include <linux/slab.h>
 #include <linux/dma-mapping.h>
 #include <linux/kernel.h>
+#include <linux/platform_data/edma.h>
 
 #include <sound/core.h>
 #include <sound/pcm.h>
