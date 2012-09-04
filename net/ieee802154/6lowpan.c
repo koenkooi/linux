@@ -396,7 +396,7 @@ static int lowpan_header_create(struct sk_buff *skb,
 		/* TODO:
 		 * if this package isn't ipv6 one, where should it be routed?
 		 */
-	head = kzalloc(100, GFP_KERNEL);
+	head = kzalloc(100, GFP_ATOMIC);
 	if (head == NULL)
 		return -ENOMEM;
 
