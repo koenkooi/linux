@@ -70,7 +70,7 @@ static __init void omapl138_hawk_config_emac(void)
  * example: Timer, GPIO, UART events etc) on da850/omap-l138 EVM/Hawkboard,
  * hence they are being reserved for codecs on the DSP side.
  */
-static const s16 da850_dma0_rsv_chans[][2] = {
+static s16 da850_dma0_rsv_chans[][2] = {
 	/* (offset, number) */
 	{ 8,  6},
 	{24,  4},
@@ -78,7 +78,7 @@ static const s16 da850_dma0_rsv_chans[][2] = {
 	{-1, -1}
 };
 
-static const s16 da850_dma0_rsv_slots[][2] = {
+static s16 da850_dma0_rsv_slots[][2] = {
 	/* (offset, number) */
 	{ 8,  6},
 	{24,  4},
@@ -86,14 +86,14 @@ static const s16 da850_dma0_rsv_slots[][2] = {
 	{-1, -1}
 };
 
-static const s16 da850_dma1_rsv_chans[][2] = {
+static s16 da850_dma1_rsv_chans[][2] = {
 	/* (offset, number) */
 	{ 0, 28},
 	{30,  2},
 	{-1, -1}
 };
 
-static const s16 da850_dma1_rsv_slots[][2] = {
+static s16 da850_dma1_rsv_slots[][2] = {
 	/* (offset, number) */
 	{ 0, 28},
 	{30, 90},

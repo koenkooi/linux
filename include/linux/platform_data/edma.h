@@ -168,8 +168,8 @@ void edma_resume(unsigned channel);
 
 struct edma_rsv_info {
 
-	const s16	(*rsv_chans)[2];
-	const s16	(*rsv_slots)[2];
+	s16		(*rsv_chans)[2];
+	s16		(*rsv_slots)[2];
 };
 
 /* platform_data for EDMA driver */
@@ -191,8 +191,8 @@ struct edma_soc_info {
 	/* Resource reservation for other cores */
 	struct edma_rsv_info	*rsv;
 
-	const s8	(*queue_tc_mapping)[2];
-	const s8	(*queue_priority_mapping)[2];
+	s8	(*queue_tc_mapping)[2];
+	s8	(*queue_priority_mapping)[2];
 };
 
 #endif
