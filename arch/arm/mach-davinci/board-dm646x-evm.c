@@ -764,7 +764,7 @@ static struct davinci_uart_config uart_config __initdata = {
  * example: Timer, GPIO, UART events etc) on dm646x, hence they are being
  * reserved for codecs on the DSP side.
  */
-static const s16 dm646x_dma_rsv_chans[][2] = {
+static s16 dm646x_dma_rsv_chans[][2] = {
 	/* (offset, number) */
 	{ 0,  4},
 	{13,  3},
@@ -774,7 +774,7 @@ static const s16 dm646x_dma_rsv_chans[][2] = {
 	{-1, -1}
 };
 
-static const s16 dm646x_dma_rsv_slots[][2] = {
+static s16 dm646x_dma_rsv_slots[][2] = {
 	/* (offset, number) */
 	{ 0,  4},
 	{13,  3},

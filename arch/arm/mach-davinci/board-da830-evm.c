@@ -512,7 +512,7 @@ static struct davinci_i2c_platform_data da830_evm_i2c_0_pdata = {
  * example: Timer, GPIO, UART events etc) on da830/omap-l137 EVM, hence
  * they are being reserved for codecs on the DSP side.
  */
-static const s16 da830_dma_rsv_chans[][2] = {
+static s16 da830_dma_rsv_chans[][2] = {
 	/* (offset, number) */
 	{ 8,  2},
 	{12,  2},
@@ -521,7 +521,7 @@ static const s16 da830_dma_rsv_chans[][2] = {
 	{-1, -1}
 };
 
-static const s16 da830_dma_rsv_slots[][2] = {
+static s16 da830_dma_rsv_slots[][2] = {
 	/* (offset, number) */
 	{ 8,  2},
 	{12,  2},
