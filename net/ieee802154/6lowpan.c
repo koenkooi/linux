@@ -59,6 +59,8 @@
 #include <net/ieee802154.h>
 #include <net/ieee802154_netdev.h>
 #include <net/ipv6.h>
+#include <net/mac802154.h>
+
 
 #include "6lowpan.h"
 

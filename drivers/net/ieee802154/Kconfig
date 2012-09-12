@@ -45,3 +45,7 @@ config IEEE802154_MRF24J40
 
          This driver can also be built as a module. To do so, say M here.
          the module will be called 'mrf24j40'.
+
+config IEEE802154_SERIAL
+	depends on IEEE802154_DRIVERS && MAC802154
+	tristate "Simple LR-WPAN UART driver"

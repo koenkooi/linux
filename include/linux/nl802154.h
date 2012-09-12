@@ -21,6 +21,8 @@
 #ifndef NL802154_H
 #define NL802154_H
 
+#include <net/netlink.h>
+
 #define IEEE802154_NL_NAME "802.15.4 MAC"
 #define IEEE802154_MCAST_COORD_NAME "coordinator"
 #define IEEE802154_MCAST_BEACON_NAME "beacon"
@@ -132,7 +134,6 @@ enum {
 
 	IEEE802154_DEV_WPAN,
 	IEEE802154_DEV_MONITOR,
-
 	__IEEE802154_DEV_MAX,
 };
 
