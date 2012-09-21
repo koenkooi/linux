@@ -33,6 +33,22 @@
 
 #include "mac802154.h"
 
+static int mac802154_mlme_assoc_req(struct net_device *dev,
+			struct ieee802154_addr *addr,
+			u8 channel, u8 page, u8 cap)
+{
+	/* TBD */
+	return 0;
+}
+
+static int mac802154_mlme_assoc_resp(struct net_device *dev,
+			struct ieee802154_addr *addr,
+			u16 short_addr, u8 status)
+{
+	/* TBD */
+	return 0;
+}
+
 static int mac802154_mlme_start_req(struct net_device *dev,
 				    struct ieee802154_addr *addr,
 				    u8 channel, u8 page,
@@ -70,7 +86,11 @@ struct ieee802154_reduced_mlme_ops mac802154_mlme_reduced = {
 
 struct ieee802154_mlme_ops mac802154_mlme_wpan = {
 	.get_phy = mac802154_get_phy,
-	.start_req = mac802154_mlme_start_req,
 	.get_pan_id = mac802154_dev_get_pan_id,
 	.get_short_addr = mac802154_dev_get_short_addr,
+	.get_dsn = mac802154_dev_get_dsn,
+	.get_bsn = mac802154_dev_get_bsn,
+	.start_req = mac802154_mlme_start_req,
+	.assoc_req = mac802154_mlme_assoc_req,
+	.assoc_resp = mac802154_mlme_assoc_resp
 };
