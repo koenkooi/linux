@@ -70,6 +70,8 @@
 		};
 
 		ldo3_reg: regulator@5 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <3300000>;
 			regulator-always-on;
 		};
 
@@ -77,4 +79,8 @@
 			regulator-always-on;
 		};
 	};
+};
+
+&mmc1 {
+	vmmc-supply = <&ldo3_reg>;
 };
