@@ -124,3 +124,12 @@
 &mmc1 {
 	vmmc-supply = <&vmmc_reg>;
 };
+
+&spi0 {
+	status = "okay";
+	spi-flash@0 {
+		compatible = "spansion,s25fl064k", "m25p80";
+		spi-max-frequency = <24000000>;
+		reg = <0>;
+	};
+};
