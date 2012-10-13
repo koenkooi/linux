@@ -867,6 +867,16 @@ static struct clk lcd_gclk = {
 	.recalc		= &followparent_recalc,
 };
 
+static struct clk lcdc_fck = {
+	.name           = "lcdc_fck",
+	.clkdm_name     = "lcdc_clkdm",
+	.parent         = &lcd_gclk,
+	.enable_reg     = AM33XX_CM_PER_LCDC_CLKCTRL,
+	.enable_bit     = AM33XX_MODULEMODE_SWCTRL,
+	.ops            = &clkops_omap2_dflt,
+	.recalc         = &followparent_recalc,
+};
+
 static struct clk mmc_clk = {
 	.name		= "mmc_clk",
 	.clkdm_name	= "l4ls_clkdm",
@@ -1075,6 +1085,7 @@ static struct omap_clk am33xx_clks[] = {
 	CLK(NULL,	"clkout2_ck",		&clkout2_ck,	CK_AM33XX),
 	CLK(NULL,	"timer_32k_ck",		&clkdiv32k_ick,	CK_AM33XX),
 	CLK(NULL,	"timer_sys_ck",		&sys_clkin_ck,	CK_AM33XX),
+	CLK("da8xx_lcdc.0",     NULL,           &lcdc_fck,      CK_AM33XX),
 };
 
 int __init am33xx_clk_init(void)
