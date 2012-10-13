@@ -33,6 +33,7 @@
 #include <linux/of.h>		/* for struct device_node */
 #include <linux/swab.h>		/* for swab16 */
 #include <uapi/linux/i2c.h>
+#include <linux/memory.h>
 
 extern struct bus_type i2c_bus_type;
 extern struct device_type i2c_adapter_type;
@@ -229,8 +230,31 @@ struct i2c_client {
 	struct device dev;		/* the device structure		*/
 	int irq;			/* irq issued by device		*/
 	struct list_head detected;
+
+	/* export accessor */
+	struct memory_accessor *macc;
 };
 #define to_i2c_client(d) container_of(d, struct i2c_client, dev)
+
+static inline ssize_t i2c_memory_read(struct i2c_client *client, char *buf, off_t offset,
+		size_t count)
+{
+	struct memory_accessor *macc = client->macc;
+
+	if (macc == NULL || macc->read == NULL)
+		return -ENODEV;
+	return (*client->macc->read)(macc, buf, offset, count);
+}
+
+static inline ssize_t i2c_memory_write(struct i2c_client *client, const char *buf, off_t offset,
+		size_t count)
+{
+	struct memory_accessor *macc = client->macc;
+
+	if (macc == NULL || macc->write == NULL)
+		return -ENODEV;
+	return (*client->macc->write)(macc, buf, offset, count);
+}
 
 extern struct i2c_client *i2c_verify_client(struct device *dev);
 extern struct i2c_adapter *i2c_verify_adapter(struct device *dev);
