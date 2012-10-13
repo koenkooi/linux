@@ -609,6 +609,9 @@ static int at24_probe(struct i2c_client *client, const struct i2c_device_id *id)
 
 	at24->client[0] = client;
 
+	/* export accessor */
+	client->macc = &at24->macc;
+
 	/* use dummy devices for multiple-address chips */
 	for (i = 1; i < num_addresses; i++) {
 		at24->client[i] = i2c_new_dummy(client->adapter,
@@ -619,6 +622,7 @@ static int at24_probe(struct i2c_client *client, const struct i2c_device_id *id)
 			err = -EADDRINUSE;
 			goto err_clients;
 		}
+		at24->client[i]->macc = &at24->macc;
 	}
 
 	err = sysfs_create_bin_file(&client->dev.kobj, &at24->bin);
@@ -636,6 +640,7 @@ static int at24_probe(struct i2c_client *client, const struct i2c_device_id *id)
 			   "performance will suffer\n", use_smbus ==
 			   I2C_SMBUS_WORD_DATA ? "word" : "byte");
 	}
+
 
 	/* export data to kernel code */
 	if (chip.setup)
