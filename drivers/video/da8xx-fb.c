@@ -270,6 +270,20 @@ static struct da8xx_panel known_lcd_panels[] = {
 		.pxl_clk = 7833600,
 		.invert_pxl_clk = 0,
 	},
+	[3] = {
+		 /* 1024 x 768 @ 60 Hz  Reduced blanking VESA CVT 0.79M3-R */
+		.name = "1024x768@60",
+		.width = 1024,
+		.height = 768,
+		.hfp = 48,
+		.hbp = 80,
+		.hsw = 32,
+		.vfp = 3,
+		.vbp = 15,
+		.vsw = 4,
+		.pxl_clk = 56000000,
+		.invert_pxl_clk = 0,
+	},
 };
 
 /* Enable the Raster Engine of the LCD Controller */
