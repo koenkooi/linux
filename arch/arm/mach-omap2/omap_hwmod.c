@@ -138,6 +138,7 @@
 #include <linux/spinlock.h>
 #include <linux/slab.h>
 #include <linux/bootmem.h>
+#include <linux/export.h>
 
 #include <plat/clock.h>
 #include <plat/omap_hwmod.h>
@@ -3076,6 +3077,7 @@ struct omap_hwmod *omap_hwmod_lookup(const char *name)
 
 	return oh;
 }
+EXPORT_SYMBOL(omap_hwmod_lookup);
 
 /**
  * omap_hwmod_for_each - call function for each registered omap_hwmod
