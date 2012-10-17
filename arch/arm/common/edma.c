@@ -1425,6 +1425,53 @@ static int edma_of_read_u32_to_s16_array(const struct device_node *np,
 	return 0;
 }
 
+static int edma_xbar_event_map(struct device *dev,
+			       struct device_node *node,
+			       struct edma_soc_info *pdata, int len)
+{
+	int ret = 0;
+	int i;
+	struct resource res;
+	void *xbar;
+	s16 (*xbar_chans)[2];
+	u32 shift, offset, mux;
+
+	xbar_chans = devm_kzalloc(dev,
+				  len/sizeof(s16) + 2*sizeof(s16),
+				  GFP_KERNEL);
+	if (!xbar_chans)
+		return -ENOMEM;
+
+	ret = of_address_to_resource(node, 1, &res);
+	if (IS_ERR_VALUE(ret))
+		return -EIO;
+
+	xbar = devm_ioremap(dev, res.start, resource_size(&res));
+	if (!xbar)
+		return -EIO;
+
+	ret = edma_of_read_u32_to_s16_array(node,
+					    "ti,edma-xbar-event-map",
+					    (s16 *)xbar_chans,
+					    len/sizeof(u32));
+	if (IS_ERR_VALUE(ret))
+		return -EIO;
+
+	for (i = 0; xbar_chans[i][0] != -1; i++) {
+		shift = (xbar_chans[i][1] % 4) * 8;
+		offset = xbar_chans[i][1] >> 2;
+		offset <<= 2;
+		mux = __raw_readl((void *)((u32)xbar + offset));
+		mux &= (~(0xff << shift));
+		mux |= (xbar_chans[i][0] << shift);
+		__raw_writel(mux, (void *)((u32)xbar + offset));
+	}
+
+	pdata->xbar_chans = xbar_chans;
+
+	return 0;
+}
+
 static int edma_of_parse_dt(struct device *dev,
 			    struct device_node *node,
 			    struct edma_soc_info *pdata)
@@ -1453,7 +1500,6 @@ static int edma_of_parse_dt(struct device *dev,
 	pdata->n_slot = value;
 
 	pdata->n_cc = 1;
-	/* This is unused */
 	pdata->n_tc = 3;
 
 	rsv_info =
@@ -1538,6 +1584,10 @@ static int edma_of_parse_dt(struct device *dev,
 		return ret;
 	pdata->default_queue = value;
 
+	prop = of_find_property(node, "ti,edma-xbar-event-map", &sz);
+	if (prop)
+		ret = edma_xbar_event_map(dev, node, pdata, sz);
+
 	return ret;
 }
 
@@ -1554,6 +1604,7 @@ static int __init edma_probe(struct platform_device *pdev)
 	int			status = -1;
 	s16			(*rsv_chans)[2];
 	s16			(*rsv_slots)[2];
+	s16			(*xbar_chans)[2];
 	int			irq[EDMA_MAX_CC] = {0, 0};
 	int			err_irq[EDMA_MAX_CC] = {0, 0};
 	struct resource		*r[EDMA_MAX_CC] = {NULL, NULL};
@@ -1675,6 +1726,16 @@ static int __init edma_probe(struct platform_device *pdev)
 					set_bits(off, ln,
 						edma_cc[j]->edma_inuse);
 				}
+			}
+		}
+
+		/* Clear the xbar mapped channels in unused list */
+		xbar_chans = info[j]->xbar_chans;
+		if (xbar_chans) {
+			for (i = 0; xbar_chans[i][1] != -1; i++) {
+				off = xbar_chans[i][1];
+				clear_bits(off, 1,
+					edma_cc[j]->edma_unused);
 			}
 		}
 
