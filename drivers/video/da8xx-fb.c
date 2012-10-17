@@ -298,6 +298,20 @@ static struct da8xx_panel known_lcd_panels[] = {
 		.pxl_clk = 8000000,
 		.invert_pxl_clk = 0,
 	},
+	/* ThreeFive S9700RTWV35TR */
+	[5] = {
+		.name = "TFC_S9700RTWV35TR_01B",
+		.width = 800,
+		.height = 480,
+		.hfp = 39,
+		.hbp = 39,
+		.hsw = 47,
+		.vfp = 13,
+		.vbp = 29,
+		.vsw = 2,
+		.pxl_clk = 30000000,
+		.invert_pxl_clk = 0,
+	},
 };
 
 /* Enable the Raster Engine of the LCD Controller */
