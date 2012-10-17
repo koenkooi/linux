@@ -47,6 +47,7 @@ sil	Silicon Image
 simtek
 sirf	SiRF Technology, Inc.
 sitronix Sitronix Technology Corp.
+spansion	Spansion, Inc.
 st	STMicroelectronics
 stericsson	ST-Ericsson
 ti	Texas Instruments
