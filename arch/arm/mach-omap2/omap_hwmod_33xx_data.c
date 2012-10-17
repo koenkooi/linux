@@ -3310,12 +3310,24 @@ static struct omap_hwmod_addr_space am33xx_usbss_addr_space[] = {
 		.pa_end		= 0x47401000 + SZ_2K - 1,
 		.flags		= ADDR_TYPE_RT
 	},
-	{
-		.name		= "musb1",
-		.pa_start	= 0x47401800,
-		.pa_end		= 0x47401800 + SZ_2K - 1,
-		.flags		= ADDR_TYPE_RT
-	},
+        {
+                .name           = "usb_ctrl0",
+                .pa_start       = 0x44E10620,
+                .pa_end         = 0x44E10620 + SZ_4 - 1,
+                .flags          = ADDR_TYPE_RT
+        },
+        {
+                .name           = "musb1",
+                .pa_start       = 0x47401800,
+                .pa_end         = 0x47401800 + SZ_2K - 1,
+                .flags          = ADDR_TYPE_RT
+        },
+        {
+                .name           = "usb_ctrl1",
+                .pa_start       = 0x44E10628,
+                .pa_end         = 0x44E10628 + SZ_4 - 1,
+                .flags          = ADDR_TYPE_RT
+        },
 	{ }
 };
 
