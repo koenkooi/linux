@@ -139,6 +139,7 @@ static int __devexit gpevt_remove(struct platform_device *pdev)
 
 static const struct of_device_id gpevt_dt_ids[] = {
 	{ .compatible = "gpevt", .data = (void *) NULL, },
+	{ },
 };
 MODULE_DEVICE_TABLE(of, gpevt_dt_ids);
 
