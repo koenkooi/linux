@@ -681,8 +681,7 @@ static struct omap_hwmod am33xx_cpgmac0_hwmod = {
 			.modulemode	= MODULEMODE_SWCTRL,
 		},
 	},
-	.flags		= (HWMOD_SWSUP_SIDLE | HWMOD_SWSUP_MSTANDBY |
-			   HWMOD_INIT_NO_RESET | HWMOD_INIT_NO_IDLE),
+	.flags		= (HWMOD_SWSUP_SIDLE | HWMOD_SWSUP_MSTANDBY),
 };
 
 /*
