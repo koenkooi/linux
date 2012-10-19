@@ -171,6 +171,7 @@ struct pwm_device *pwm_request_from_chip(struct pwm_chip *chip,
 					 unsigned int index,
 					 const char *label);
 
+struct pwm_device *of_pwm_request(struct device_node *np, const char *consumer);
 struct pwm_device *pwm_get(struct device *dev, const char *consumer);
 void pwm_put(struct pwm_device *pwm);
 
@@ -200,6 +201,12 @@ static inline int pwmchip_remove(struct pwm_chip *chip)
 static inline struct pwm_device *pwm_request_from_chip(struct pwm_chip *chip,
 						       unsigned int index,
 						       const char *label)
+{
+	return ERR_PTR(-ENODEV);
+}
+
+static inline struct pwm_device *of_pwm_request(struct device_node *np,
+					 const char *consumer)
 {
 	return ERR_PTR(-ENODEV);
 }
