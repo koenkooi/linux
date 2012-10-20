@@ -15,6 +15,9 @@
 #if defined(CONFIG_OF_I2C) || defined(CONFIG_OF_I2C_MODULE)
 #include <linux/i2c.h>
 
+extern void of_i2c_register_node_devices(struct i2c_adapter *adap,
+		struct device_node *parent_node);
+
 extern void of_i2c_register_devices(struct i2c_adapter *adap);
 
 /* must call put_device() when done with returned i2c_client device */
