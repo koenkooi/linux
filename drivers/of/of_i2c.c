@@ -18,18 +18,18 @@
 #include <linux/of_irq.h>
 #include <linux/module.h>
 
-void of_i2c_register_devices(struct i2c_adapter *adap)
+void of_i2c_register_node_devices(struct i2c_adapter *adap,
+		struct device_node *parent_node)
 {
 	void *result;
 	struct device_node *node;
 
-	/* Only register child devices if the adapter has a node pointer set */
-	if (!adap->dev.of_node)
+	if (!parent_node)
 		return;
 
 	dev_dbg(&adap->dev, "of_i2c: walking child nodes\n");
 
-	for_each_child_of_node(adap->dev.of_node, node) {
+	for_each_child_of_node(parent_node, node) {
 		struct i2c_board_info info = {};
 		struct dev_archdata dev_ad = {};
 		const __be32 *addr;
@@ -75,6 +75,12 @@ void of_i2c_register_devices(struct i2c_adapter *adap)
 			continue;
 		}
 	}
+}
+EXPORT_SYMBOL(of_i2c_register_node_devices);
+
+void of_i2c_register_devices(struct i2c_adapter *adap)
+{
+	of_i2c_register_node_devices(adap, adap->dev.of_node);
 }
 EXPORT_SYMBOL(of_i2c_register_devices);
 
