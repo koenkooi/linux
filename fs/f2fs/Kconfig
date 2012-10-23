@@ -16,18 +16,18 @@ config F2FS_FS
 
 config F2FS_STAT_FS
 	bool "F2FS Status Information"
-	depends on F2FS_FS
+	depends on F2FS_FS && DEBUG_FS
 	default y
 	help
-	  /proc/fs/f2fs/ contains information about partitions mounted as f2fs.
+	  /sys/kernel/debug/f2fs/ contains information about partitions mounted as f2fs.
 	  For each partition, a corresponding directory, named as its device
-	  name, is provided with the following proc entries.
+	  name, is provided with the following files:
 
 	  f2fs_stat	major file system information managed by f2fs currently
 	  f2fs_sit_stat	average SIT information about whole segments
 	  f2fs_mem_stat	current memory footprint consumed by f2fs
 
-	  e.g., in /proc/fs/f2fs/sdb1/
+	  e.g., in /sys/kernel/debug/f2fs/sdb1/
 
 config F2FS_FS_XATTR
 	bool "F2FS extended attributes"
