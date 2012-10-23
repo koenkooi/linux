@@ -191,7 +191,7 @@ static inline int is_idle(struct f2fs_sb_info *sbi)
 	return !(rl->count[BLK_RW_SYNC]) && !(rl->count[BLK_RW_ASYNC]);
 }
 
-static bool should_do_checkpoint(struct f2fs_sb_info *sbi)
+static inline bool should_do_checkpoint(struct f2fs_sb_info *sbi)
 {
 	unsigned int pages_per_sec = sbi->segs_per_sec *
 					(1 << sbi->log_blocks_per_seg);
