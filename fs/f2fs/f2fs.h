@@ -379,7 +379,7 @@ struct f2fs_sb_info {
 	int rr_flush;
 
 	/* related to GC */
-	struct proc_dir_entry *s_proc;
+	struct dentry *s_debug;
 	struct f2fs_gc_info *gc_info;		/* Garbage Collector
 						   information */
 	struct mutex gc_mutex;			/* mutex for GC */

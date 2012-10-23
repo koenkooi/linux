@@ -16,6 +16,8 @@
 #include <linux/proc_fs.h>
 #include <linux/f2fs_fs.h>
 #include <linux/blkdev.h>
+#include <linux/debugfs.h>
+#include <linux/seq_file.h>
 
 #include "f2fs.h"
 #include "node.h"
@@ -23,7 +25,7 @@
 #include "gc.h"
 
 static LIST_HEAD(f2fs_stat_list);
-static struct proc_dir_entry *f2fs_proc_root;
+static struct dentry *debugfs_root;
 
 
 void f2fs_update_stat(struct f2fs_sb_info *sbi)
@@ -114,16 +116,14 @@ static void f2fs_update_gc_metric(struct f2fs_sb_info *sbi)
 		si->avg_vblocks = 0;
 }
 
-static int f2fs_read_gc(char *page, char **start, off_t off,
-		int count, int *eof, void *data)
+static int stat_show(struct seq_file *s, void *v)
 {
 	struct f2fs_gc_info *gc_i, *next;
 	struct f2fs_stat_info *si;
-	char *buf = page;
 	int i = 0;
+	int j;
 
 	list_for_each_entry_safe(gc_i, next, &f2fs_stat_list, stat_list) {
-		int j;
 		si = gc_i->stat_info;
 
 		mutex_lock(&si->stat_list);
@@ -133,102 +133,111 @@ static int f2fs_read_gc(char *page, char **start, off_t off,
 		}
 		f2fs_update_stat(si->sbi);
 
-		buf += sprintf(buf, "=====[ partition info. #%d ]=====\n", i++);
-		buf += sprintf(buf, "[SB: 1] [CP: 2] [NAT: %d] [SIT: %d] ",
-				si->nat_area_segs, si->sit_area_segs);
-		buf += sprintf(buf, "[SSA: %d] [MAIN: %d",
-				si->ssa_area_segs, si->main_area_segs);
-		buf += sprintf(buf, "(OverProv:%d Resv:%d)]\n\n",
-				si->overp_segs, si->rsvd_segs);
-		buf += sprintf(buf, "Utilization: %d%% (%d valid blocks)\n",
-				si->utilization, si->valid_count);
-		buf += sprintf(buf, "  - Node: %u (Inode: %u, ",
-				si->valid_node_count, si->valid_inode_count);
-		buf += sprintf(buf, "Other: %u)\n  - Data: %u\n",
-				si->valid_node_count - si->valid_inode_count,
-				si->valid_count - si->valid_node_count);
-		buf += sprintf(buf, "\nMain area: %d segs, %d secs %d zones\n",
-				si->main_area_segs, si->main_area_sections,
-				si->main_area_zones);
-		buf += sprintf(buf, "  - COLD  data: %d, %d, %d\n",
-				si->curseg[CURSEG_COLD_DATA],
-				si->cursec[CURSEG_COLD_DATA],
-				si->curzone[CURSEG_COLD_DATA]);
-		buf += sprintf(buf, "  - WARM  data: %d, %d, %d\n",
-				si->curseg[CURSEG_WARM_DATA],
-				si->cursec[CURSEG_WARM_DATA],
-				si->curzone[CURSEG_WARM_DATA]);
-		buf += sprintf(buf, "  - HOT   data: %d, %d, %d\n",
-				si->curseg[CURSEG_HOT_DATA],
-				si->cursec[CURSEG_HOT_DATA],
-				si->curzone[CURSEG_HOT_DATA]);
-		buf += sprintf(buf, "  - Dir   dnode: %d, %d, %d\n",
-				si->curseg[CURSEG_HOT_NODE],
-				si->cursec[CURSEG_HOT_NODE],
-				si->curzone[CURSEG_HOT_NODE]);
-		buf += sprintf(buf, "  - File   dnode: %d, %d, %d\n",
-				si->curseg[CURSEG_WARM_NODE],
-				si->cursec[CURSEG_WARM_NODE],
-				si->curzone[CURSEG_WARM_NODE]);
-		buf += sprintf(buf, "  - Indir nodes: %d, %d, %d\n",
-				si->curseg[CURSEG_COLD_NODE],
-				si->cursec[CURSEG_COLD_NODE],
-				si->curzone[CURSEG_COLD_NODE]);
-		buf += sprintf(buf, "\n  - Valid: %d\n  - Dirty: %d\n",
-				si->main_area_segs - si->dirty_count -
-				si->prefree_count - si->free_segs,
-				si->dirty_count);
-		buf += sprintf(buf, "  - Prefree: %d\n  - Free: %d (%d)\n\n",
-				si->prefree_count,
-				si->free_segs,
-				si->free_secs);
-		buf += sprintf(buf, "GC calls: %d (BG: %d)\n",
-				si->call_count, si->bg_gc);
-		buf += sprintf(buf, "  - data segments : %d\n", si->data_segs);
-		buf += sprintf(buf, "  - node segments : %d\n", si->node_segs);
-		buf += sprintf(buf, "Try to move %d blocks\n", si->tot_blks);
-		buf += sprintf(buf, "  - data blocks : %d\n", si->data_blks);
-		buf += sprintf(buf, "  - node blocks : %d\n", si->node_blks);
-		buf += sprintf(buf, "\nExtent Hit Ratio: %d / %d\n",
-						si->hit_ext, si->total_ext);
-		buf += sprintf(buf, "\nBalancing F2FS Async:\n");
-		buf += sprintf(buf, "  - nodes %4d in %4d\n",
-					si->ndirty_node, si->node_pages);
-		buf += sprintf(buf, "  - dents %4d in dirs:%4d\n",
-					si->ndirty_dent, si->ndirty_dirs);
-		buf += sprintf(buf, "  - meta %4d in %4d\n",
-					si->ndirty_meta, si->meta_pages);
-		buf += sprintf(buf, "  - NATs %5d > %lu\n",
-						si->nats, NM_WOUT_THRESHOLD);
-		buf += sprintf(buf, "  - SITs: %5d\n  - free_nids: %5d\n",
-					si->sits, si->fnids);
-		buf += sprintf(buf, "\nDistribution of User Blocks:");
-		buf += sprintf(buf, " [ valid | invalid | free ]\n");
-		buf += sprintf(buf, "  [");
+		seq_printf(s, "=====[ partition info. #%d ]=====\n", i++);
+		seq_printf(s, "=====[ partition info. #%d ]=====\n", i++);
+		seq_printf(s, "[SB: 1] [CP: 2] [NAT: %d] [SIT: %d] ",
+			   si->nat_area_segs, si->sit_area_segs);
+		seq_printf(s, "[SSA: %d] [MAIN: %d",
+			   si->ssa_area_segs, si->main_area_segs);
+		seq_printf(s, "(OverProv:%d Resv:%d)]\n\n",
+			   si->overp_segs, si->rsvd_segs);
+		seq_printf(s, "Utilization: %d%% (%d valid blocks)\n",
+			   si->utilization, si->valid_count);
+		seq_printf(s, "  - Node: %u (Inode: %u, ",
+			   si->valid_node_count, si->valid_inode_count);
+		seq_printf(s, "Other: %u)\n  - Data: %u\n",
+			   si->valid_node_count - si->valid_inode_count,
+			   si->valid_count - si->valid_node_count);
+		seq_printf(s, "\nMain area: %d segs, %d secs %d zones\n",
+			   si->main_area_segs, si->main_area_sections,
+			   si->main_area_zones);
+		seq_printf(s, "  - COLD  data: %d, %d, %d\n",
+			   si->curseg[CURSEG_COLD_DATA],
+			   si->cursec[CURSEG_COLD_DATA],
+			   si->curzone[CURSEG_COLD_DATA]);
+		seq_printf(s, "  - WARM  data: %d, %d, %d\n",
+			   si->curseg[CURSEG_WARM_DATA],
+			   si->cursec[CURSEG_WARM_DATA],
+			   si->curzone[CURSEG_WARM_DATA]);
+		seq_printf(s, "  - HOT   data: %d, %d, %d\n",
+			   si->curseg[CURSEG_HOT_DATA],
+			   si->cursec[CURSEG_HOT_DATA],
+			   si->curzone[CURSEG_HOT_DATA]);
+		seq_printf(s, "  - Dir   dnode: %d, %d, %d\n",
+			   si->curseg[CURSEG_HOT_NODE],
+			   si->cursec[CURSEG_HOT_NODE],
+			   si->curzone[CURSEG_HOT_NODE]);
+		seq_printf(s, "  - File   dnode: %d, %d, %d\n",
+			   si->curseg[CURSEG_WARM_NODE],
+			   si->cursec[CURSEG_WARM_NODE],
+			   si->curzone[CURSEG_WARM_NODE]);
+		seq_printf(s, "  - Indir nodes: %d, %d, %d\n",
+			   si->curseg[CURSEG_COLD_NODE],
+			   si->cursec[CURSEG_COLD_NODE],
+			   si->curzone[CURSEG_COLD_NODE]);
+		seq_printf(s, "\n  - Valid: %d\n  - Dirty: %d\n",
+			   si->main_area_segs - si->dirty_count -
+			   si->prefree_count - si->free_segs,
+			   si->dirty_count);
+		seq_printf(s, "  - Prefree: %d\n  - Free: %d (%d)\n\n",
+			   si->prefree_count, si->free_segs, si->free_secs);
+		seq_printf(s, "GC calls: %d (BG: %d)\n",
+			   si->call_count, si->bg_gc);
+		seq_printf(s, "  - data segments : %d\n", si->data_segs);
+		seq_printf(s, "  - node segments : %d\n", si->node_segs);
+		seq_printf(s, "Try to move %d blocks\n", si->tot_blks);
+		seq_printf(s, "  - data blocks : %d\n", si->data_blks);
+		seq_printf(s, "  - node blocks : %d\n", si->node_blks);
+		seq_printf(s, "\nExtent Hit Ratio: %d / %d\n",
+			   si->hit_ext, si->total_ext);
+		seq_printf(s, "\nBalancing F2FS Async:\n");
+		seq_printf(s, "  - nodes %4d in %4d\n",
+			   si->ndirty_node, si->node_pages);
+		seq_printf(s, "  - dents %4d in dirs:%4d\n",
+			   si->ndirty_dent, si->ndirty_dirs);
+		seq_printf(s, "  - meta %4d in %4d\n",
+			   si->ndirty_meta, si->meta_pages);
+		seq_printf(s, "  - NATs %5d > %lu\n",
+			   si->nats, NM_WOUT_THRESHOLD);
+		seq_printf(s, "  - SITs: %5d\n  - free_nids: %5d\n",
+			   si->sits, si->fnids);
+		seq_printf(s, "\nDistribution of User Blocks:");
+		seq_printf(s, " [ valid | invalid | free ]\n");
+		seq_printf(s, "  [");
 		for (j = 0; j < si->util_valid; j++)
-			buf += sprintf(buf, "-");
-		buf += sprintf(buf, "|");
+			seq_printf(s, "-");
+		seq_printf(s, "|");
 		for (j = 0; j < si->util_invalid; j++)
-			buf += sprintf(buf, "-");
-		buf += sprintf(buf, "|");
+			seq_printf(s, "-");
+		seq_printf(s, "|");
 		for (j = 0; j < si->util_free; j++)
-			buf += sprintf(buf, "-");
-		buf += sprintf(buf, "]\n\n");
-		buf += sprintf(buf, "SSR: %u blocks in %u segments\n",
-				si->block_count[SSR], si->segment_count[SSR]);
-		buf += sprintf(buf, "LFS: %u blocks in %u segments\n",
-				si->block_count[LFS], si->segment_count[LFS]);
+			seq_printf(s, "-");
+		seq_printf(s, "]\n\n");
+		seq_printf(s, "SSR: %u blocks in %u segments\n",
+			   si->block_count[SSR], si->segment_count[SSR]);
+		seq_printf(s, "LFS: %u blocks in %u segments\n",
+			   si->block_count[LFS], si->segment_count[LFS]);
 		mutex_unlock(&si->stat_list);
 	}
-	return buf - page;
+	return 0;
 }
 
-static int f2fs_read_sit(char *page, char **start, off_t off,
-		int count, int *eof, void *data)
+static int stat_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, stat_show, inode->i_private);
+}
+
+static const struct file_operations stat_fops = {
+	.open = stat_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+static int sit_show(struct seq_file *s, void *v)
 {
 	struct f2fs_gc_info *gc_i, *next;
 	struct f2fs_stat_info *si;
-	char *buf = page;
 
 	list_for_each_entry_safe(gc_i, next, &f2fs_stat_list, stat_list) {
 		si = gc_i->stat_info;
@@ -240,19 +249,29 @@ static int f2fs_read_sit(char *page, char **start, off_t off,
 		}
 		f2fs_update_gc_metric(si->sbi);
 
-		buf += sprintf(buf, "BDF: %u, avg. vblocks: %u\n",
-				si->bimodal, si->avg_vblocks);
+		seq_printf(s, "BDF: %u, avg. vblocks: %u\n",
+			   si->bimodal, si->avg_vblocks);
 		mutex_unlock(&si->stat_list);
 	}
-	return buf - page;
+	return 0;
 }
 
-static int f2fs_read_mem(char *page, char **start, off_t off,
-		int count, int *eof, void *data)
+static int sit_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, sit_show, inode->i_private);
+}
+
+static const struct file_operations sit_fops = {
+	.open = sit_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+static int mem_show(struct seq_file *s, void *v)
 {
 	struct f2fs_gc_info *gc_i, *next;
 	struct f2fs_stat_info *si;
-	char *buf = page;
 
 	list_for_each_entry_safe(gc_i, next, &f2fs_stat_list, stat_list) {
 		struct f2fs_sb_info *sbi = gc_i->stat_info->sbi;
@@ -314,14 +333,26 @@ static int f2fs_read_mem(char *page, char **start, off_t off,
 		cache_mem += sbi->n_orphans * sizeof(struct orphan_inode_entry);
 		cache_mem += sbi->n_dirty_dirs * sizeof(struct dir_inode_entry);
 
-		buf += sprintf(buf, "%u KB = static: %u + cached: %u\n",
-				(base_mem + cache_mem) >> 10,
-				base_mem >> 10,
-				cache_mem >> 10);
+		seq_printf(s, "%u KB = static: %u + cached: %u\n",
+			   (base_mem + cache_mem) >> 10,
+			   base_mem >> 10, cache_mem >> 10);
 		mutex_unlock(&si->stat_list);
 	}
-	return buf - page;
+	return 0;
 }
+
+static int mem_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, mem_show, inode->i_private);
+}
+
+static const struct file_operations mem_fops = {
+	.open = mem_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 
 static int init_stats(struct f2fs_sb_info *sbi)
 {
@@ -362,53 +393,48 @@ void f2fs_destroy_gci_stats(struct f2fs_gc_info *gc_i)
 
 int f2fs_stat_init(struct super_block *sb, struct f2fs_sb_info *sbi)
 {
-	struct proc_dir_entry *entry;
 	int retval;
-
-	if (!f2fs_proc_root)
-		f2fs_proc_root = proc_mkdir("fs/f2fs", NULL);
-
-	sbi->s_proc = proc_mkdir(sb->s_id, f2fs_proc_root);
 
 	retval = init_stats(sbi);
 	if (retval)
 		return retval;
 
-	entry = create_proc_entry("f2fs_stat", 0, sbi->s_proc);
-	if (!entry)
-		return -ENOMEM;
-	entry->read_proc = f2fs_read_gc;
-	entry->write_proc = NULL;
+	if (!debugfs_root)
+		debugfs_root = debugfs_create_dir("f2fs", NULL);
 
-	entry = create_proc_entry("f2fs_sit_stat", 0, sbi->s_proc);
-	if (!entry) {
-		remove_proc_entry("f2fs_stat", sbi->s_proc);
-		return -ENOMEM;
-	}
-	entry->read_proc = f2fs_read_sit;
-	entry->write_proc = NULL;
-	entry = create_proc_entry("f2fs_mem_stat", 0, sbi->s_proc);
-	if (!entry) {
-		remove_proc_entry("f2fs_sit_stat", sbi->s_proc);
-		remove_proc_entry("f2fs_stat", sbi->s_proc);
-		return -ENOMEM;
-	}
-	entry->read_proc = f2fs_read_mem;
-	entry->write_proc = NULL;
+	sbi->s_debug = debugfs_create_dir(sb->s_id, debugfs_root);
+	if (!sbi->s_debug)
+		return -EINVAL;
+
+	if (!debugfs_create_file("f2fs_stat", S_IRUGO, sbi->s_debug,
+				 NULL, &stat_fops))
+		goto failed;
+
+	if (!debugfs_create_file("f2fs_sit_stat", S_IRUGO, sbi->s_debug,
+				 NULL, &sit_fops))
+		goto failed;
+
+	if (!debugfs_create_file("f2fs_mem_stat", S_IRUGO, sbi->s_debug,
+				 NULL, &mem_fops))
+		goto failed;
+
 	return 0;
+failed:
+	debugfs_remove_recursive(sbi->s_debug);
+	sbi->s_debug = NULL;
+	return -EINVAL;
 }
 
 void f2fs_stat_exit(struct super_block *sb, struct f2fs_sb_info *sbi)
 {
-	if (sbi->s_proc) {
-		remove_proc_entry("f2fs_stat", sbi->s_proc);
-		remove_proc_entry("f2fs_sit_stat", sbi->s_proc);
-		remove_proc_entry("f2fs_mem_stat", sbi->s_proc);
-		remove_proc_entry(sb->s_id, f2fs_proc_root);
+	if (sbi->s_debug) {
+		debugfs_remove_recursive(sbi->s_debug);
+		sbi->s_debug = NULL;
 	}
 }
 
 void f2fs_remove_stats(void)
 {
-	remove_proc_entry("fs/f2fs", NULL);
+	debugfs_remove_recursive(debugfs_root);
+	debugfs_root = NULL;
 }
