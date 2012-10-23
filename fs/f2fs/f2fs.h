@@ -953,12 +953,6 @@ int start_gc_thread(struct f2fs_sb_info *);
 void stop_gc_thread(struct f2fs_sb_info *);
 block_t start_bidx_of_node(unsigned int);
 int f2fs_gc(struct f2fs_sb_info *, int);
-#ifdef CONFIG_F2FS_STAT_FS
-void f2fs_update_stat(struct f2fs_sb_info *);
-void f2fs_update_gc_metric(struct f2fs_sb_info *);
-int f2fs_stat_init(struct f2fs_sb_info *);
-void f2fs_stat_exit(struct f2fs_sb_info *);
-#endif
 int build_gc_manager(struct f2fs_sb_info *);
 void destroy_gc_manager(struct f2fs_sb_info *);
 int create_gc_caches(void);
@@ -969,6 +963,25 @@ void destroy_gc_caches(void);
  */
 void recover_fsync_data(struct f2fs_sb_info *);
 bool space_for_roll_forward(struct f2fs_sb_info *);
+
+/**
+ * debug.c
+ */
+#ifdef CONFIG_F2FS_STAT_FS
+void f2fs_update_stat(struct f2fs_sb_info *);
+int f2fs_stat_init(struct super_block *sb, struct f2fs_sb_info *);
+void f2fs_stat_exit(struct super_block *sb, struct f2fs_sb_info *);
+void f2fs_destroy_gci_stats(struct f2fs_gc_info *gc_i);
+void f2fs_remove_stats(void);
+#else
+static inline void f2fs_update_stat(struct f2fs_sb_info *sbi) { }
+static inline int f2fs_stat_init(struct super_block *sb,
+				 struct f2fs_sb_info *sbi) { return 0; }
+static inline void f2fs_stat_exit(struct super_block *sb,
+				  struct f2fs_sb_info *sbi) { }
+static inline void f2fs_destroy_gci_stats(struct f2fs_gc_info *gc_i) { }
+static inline void f2fs_remove_stats(void) { }
+#endif
 
 extern const struct file_operations f2fs_dir_operations;
 extern const struct file_operations f2fs_file_operations;
