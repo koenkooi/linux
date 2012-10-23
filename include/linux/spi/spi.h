@@ -30,6 +30,8 @@
  */
 extern struct bus_type spi_bus_type;
 
+extern struct class spi_master_class;
+
 /**
  * struct spi_device - Master side proxy for an SPI slave device
  * @dev: Driver model representation of the device.
@@ -855,5 +857,21 @@ spi_unregister_device(struct spi_device *spi)
 
 extern const struct spi_device_id *
 spi_get_device_id(const struct spi_device *sdev);
+
+#if defined(CONFIG_OF) && !defined(CONFIG_SPARC)
+
+void of_register_node_spi_devices(struct spi_master *master,
+		struct device_node *parent_node);
+
+void of_register_spi_devices(struct spi_master *master);
+
+#else
+
+static inline void of_register_node_spi_devices(struct spi_master *master,
+		struct device_node *parent_node) { }
+
+static inline void of_register_spi_devices(struct spi_master *master) { }
+
+#endif
 
 #endif /* __LINUX_SPI_H */
