@@ -26,7 +26,6 @@
 #include "xattr.h"
 
 static struct kmem_cache *f2fs_inode_cachep;
-static struct proc_dir_entry *f2fs_proc_root;
 
 enum {
 	Opt_gc_background_off,
@@ -97,12 +96,7 @@ static void f2fs_put_super(struct super_block *sb)
 {
 	struct f2fs_sb_info *sbi = F2FS_SB(sb);
 
-#ifdef CONFIG_F2FS_STAT_FS
-	if (sbi->s_proc) {
-		f2fs_stat_exit(sbi);
-		remove_proc_entry(sb->s_id, f2fs_proc_root);
-	}
-#endif
+	f2fs_stat_exit(sb, sbi);
 	stop_gc_thread(sbi);
 
 	write_checkpoint(sbi, false, true);
@@ -486,13 +480,9 @@ static int f2fs_fill_super(struct super_block *sb, void *data, int silent)
 	if (start_gc_thread(sbi))
 		goto fail;
 
-#ifdef CONFIG_F2FS_STAT_FS
-	if (f2fs_proc_root) {
-		sbi->s_proc = proc_mkdir(sb->s_id, f2fs_proc_root);
-		if (f2fs_stat_init(sbi))
-			goto fail;
-	}
-#endif
+	if (f2fs_stat_init(sb, sbi))
+		goto fail;
+
 	return 0;
 fail:
 	stop_gc_thread(sbi);
@@ -566,7 +556,6 @@ static int __init init_f2fs_fs(void)
 	if (register_filesystem(&f2fs_fs_type))
 		return -EBUSY;
 
-	f2fs_proc_root = proc_mkdir("fs/f2fs", NULL);
 	return 0;
 fail:
 	return -ENOMEM;
@@ -574,7 +563,7 @@ fail:
 
 static void __exit exit_f2fs_fs(void)
 {
-	remove_proc_entry("fs/f2fs", NULL);
+	f2fs_remove_stats();
 	unregister_filesystem(&f2fs_fs_type);
 	destroy_checkpoint_caches();
 	destroy_gc_caches();
