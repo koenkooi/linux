@@ -31,6 +31,7 @@ static unsigned int tscadc_readl(struct ti_tscadc_dev *tsadc, unsigned int reg)
 {
 	unsigned int val;
 
+	val = (unsigned int)-1;
 	regmap_read(tsadc->regmap_tscadc, reg, &val);
 	return val;
 }
@@ -68,7 +69,7 @@ static	int __devinit ti_tscadc_probe(struct platform_device *pdev)
 	int			irq;
 	int			err, ctrl;
 	int			clk_value, clock_rate;
-	int			tsc_wires, adc_channels = 0, total_channels;
+	int			tsc_wires = 0, adc_channels = 0, total_channels;
 
 	if (!pdata) {
 		dev_err(&pdev->dev, "Could not find platform data\n");
@@ -78,7 +79,9 @@ static	int __devinit ti_tscadc_probe(struct platform_device *pdev)
 	if (pdata->adc_init)
 		adc_channels = pdata->adc_init->adc_channels;
 
-	tsc_wires = pdata->tsc_init->wires;
+	if (pdata->tsc_init)
+		tsc_wires = pdata->tsc_init->wires;
+
 	total_channels = tsc_wires + adc_channels;
 
 	if (total_channels > 8) {

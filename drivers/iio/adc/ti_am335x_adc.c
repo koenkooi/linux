@@ -23,7 +23,9 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/machine.h>
 #include <linux/iio/driver.h>
+#include <linux/regmap.h>
 
+#include <linux/io.h>
 #include <linux/mfd/ti_am335x_tscadc.h>
 #include <linux/platform_data/ti_am335x_adc.h>
 
@@ -36,13 +38,17 @@ struct tiadc_device {
 
 static unsigned int tiadc_readl(struct tiadc_device *adc, unsigned int reg)
 {
-	return readl(adc->mfd_tscadc->tscadc_base + reg);
+	unsigned int val;
+
+	val = (unsigned int)-1;
+	regmap_read(adc->mfd_tscadc->regmap_tscadc, reg, &val);
+	return val;
 }
 
 static void tiadc_writel(struct tiadc_device *adc, unsigned int reg,
 					unsigned int val)
 {
-	writel(val, adc->mfd_tscadc->tscadc_base + reg);
+	regmap_write(adc->mfd_tscadc->regmap_tscadc, reg, val);
 }
 
 static void tiadc_step_config(struct tiadc_device *adc_dev)
@@ -75,22 +81,24 @@ static void tiadc_step_config(struct tiadc_device *adc_dev)
 	tiadc_writel(adc_dev, REG_SE, STPENB_STEPENB);
 }
 
-static int tiadc_channel_init(struct iio_dev *indio_dev, int channels)
+static int tiadc_channel_init(struct iio_dev *indio_dev,
+		struct tiadc_device *adc_dev)
 {
 	struct iio_chan_spec *chan_array;
 	struct iio_chan_spec *chan;
 	char *s;
 	int i, len, size, ret;
+	int channels = adc_dev->channels;
 
-	size = indio_dev->num_channels * (sizeof(struct iio_chan_spec) + 6);
+	size = channels * (sizeof(struct iio_chan_spec) + 6);
 	chan_array = kzalloc(size, GFP_KERNEL);
 	if (chan_array == NULL)
 		return -ENOMEM;
 
 	/* buffer space is after the array */
-	s = (char *)(chan_array + indio_dev->num_channels);
+	s = (char *)(chan_array + channels);
 	chan = chan_array;
-	for (i = 0; i < indio_dev->num_channels; i++, chan++, s += len + 1) {
+	for (i = 0; i < channels; i++, chan++, s += len + 1) {
 
 		len = sprintf(s, "AIN%d", i);
 
@@ -105,8 +113,9 @@ static int tiadc_channel_init(struct iio_dev *indio_dev, int channels)
 	}
 
 	indio_dev->channels = chan_array;
+	indio_dev->num_channels = channels;
 
-	size = (indio_dev->num_channels + 1) * sizeof(struct iio_map);
+	size = (channels + 1) * sizeof(struct iio_map);
 	adc_dev->map = kzalloc(size, GFP_KERNEL);
 	if (adc_dev->map == NULL) {
 		kfree(chan_array);
@@ -203,7 +212,7 @@ static int __devinit tiadc_probe(struct platform_device *pdev)
 
 	tiadc_step_config(adc_dev);
 
-	err = tiadc_channel_init(indio_dev, adc_dev->channels);
+	err = tiadc_channel_init(indio_dev, adc_dev);
 	if (err < 0)
 		goto err_free_device;
 
@@ -212,6 +221,8 @@ static int __devinit tiadc_probe(struct platform_device *pdev)
 		goto err_free_channels;
 
 	platform_set_drvdata(pdev, indio_dev);
+
+	dev_info(&pdev->dev, "Initialized\n");
 
 	return 0;
 
