@@ -1864,7 +1864,7 @@ static int __devinit omap_hsmmc_probe(struct platform_device *pdev)
 	/* Eventually we should get our max_segs limitation for EDMA by
 	 * querying the dmaengine API */
 	if (pdev->dev.of_node) {
-		struct device_node *parent = pdev->dev.of_node->parent;
+		struct device_node *parent = of_node_get(pdev->dev.of_node->parent);
 		struct device_node *node;
 		node = of_find_node_by_name(parent, "edma");
 		if (node)
