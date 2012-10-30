@@ -1,0 +1,6 @@
+config CAPEBUS_BONE_CONTROLLER
+	bool "Beaglebone capebus board controller"
+	depends on CAPEBUS && ARCH_OMAP2PLUS && OF && I2C
+	default n
+	help
+	  "Select this to enable the beaglebone capebus board controller"
