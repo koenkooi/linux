@@ -1,0 +1,17 @@
+#
+# Capebus core support
+#
+
+menu "CAPEBUS support"
+
+config CAPEBUS
+	bool "Capebus support"
+	default n
+	help
+	  Enable to support capebus devices.
+
+source "drivers/capebus/boards/Kconfig"
+
+source "drivers/capebus/capes/Kconfig"
+
+endmenu
