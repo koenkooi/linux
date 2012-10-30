@@ -1,0 +1,6 @@
+config CAPEBUS_BONE_GENERIC
+	tristate "Beaglebone Generic cape driver"
+	depends on CAPEBUS_BONE_CONTROLLER
+	default n
+	help
+	  "Select this to enable a generic cape driver; LCD/DVI capes etc"
