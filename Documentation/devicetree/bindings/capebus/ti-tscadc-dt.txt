@@ -1,0 +1,34 @@
+* TI's TSCADC Device Tree adapter
+
+  This is an adapter device for use in device tree cases, since the
+  drivers DT bindings are not yet ready. It is bound to get away once
+  they are in place. Note that there is no capebus prefix, since there's
+  not really any dependence on capebus; the drivers can be moved out of
+  capebus if need be.
+
+Required properties:
+- compatible: Must have the form "ti-tscadc-dt"
+- ti,hwmods: Must have the form "adc_tsc" (until hwmod DT is complete)
+
+Optional properties:
+- adc-channels: Number of ADC channels the driver should provide.
+- tsc-wires: Number of touchscreen wires
+- tsc-x-plate-resistance: Touchscreen X plate resistance value
+- tsc-steps: Touchscreen steps
+
+Note if either adc-channels or tsc-wires are missing their respective
+values are set to 0.
+
+Example:
+
+tscadc {
+	compatible = "ti-tscadc-dt";
+
+	ti,hwmods = "adc_tsc";
+
+	tsc-wires = <4>;
+	tsc-x-plate-resistance = <200>;
+	tsc-steps = <6>;
+
+	adc-channels = <4>;
+};

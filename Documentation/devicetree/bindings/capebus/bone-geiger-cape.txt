@@ -1,0 +1,78 @@
+* Beagle bone geiger cape
+
+  A geiger cape is your run of the mill particle detector measuring
+  ionizing radiation. It is also the first example of how a non-generic
+  cape can be supported by capebus.
+
+  The geiger cape can not be created via instantiation of a generic cape 
+  since the component need to work together.
+
+Required properties:
+- compatible: Generic cape nodes must have the form "bone-geiger-cape"
+- board-name: The cape's name as if provided by the board-name EEPROM field
+- pwms: Pointer to the PWM we require
+- pwm-names: Name of the PWM.
+- pwm-frequency: Frequency of the PWM in Hz
+- pwm-duty-cycle: Duty cycle in percent
+- event-blink-delay: Blink delay of the event led
+- gpios: GPIO on which an event is detected
+- vsense-name: Name of the analog input for vsense
+- vsense-scale: Vsense scale to convert to mVolts
+- ti-tscadc-dt compatible node for the ADC configuration
+- gpio-leds compatible node for the LED configuration
+
+Optional properties:
+
+The geiger cape supports the standard pinctrl properties.
+
+Example:
+
+bone_geiger_cape: cape@1 {
+	compatible = "bone-geiger-cape";
+	board-name = "Geiger Cape";
+
+	/* note that these can't be versioned... */
+	pinctrl-names = "default";
+	pinctrl-0 = <&bone_geiger_cape_pins>;
+
+	pwms = <&ehrpwm1 0 500000 0>;
+	pwm-names = "bone-geiger-cape";
+
+	pwm-frequency  = <20000>;	/* 20KHz */
+	pwm-duty-cycle = <60>;		/* 60% */
+
+	event-blink-delay = <30>;	/* 30ms */
+
+	gpios = <&gpio4 17 0>;		/* pulse */
+
+	vsense-name = "AIN5";		/* analog vsense */
+	vsense-scale = <37325>;		/* scaling */
+
+	tscadc {
+		compatible = "ti-tscadc-dt";
+
+		ti,hwmods = "adc_tsc";
+
+		adc-channels = <8>;
+	};
+
+	gpio-leds {
+		compatible = "gpio-leds";
+		pinctrl-names = "default";
+		pinctrl-0 = <&bone_geiger_cape_led_pins>;
+
+		geiger-led0 {
+			label = "geiger:green:usr0";
+			gpios = <&gpio3 23 0>;
+			linux,default-trigger = "geiger-run";
+			default-state = "off";
+		};
+
+		geiger-led1 {
+			label = "geiger:red:usr1";
+			gpios = <&gpio3 25 0>;
+			linux,default-trigger = "geiger-event";
+			default-state = "off";
+		};
+	};
+};

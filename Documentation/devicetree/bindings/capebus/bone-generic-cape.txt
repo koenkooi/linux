@@ -1,0 +1,97 @@
+* Beagle bone generic cape
+
+  A generic cape is one form of cape that doesn't require any per-cape
+  driver for it to function. It is enough for the cape's node to be
+  instantiated in the right manner and the functions that the cape provides
+  will be available to Linux. A large number of capes fall in this category
+  like LCD/DVI/VGA capes, audio capes, capes with a number of gpio buttons,
+  capes with standard I2C/SPI/W1 parts etc.
+  All that's required is to describe the parts of the cape in the DT and 
+  how they utilize the SoC peripherals and it will work, without having
+  to write any other driver, or modify the board support package.
+
+  As a sidenote, a large part of the complexity of capes have to do
+  with version management. A cape as it goes through various steps of evolution
+  changes. These changes are codified by the version field on the EEPROM.
+  It is important that version management can be kept as simple as possible.
+
+  The generic concept works by instantiating the child nodes that are
+  contained in the cape node. By default nodes that are present in the
+  root of the node are activated for any version. Version nodes can 
+  contain per-version changes. In the example the da8xx-dt node differs
+  in the way it's instantiated, and this is expressed by the version nodes.
+
+Required properties:
+- compatible: Generic cape nodes must have the form "bone-generic-cape"
+- board-name: The cape's name as if provided by the board-name EEPROM field
+
+Optional properties:
+- version: Only valid in a version node, and it contains the list of compatible
+  versions this node contains.
+
+The standard supported nodes of the generic cape are:
+
+gpio-leds, tps65217-backlight, gpio-keys, w1-gpio, pwm-backlight
+
+The following nodes are supported via a capebus specific bridge devices, and
+their bindings described in their respective files:
+
+ti-tscadc-dt, da8xx-dt, i2c-dt, spi-dt
+
+Example:
+
+bone_dvi_cape: cape@0 {
+
+	compatible = "bone-generic-cape";
+	board-name = "BeagleBone DVI-D CAPE";
+
+	/* hacky, since this is not a proper DT platform device */
+	/* but until we have DT bindings... */
+	version@00A0 {
+		version = "00A0";
+		dvi {
+			compatible = "da8xx-dt";
+			pinctrl-names = "default";
+			pinctrl-0 = <&bone_dvi_cape_dvi_00A0_pins>;
+			ti,hwmods = "lcdc";
+
+			disp-pll = <560000000>;
+			panel-type = "1024x768@60";
+			powerdn-gpio = <&gpio2 7 0>;
+		};
+	};
+
+	version@00A1 {
+		version = "00A1", "01";
+		dvi {
+			compatible = "da8xx-dt";
+			pinctrl-names = "default";
+			pinctrl-0 = <&bone_dvi_cape_dvi_00A1_pins>;
+			ti,hwmods = "lcdc";
+
+			disp-pll = <560000000>;
+			panel-type = "1024x768@60";
+			powerdn-gpio = <&gpio2 31 0>;
+		};
+	};
+
+	gpio-leds {
+		compatible = "gpio-leds";
+		pinctrl-names = "default";
+		pinctrl-0 = <&bone_dvi_cape_led_pins>;
+
+		dvi-led0 {
+			label = "dvi:green:usr0";
+			gpios = <&gpio2 18 0>;
+			linux,default-trigger = "heartbeat";
+			default-state = "off";
+		};
+
+		dvi-led1 {
+			label = "dvi:green:usr1";
+			gpios = <&gpio2 19 0>;
+			linux,default-trigger = "mmc0";
+			default-state = "off";
+		};
+	};
+};

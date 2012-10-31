@@ -1,0 +1,42 @@
+* I2C DT bindings
+
+  This is an adapter device for use in device tree cases.
+  What we want to do is to add a number of I2C devices connected
+  to a specified i2c adapter node, and instantiate them on
+  successful cape match. Not only that, normally I2C adapters
+  are disabled in the DT tree, so in that case we enable them
+  first and then go about our business.
+
+Required properties:
+- compatible: Must have the form "i2c-dt"
+- parent: The phandle of the i2c adapter node
+- #address-cells: The same as the parent i2c adapter node
+- #size-cells: The same as the parent i2c adapter node
+
+Example:
+
+i2c2-devices {
+	compatible = "i2c-dt";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	parent = <&i2c2>;
+
+	/* Ambient light sensor */
+	tsl2550@39 {
+		compatible = "tsl,tsl2550";
+		reg = <0x39>;
+	};
+
+	/* Humidity Sensor */
+	sht21@40 {
+		compatible = "sensiron,sht21";
+		reg = <0x40>;
+	};
+
+	/* Barometric pressure sensor */
+	bmp085@77 {
+		compatible = "bosch,bmp085";
+		reg = <0x77>;
+	};
+};

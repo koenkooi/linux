@@ -1,0 +1,31 @@
+* DA8XX DT bindins
+
+  This is an adapter device for use in device tree cases, since the
+  drivers DT bindings are not yet ready. It is bound to get away once
+  they are in place. Note that there is no capebus prefix, since there's
+  not really any dependence on capebus; the drivers can be moved out of
+  capebus if need be.
+
+Required properties:
+- compatible: Must have the form "da8xx-dt"
+- ti,hwmods: Must have the form "lcdc" (until hwmod DT is complete)
+- disp-pll: PLL value
+- panel-type: Name of the panel type connected
+
+Optional properties:
+powerdn-gpio: GPIO controlling power
+
+Note that the pinctrl bindings are supported.
+
+Example:
+
+dvi {
+	compatible = "da8xx-dt";
+	pinctrl-names = "default";
+	pinctrl-0 = <&bone_dvi_cape_dvi_00A0_pins>;
+	ti,hwmods = "lcdc";
+
+	disp-pll = <560000000>;
+	panel-type = "1024x768@60";
+	powerdn-gpio = <&gpio2 7 0>;
+};

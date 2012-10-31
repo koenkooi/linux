@@ -1,0 +1,28 @@
+* Beagle bone capebus slot override bindings
+
+The beagle bone capebus node can have slot override nodes. These nodes describe
+  an override that will take place in the specified slot.
+  Many boards during the prototype phase don't have an EEPROM (or are even
+  wired in such a way that an eeprom cannot be added). In that case you can
+  specify an override that will make everything work as if a real EEPROM was
+  there.
+
+Required properties:
+- compatible: Override node must have the form "bone-capebus-slot-override"
+- slot: Identifies the slot# to override.
+- board-name: The cape's name as if provided by the board-name EEPROM field
+
+Optional properties:
+- version: The cape's version as if provided by the version EEPROM field.
+- manufacturer: The cape's manufacturer as if provided by the manufacturer
+  EEPROM field.
+
+Example:
+
+override@1 {
+	compatible = "bone-capebus-slot-override";
+	slot = <1>;
+	board-name = "Adafruit 1.8 Cape";
+	version = "00A0";
+	manufacturer = "Adafruit";
+};

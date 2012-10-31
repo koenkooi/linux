@@ -1,0 +1,50 @@
+* Beagle bone capebus bindings
+
+The beaglebone capebus implementation is using a single capebus
+node contained in the root node. A beaglebone cape is identified
+at by reading an EEPROM at on of 4 possible addresses on the I2C2 bus.
+
+Required properties:
+- compatible: Every beaglebone compatible capebus node shall have the 
+  form "bone-capebus";
+- slots: An array of phandles pointing to the I2C node of an EEPROM that 
+  contains the cape information.
+
+Optional properties:
+
+The child nodes of the capebus node can contain either cape nodes
+or override nodes. Those cape nodes are described in their respective
+binding files.
+
+- override nodes: Describe an override that will take place in the specified
+  slot. Many boards during the prototype phase don't have an EEPROM (or are even
+  wired in such a way that an eeprom cannot be added). In that case you can
+  specify an override that will make everything work as if a real EEPROM was
+  there.
+
+Override node required properties:
+- compatible: For override node must have the form "bone-capebus-slot-override"
+- slot: Identifies the slot# to override.
+- board-name: The cape's name as if provided by the board-name EEPROM field
+
+Override node optional properties:
+- version: The cape's version as if provided by the version EEPROM field.
+- manufacturer: The cape's manufacturer as if provided by the manufacturer
+  EEPROM field.
+
+Example:
+
+capebus: capebus@0 {
+	compatible = "bone-capebus";
+
+	slots = <&cape_eeprom_0 &cape_eeprom_1 &cape_eeprom_2 &cape_eeprom_3>;
+
+	[cape-nodes]
+	[override-nodes]
+
+	bone_adafruit_cape: cape@5 {
+		compatible = "bone-generic-cape";
+		// read the bone-generic-cape bindings for the rest
+		...
+	};
+};
