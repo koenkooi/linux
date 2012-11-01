@@ -200,6 +200,9 @@ ifneq ($(CONFIG_DRM_OMAP),)
 obj-y					+= drm.o
 endif
 
+# AM3XX Device Tree adapters for legacy drivers
+obj-$(CONFIG_SOC_AM33XX)		+= da8xx-dt.o
+
 # Specific board support
 obj-$(CONFIG_MACH_OMAP_GENERIC)		+= board-generic.o
 obj-$(CONFIG_MACH_OMAP_H4)		+= board-h4.o
