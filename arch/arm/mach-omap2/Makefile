@@ -202,6 +202,7 @@ endif
 
 # AM3XX Device Tree adapters for legacy drivers
 obj-$(CONFIG_SOC_AM33XX)		+= da8xx-dt.o
+obj-$(CONFIG_SOC_AM33XX)		+= ti-tscadc-dt.o
 
 # Specific board support
 obj-$(CONFIG_MACH_OMAP_GENERIC)		+= board-generic.o
