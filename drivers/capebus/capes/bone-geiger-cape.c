@@ -428,8 +428,8 @@ static int bonegeiger_probe(struct cape_dev *dev, const struct cape_device_id *i
 				"vsense-name", &info->vsense_name) != 0) {
 		info->vsense_name = "AIN5";
 		dev_warn(&dev->dev, "Could not read vsense-name property; "
-				"using default %u\n",
-					val);
+				"using default '%s'\n",
+					info->vsense_name);
 	}
 
 	if (capebus_of_property_read_u32(dev,
