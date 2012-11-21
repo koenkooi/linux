@@ -7,8 +7,8 @@
 	.globl relocate_new_kernel
 relocate_new_kernel:
 
-	ldr	r0,kexec_indirection_page
-	ldr	r1,kexec_start_address
+	ldr	r0,.L_kexec_indirection_page
+	ldr	r1,.L_kexec_start_address
 
 	/*
 	 * If there is no indirection page (we are doing crashdumps)
@@ -55,8 +55,8 @@ relocate_new_kernel:
 	/* Jump to relocated kernel */
 	mov lr,r1
 	mov r0,#0
-	ldr r1,kexec_mach_type
-	ldr r2,kexec_boot_atags
+	ldr r1,.L_kexec_mach_type
+	ldr r2,.L_kexec_boot_atags
  ARM(	mov pc, lr	)
  THUMB(	bx lr		)
 
@@ -64,19 +64,23 @@ relocate_new_kernel:
 
 	.globl kexec_start_address
 kexec_start_address:
+.L_kexec_start_address:
 	.long	0x0
 
 	.globl kexec_indirection_page
 kexec_indirection_page:
+.L_kexec_indirection_page:
 	.long	0x0
 
 	.globl kexec_mach_type
 kexec_mach_type:
+.L_kexec_mach_type:
 	.long	0x0
 
 	/* phy addr of the atags for the new kernel */
 	.globl kexec_boot_atags
 kexec_boot_atags:
+.L_kexec_boot_atags:
 	.long	0x0
 
 relocate_new_kernel_end:
