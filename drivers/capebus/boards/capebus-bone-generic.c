@@ -141,6 +141,12 @@ static const struct bone_capebus_generic_device_data gendevs[] = {
 				{ .compatible = "spi-dt", }, { },
 			},
 		.units	 = 0,	/* no limit */
+	}, {
+		.name	= "spi-vfd",
+		.of_match = (const struct of_device_id []) {
+				{ .compatible = "spi-vfd", }, { },
+			},
+		.units	 = 0,	/* no limit */
 	}
 };
 

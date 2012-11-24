@@ -48,10 +48,10 @@ static void spi_display_update(struct work_struct *work)
 				struct bonespivfd_info, vfd_update);
 	struct spi_device *spi = info->spi;
 	u8 buf[4];
+	int retval;
 	int i;
 
 	for (i = 0; i < info->max_digits; i++) {
-		int retval;
 		u32 val = info->buf[i];
 
 		buf[0] = (val >> 24) & 0xff;
@@ -65,6 +65,13 @@ static void spi_display_update(struct work_struct *work)
 				val, retval);
 			return;
 		}
+	}
+
+	memset(&buf, 0, sizeof(buf));
+	retval = spi_write(spi, &buf, sizeof(buf));
+	if (retval) {
+		dev_err(&spi->dev, "cannot write blanking data. err. %d\n", retval);
+		return;
 	}
 	schedule_delayed_work(&info->vfd_update, msecs_to_jiffies(info->refresh_rate));
 }
