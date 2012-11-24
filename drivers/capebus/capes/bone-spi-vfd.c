@@ -73,6 +73,7 @@ static void spi_display_update(struct work_struct *work)
 		dev_err(&spi->dev, "cannot write blanking data. err. %d\n", retval);
 		return;
 	}
+
 	schedule_delayed_work(&info->vfd_update, msecs_to_jiffies(info->refresh_rate));
 }
 
@@ -207,6 +208,8 @@ static ssize_t bonespivfd_store_display(struct device *dev,
 		val = char_to_segment(info, digit, val ,0);
 		info->buf[digit] = val;
 	}
+	
+	cancel_delayed_work(&info->vfd_update);
 	schedule_delayed_work(&info->vfd_update, 0);
 
 	return count;
