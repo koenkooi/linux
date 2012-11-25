@@ -11,3 +11,16 @@ config CAPEBUS_BONE_GEIGER
 	default n
 	help
 	  "Select this to enable a driver for the geiger cape"
+
+config CAPEBUS_BONE_NIXIE
+	tristate "Beaglebone Nixie cape driver"
+	depends on CAPEBUS_BONE_CONTROLLER
+	select CAPEBUS_SPI_VFD
+	default n
+	help
+	  "Select this to enable a driver for the nixie cape"
+
+config CAPEBUS_SPI_VFD
+	bool
+	depends on CAPEBUS_BONE_NIXIE
+	default y
