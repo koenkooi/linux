@@ -73,6 +73,7 @@ static void spi_display_update(struct work_struct *work)
 		dev_err(&spi->dev, "cannot write blanking data. err. %d\n", retval);
 		return;
 	}
+
 	cancel_delayed_work(&info->vfd_update);
 	schedule_delayed_work(&info->vfd_update, msecs_to_jiffies(info->refresh_rate));
 }
