@@ -126,6 +126,18 @@
 			>;
 		};
 
+		bone_nixie_cape_led_pins: pinmux_bone_nixie_cape_led_pins {
+			pinctrl-single,pins = <
+				0x1a4 0x17	/* mcasp0_fsr.gpio3_19, OUTPUT_PULLUP | MODE7 */
+			>;
+		};
+
+		bone_nixie_cape_pins: pinmux_bone_nixie_cape_pins {
+			pinctrl-single,pins = <
+				0x4c 0x06	/* gpmc_a3.ehrpwm1b, OMAP_MUX_MODE6 | AM33XX_PIN_OUTPUT */
+			>;
+	        };
+
 		bone_geiger_cape_pins: pinmux_bone_geiger_cape_pins {
 			pinctrl-single,pins = <
 				0x48 0x06       /* gpmc_a2.ehrpwm1a, OMAP_MUX_MODE6 | AM33XX_PIN_OUTPUT */
@@ -267,6 +279,10 @@
 				compatible = "bone-generic-cape";
 			};
 
+			bone_nixie_cape: cape@6 {
+				compatible = "bone-nixie-cape";
+			};
+	
 			/* overrides; no EEPROM (prototyping) */
 //			override@3 {
 //				compatible = "bone-capebus-slot-override";
@@ -286,6 +302,17 @@
 //				/* TODO: Add the rest */
 //			};
 
+			/* overrides; no EEPROM (prototyping) */
+//			override@1 {
+//				compatible = "bone-capebus-slot-override";
+//				slot = <1>;
+//				board-name = "Nixie Cape";
+//				version = "00A0";
+//				manufacturer = "Ranostay Industries";
+//				/* TODO; Add the rest */
+//			};
+
+			/* overrides; no EEPROM (prototyping) */
 //			override@1 {
 //				compatible = "bone-capebus-slot-override";
 //				slot = <1>;
@@ -477,6 +504,55 @@
 			linux,default-trigger = "mmc0";
 			default-state = "off";
 		};
+	};
+};
+
+&bone_nixie_cape {
+	board-name = "Nixie Cape";
+
+	/* note that these can't be versioned.... */
+	pinctrl-names = "default";
+	pinctrl-0 = <&bone_nixie_cape_pins>;
+
+	pwms = <&ehrpwm1 1 500000 0>;
+	pwm-names = "bone-nixie-cape";
+
+	pwm-frequency  = <9250>;	/* 9.250KHz */
+	pwm-duty-cycle = <35>;		/* 35% */
+
+	gpio-leds {
+		compatible = "gpio-leds";
+		pinctrl-names = "default";
+		pinctrl-0 = <&bone_nixie_cape_led_pins>;
+
+		geiger-led0 {
+			label = "nixie:green:usr0";
+			gpios = <&gpio4 19 0>;
+			linux,default-trigger = "nixie-run";
+			default-state = "off";
+		};
+	};
+
+	spi1-devices {
+		compatible = "spi-dt";
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		parent = <&spi1>;
+
+		vfd@0 {	
+			compatible = "bone-spi-vfd,max6921";
+
+			spi-max-frequency = <4000000>;
+			reg = <0>;
+			refresh-rate = <5>;	/* in milliseconds */
+
+			digits-idx   = <0x07 0x00 0x06 0x01 0x05 0x02 0x03 0x04 0x08>;
+			digits-mask  = <0xff 0xff 0xff 0xff 0xff 0xff 0xff 0xff 0xc0>;
+
+			segments-idx = <0x09 0x12 0x0c 0x0b 0xd 0x13 0x11 0x0a>;
+		};	
 	};
 };
 
