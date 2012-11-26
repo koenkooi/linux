@@ -168,8 +168,6 @@ static ssize_t bonespivfd_store_display(struct device *dev,
 	int val;
 	int i;
 
-	memset(info->buf, 0, sizeof(u32) * info->max_digits);
-
 	/*
 	 * Cycle right to left from input string
 	 */ 
@@ -209,6 +207,8 @@ static ssize_t bonespivfd_store_display(struct device *dev,
 		info->buf[digit] = val;
 	}
 	
+	memset((u32 *) info->buf + digit, 0, sizeof(u32) * (info->max_digits - digit));
+
 	cancel_delayed_work(&info->vfd_update);
 	schedule_delayed_work(&info->vfd_update, 0);
 
