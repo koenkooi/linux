@@ -512,6 +512,20 @@ static void force_disable_hpet_msi(struct pci_dev *unused)
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_ATI, PCI_DEVICE_ID_ATI_SBX00_SMBUS,
 			 force_disable_hpet_msi);
 
+
+static void e6xx_force_enable_hpet(struct pci_dev *dev)
+{
+	if (hpet_address || force_hpet_address)
+		return;
+
+	force_hpet_address = 0xfed00000;
+	force_hpet_resume_type = NONE_FORCE_HPET_RESUME;
+	dev_printk(KERN_DEBUG, &dev->dev, "Force enabled HPET at "
+		"0x%lx\n", force_hpet_address);
+}
+
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, 0x8183, e6xx_force_enable_hpet);
+
 #endif
 
 #if defined(CONFIG_PCI) && defined(CONFIG_NUMA)
