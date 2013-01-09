@@ -54,6 +54,10 @@
 		target = <&ocp>;
 		__overlay__ {
 
+			/* avoid stupid warning */
+			#address-cells = <1>;
+			#size-cells = <1>;
+
 			gpio-leds-cape-geiger {
 				compatible = "gpio-leds";
 				pinctrl-names = "default";
@@ -75,9 +79,17 @@
 
 			};
 
-			tscadc-cape-geiger {
-				compatible = "ti-tscadc-dt";
-				adc-channels = <8>;
+			tscadc {
+				compatible = "ti,ti-tscadc";
+				reg = <0x44e0d000 0x1000>;
+
+				interrupt-parent = <&intc>;
+				interrupts = <16>;
+				ti,hwmods = "adc_tsc";
+
+				adc {
+					adc-channels = <8>;
+				};
 			};
 
 			bone-cape-geiger {
