@@ -97,6 +97,16 @@ config PWM_MXS
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-mxs.
 
+config PWM_PCA9685
+	tristate "NXP PCA9685 PWM support"
+	depends on I2C
+	help
+	  Generic PWM framework driver for PCA9685. The PCA9685 has 16
+	  PWM controller.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pca-9685.	
+
 config PWM_PUV3
 	tristate "PKUnity NetBook-0916 PWM support"
 	depends on ARCH_PUV3
