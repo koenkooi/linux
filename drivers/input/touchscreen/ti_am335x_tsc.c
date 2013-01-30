@@ -397,7 +397,7 @@ static int titsc_parse_dt(struct ti_tscadc_dev *tscadc_dev,
 	if (!node)
 		return -EINVAL;
 	else {
-		node = of_find_node_by_name(node, "tsc");
+		node = of_get_child_by_name(node, "tsc");
 		if (!node)
 			return -EINVAL;
 		else {
