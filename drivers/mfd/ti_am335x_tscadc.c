@@ -85,10 +85,10 @@ static	int ti_tscadc_probe(struct platform_device *pdev)
 		if (pdata->adc_init)
 			adc_channels = pdata->adc_init->adc_channels;
 	} else {
-		node = of_find_node_by_name(pdev->dev.of_node, "tsc");
+		node = of_get_child_by_name(pdev->dev.of_node, "tsc");
 		of_property_read_u32(node, "ti,wires", &tsc_wires);
 
-		node = of_find_node_by_name(pdev->dev.of_node, "adc");
+		node = of_get_child_by_name(pdev->dev.of_node, "adc");
 		of_property_read_u32(node, "ti,adc-channels", &adc_channels);
 	}
 
@@ -284,6 +284,7 @@ static const struct dev_pm_ops tscadc_pm_ops = {
 
 static const struct of_device_id ti_tscadc_dt_ids[] = {
 	{ .compatible = "ti,ti-tscadc", },
+	{ }
 };
 
 static struct platform_driver ti_tscadc_driver = {
