@@ -86,9 +86,10 @@
 				interrupt-parent = <&intc>;
 				interrupts = <16>;
 				ti,hwmods = "adc_tsc";
+				status = "okay";
 
 				adc {
-					adc-channels = <8>;
+					ti,adc-channels = <8>;
 				};
 			};
 
