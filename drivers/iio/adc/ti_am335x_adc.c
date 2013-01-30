@@ -210,7 +210,7 @@ static int tiadc_probe(struct platform_device *pdev)
 	if (pdata)
 		adc_dev->channels = pdata->adc_init->adc_channels;
 	else {
-		node = of_find_node_by_name(node, "adc");
+		node = of_get_child_by_name(node, "adc");
 		if (!node)
 			return  -EINVAL;
 		else {
