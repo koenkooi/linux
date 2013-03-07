@@ -1776,6 +1776,7 @@ static int omap_hsmmc_probe(struct platform_device *pdev)
 	const struct of_device_id *match;
 	dma_cap_mask_t mask;
 	unsigned tx_req, rx_req;
+	struct dma_slave_sg_limits *dma_sg_limits;
 	struct pinctrl *pinctrl;
 
 	match = of_match_device(of_match_ptr(omap_mmc_of_match), &pdev->dev);
@@ -1951,6 +1952,13 @@ static int omap_hsmmc_probe(struct platform_device *pdev)
 		ret = -ENXIO;
 		goto err_irq;
 	}
+
+	/* Some DMA Engines only handle a limited number of SG segments */
+	dma_sg_limits = dma_get_slave_sg_limits(host->rx_chan,
+						DMA_SLAVE_BUSWIDTH_4_BYTES,
+						mmc->max_blk_size / 4);
+	if (dma_sg_limits && dma_sg_limits->max_seg_nr)
+		mmc->max_segs = dma_sg_limits->max_seg_nr;
 
 	/* Request IRQ for MMC operations */
 	ret = request_irq(host->irq, omap_hsmmc_irq, 0,
