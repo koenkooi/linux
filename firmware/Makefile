@@ -181,7 +181,8 @@ fw-shipped-$(CONFIG_CAPE_BEAGLEBONE) += \
 	BB-BONE-PRU-01-00A0.dtbo \
 	BB-BONE-PRU-02-00A0.dtbo \
 	BB-BONE-RST-00A0.dtbo \
-	BB-BONE-RST2-00A0.dtbo
+	BB-BONE-RST2-00A0.dtbo \
+	BB-BONE-CAM3-01-00A2.dtbo
 
 # the geiger cape
 fw-shipped-$(CONFIG_CAPE_BEAGLEBONE_GEIGER) += \
