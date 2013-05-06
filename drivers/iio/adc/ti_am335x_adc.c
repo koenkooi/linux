@@ -107,6 +107,7 @@ static int tiadc_channel_init(struct iio_dev *indio_dev,
 		chan->type = IIO_VOLTAGE;
 		chan->indexed = 1;
 		chan->channel = i;
+		chan->info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT;
 		chan->datasheet_name = s;
 		chan->scan_type.sign = 'u';
 		chan->scan_type.realbits = 12;
