@@ -157,26 +157,34 @@ static int tiadc_read_raw(struct iio_dev *indio_dev,
 	int i;
 	unsigned int fifo1count, readx1;
 
-	/*
-	 * When the sub-system is first enabled,
-	 * the sequencer will always start with the
-	 * lowest step (1) and continue until step (16).
-	 * For ex: If we have enabled 4 ADC channels and
-	 * currently use only 1 out of them, the
-	 * sequencer still configures all the 4 steps,
-	 * leading to 3 unwanted data.
-	 * Hence we need to flush out this data.
-	 */
+	switch (mask) {
+	case IIO_CHAN_INFO_RAW:
+		/*
+		 * When the sub-system is first enabled,
+		 * the sequencer will always start with the
+		 * lowest step (1) and continue until step (16).
+		 * For ex: If we have enabled 4 ADC channels and
+		 * currently use only 1 out of them, the
+		 * sequencer still configures all the 4 steps,
+		 * leading to 3 unwanted data.
+		 * Hence we need to flush out this data.
+		 */
 
-	fifo1count = tiadc_readl(adc_dev, REG_FIFO1CNT);
-	for (i = 0; i < fifo1count; i++) {
-		readx1 = tiadc_readl(adc_dev, REG_FIFO1);
-		if (i == chan->channel)
-			*val = readx1 & 0xfff;
+		fifo1count = tiadc_readl(adc_dev, REG_FIFO1CNT);
+		for (i = 0; i < fifo1count; i++) {
+			readx1 = tiadc_readl(adc_dev, REG_FIFO1);
+			if (i == chan->channel)
+				*val = readx1 & 0xfff;
+		}
+		tiadc_writel(adc_dev, REG_SE, STPENB_STEPENB);
+
+		if (fifo1count <= chan->channel)
+			return -EINVAL;
+
+		return IIO_VAL_INT;
+	default:
+		return -EINVAL;
 	}
-	tiadc_writel(adc_dev, REG_SE, STPENB_STEPENB);
-
-	return IIO_VAL_INT;
 }
 
 static const struct iio_info tiadc_info = {
@@ -213,7 +221,7 @@ static int tiadc_probe(struct platform_device *pdev)
 	else {
 		node = of_get_child_by_name(node, "adc");
 		if (!node)
-			return  -EINVAL;
+			return	-EINVAL;
 		else {
 			err = of_property_read_u32(node,
 					"ti,adc-channels", &val32);
@@ -310,7 +318,7 @@ static const struct dev_pm_ops tiadc_pm_ops = {
 
 static struct platform_driver tiadc_driver = {
 	.driver = {
-		.name   = "tiadc",
+		.name	= "tiadc",
 		.owner	= THIS_MODULE,
 		.pm	= TIADC_PM_OPS,
 	},
