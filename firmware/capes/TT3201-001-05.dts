@@ -13,7 +13,7 @@
 / {
         compatible = "ti,beaglebone", "ti,beaglebone-black";
         part-number = "TT3201-001";
-        version = "02";
+        version = "05";
 
         /* state the resources this cape uses */
         exclusive-use =
