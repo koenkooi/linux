@@ -18,8 +18,8 @@
         /* state the resources this cape uses */
         exclusive-use =
                 /* the pin header uses */
-                "P9.27",        /* lcd: gpio3_19 */
-                "P9.25",        /* lcd: gpio3_21 */
+                "P9.27",        /* spi irq: gpio3_19 */
+                "P9.25",        /* spi irq: gpio3_21 */
 		"P9.31",        /* spi: spi1_sclk */
 		"P9.29",        /* spi: spi1_d0 */
 		"P9.30",        /* spi: spi1_d1 */
@@ -65,8 +65,6 @@
                                         0x1ac 0x37      /* mcasp0_ahclkx.gpio3_21, RX_ENABLED | PULLUP | MODE7 */
                                 >;
                         };
-
-
                 };
         };
 
