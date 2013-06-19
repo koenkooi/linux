@@ -76,7 +76,7 @@ int __init davinci_serial_setup_clk(unsigned instance, unsigned int *rate)
 	char name[16];
 	struct clk *clk;
 	struct davinci_soc_info *soc_info = &davinci_soc_info;
-	struct device *dev = &soc_info->serial_dev->dev;
+	struct device *dev = &soc_info->serial_dev[instance].dev;
 
 	sprintf(name, "uart%d", instance);
 	clk = clk_get(dev, name);
@@ -96,17 +96,23 @@ int __init davinci_serial_setup_clk(unsigned instance, unsigned int *rate)
 
 int __init davinci_serial_init(struct davinci_uart_config *info)
 {
-	int i, ret;
+	int i, ret = 0;
 	struct davinci_soc_info *soc_info = &davinci_soc_info;
-	struct device *dev = &soc_info->serial_dev->dev;
-	struct plat_serial8250_port *p = dev->platform_data;
+	struct device *dev;
+	struct plat_serial8250_port *p;
 
 	/*
 	 * Make sure the serial ports are muxed on at this point.
 	 * You have to mux them off in device drivers later on if not needed.
 	 */
-	for (i = 0; p->flags; i++, p++) {
+	for (i = 0; soc_info->serial_dev[i].dev.platform_data != NULL; i++) {
+		dev = &soc_info->serial_dev[i].dev;
+		p = dev->platform_data;
 		if (!(info->enabled_uarts & (1 << i)))
+			continue;
+
+		ret = platform_device_register(&soc_info->serial_dev[i]);
+		if (ret)
 			continue;
 
 		ret = davinci_serial_setup_clk(i, &p->uartclk);
@@ -125,6 +131,5 @@ int __init davinci_serial_init(struct davinci_uart_config *info)
 		if (p->membase && p->type != PORT_AR7)
 			davinci_serial_reset(p);
 	}
-
-	return platform_device_register(soc_info->serial_dev);
+	return ret;
 }
