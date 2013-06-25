@@ -284,8 +284,24 @@ static struct dma_async_tx_descriptor *edma_prep_slave_sg(
 		 */
 		if (burst == 1) {
 			edesc->absync = false;
+			/*
+			 * For the A-sync case, bcnt and ccnt are the remainder
+			 * and quotient respectively of the division of:
+			 * (sg_dma_len(sg) / acnt) by (SZ_64K -1). This is so
+			 * that in case bcnt over flows, we have ccnt to use.
+			 * Note: In A-sync tranfer only, bcntrld is used, but it
+			 * only applies for sg_dma_len(sg) >= SZ_64K.
+			 * In this case, the best way adopted is- bccnt for the
+			 * first frame will be the remainder below. Then for
+			 * every successive frame, bcnt will be SZ_64K-1. This
+			 * is assured as bcntrld = 0xffff in end of function.
+			 */
 			ccnt = sg_dma_len(sg) / acnt / (SZ_64K - 1);
 			bcnt = sg_dma_len(sg) / acnt - ccnt * (SZ_64K - 1);
+			/*
+			 * If bcnt is non-zero, we have a remainder and hence an
+			 * extra frame to transfer, so increment ccnt.
+			 */
 			if (bcnt)
 				ccnt++;
 			else
@@ -343,6 +359,12 @@ static struct dma_async_tx_descriptor *edma_prep_slave_sg(
 
 		edesc->pset[i].a_b_cnt = bcnt << 16 | acnt;
 		edesc->pset[i].ccnt = ccnt;
+		/*
+		 * Only time when (bcntrld) auto reload is required is for
+		 * A-sync case, and in this case, a requirement of reload value
+		 * of SZ_64K-1 only is assured. 'link' is initially set to NULL
+		 * and then later will be populated by edma_execute.
+		 */
 		edesc->pset[i].link_bcntrld = 0xffffffff;
 
 	}
