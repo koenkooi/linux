@@ -266,6 +266,7 @@ struct mcp251x_priv {
 
 	struct workqueue_struct *wq;
 	struct work_struct tx_work;
+	struct work_struct irq_work;
 	struct work_struct restart_work;
 
 	int force_quit;
@@ -817,11 +818,21 @@ static void mcp251x_restart_work_handler(struct work_struct *ws)
 static irqreturn_t mcp251x_can_ist(int irq, void *dev_id)
 {
 	struct mcp251x_priv *priv = dev_id;
+
+	queue_work(priv->wq, &priv->irq_work);
+
+	return IRQ_HANDLED;
+}
+
+static void mcp251x_irq_work_handler(struct work_struct *ws)
+{
+	struct mcp251x_priv *priv = container_of(ws, struct mcp251x_priv, irq_work);
 	struct spi_device *spi = priv->spi;
 	struct net_device *net = priv->net;
 
 	mutex_lock(&priv->mcp_lock);
 	while (!priv->force_quit) {
+
 		enum can_state new_state;
 		u8 intf, eflag;
 		u8 clear_intf = 0;
@@ -957,7 +968,6 @@ static irqreturn_t mcp251x_can_ist(int irq, void *dev_id)
 
 	}
 	mutex_unlock(&priv->mcp_lock);
-	return IRQ_HANDLED;
 }
 
 static int mcp251x_open(struct net_device *net)
@@ -999,6 +1009,7 @@ static int mcp251x_open(struct net_device *net)
 
 	priv->wq = create_freezable_workqueue("mcp251x_wq");
 	INIT_WORK(&priv->tx_work, mcp251x_tx_work_handler);
+	INIT_WORK(&priv->irq_work, mcp251x_irq_work_handler);
 	INIT_WORK(&priv->restart_work, mcp251x_restart_work_handler);
 
 	ret = mcp251x_hw_reset(spi);
