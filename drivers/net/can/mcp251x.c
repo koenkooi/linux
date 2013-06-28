@@ -824,6 +824,88 @@ static irqreturn_t mcp251x_can_ist(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+static void mcp251x_handle_errors(struct net_device *net, u8 eflag, u8 intf)
+{
+	struct mcp251x_priv *priv = netdev_priv(net);
+	enum can_state new_state;
+	int can_id = 0, data1 = 0;
+
+	/* Update can state */
+	if (eflag & EFLG_TXBO) {
+
+		netdev_err(net, "err: bus off\n");
+
+		new_state = CAN_STATE_BUS_OFF;
+		can_id |= CAN_ERR_BUSOFF;
+	} else if (eflag & EFLG_TXEP) {
+
+		netdev_err(net, "err: txep\n");
+
+		new_state = CAN_STATE_ERROR_PASSIVE;
+		can_id |= CAN_ERR_CRTL;
+		data1 |= CAN_ERR_CRTL_TX_PASSIVE;
+
+	} else if (eflag & EFLG_RXEP) {
+
+		netdev_err(net, "err: rxep\n");
+
+		new_state = CAN_STATE_ERROR_PASSIVE;
+		can_id |= CAN_ERR_CRTL;
+		data1 |= CAN_ERR_CRTL_RX_PASSIVE;
+	} else if (eflag & EFLG_TXWAR) {
+
+		netdev_err(net, "err: txwar\n");
+
+		new_state = CAN_STATE_ERROR_WARNING;
+		can_id |= CAN_ERR_CRTL;
+		data1 |= CAN_ERR_CRTL_TX_WARNING;
+	} else if (eflag & EFLG_RXWAR) {
+
+		netdev_err(net, "err: rxwar\n");
+
+		new_state = CAN_STATE_ERROR_WARNING;
+		can_id |= CAN_ERR_CRTL;
+		data1 |= CAN_ERR_CRTL_RX_WARNING;
+	} else {
+		new_state = CAN_STATE_ERROR_ACTIVE;
+	}
+
+	/* Update can state statistics */
+	switch (priv->can.state) {
+	case CAN_STATE_ERROR_ACTIVE:
+		if (new_state >= CAN_STATE_ERROR_WARNING &&
+		    new_state <= CAN_STATE_BUS_OFF)
+			priv->can.can_stats.error_warning++;
+	case CAN_STATE_ERROR_WARNING:	/* fallthrough */
+		if (new_state >= CAN_STATE_ERROR_PASSIVE &&
+		    new_state <= CAN_STATE_BUS_OFF)
+			priv->can.can_stats.error_passive++;
+		break;
+	default:
+		break;
+	}
+
+	priv->can.state = new_state;
+
+	if (intf & CANINTF_ERRIF) {
+		/* Handle overflow counters */
+		if (eflag & (EFLG_RX0OVR | EFLG_RX1OVR)) {
+			if (eflag & EFLG_RX0OVR) {
+				net->stats.rx_over_errors++;
+				net->stats.rx_errors++;
+			}
+			if (eflag & EFLG_RX1OVR) {
+				net->stats.rx_over_errors++;
+				net->stats.rx_errors++;
+			}
+			can_id |= CAN_ERR_CRTL;
+			data1 |= CAN_ERR_CRTL_RX_OVERFLOW;
+		}
+		mcp251x_error_skb(net, can_id, data1);
+	}
+
+}
+
 static void mcp251x_irq_work_handler(struct work_struct *ws)
 {
 	struct mcp251x_priv *priv = container_of(ws, struct mcp251x_priv, irq_work);
@@ -833,10 +915,8 @@ static void mcp251x_irq_work_handler(struct work_struct *ws)
 	mutex_lock(&priv->mcp_lock);
 	while (!priv->force_quit) {
 
-		enum can_state new_state;
 		u8 intf, eflag;
 		u8 clear_intf = 0;
-		int can_id = 0, data1 = 0;
 
 		mcp251x_read_2regs(spi, CANINTF, &intf, &eflag);
 
@@ -845,7 +925,9 @@ static void mcp251x_irq_work_handler(struct work_struct *ws)
 
 		/* receive buffer 0 */
 		if (intf & CANINTF_RX0IF) {
+
 			mcp251x_hw_rx(spi, 0);
+
 			/*
 			 * Free one buffer ASAP
 			 * (The MCP2515 does this automatically.)
@@ -856,100 +938,38 @@ static void mcp251x_irq_work_handler(struct work_struct *ws)
 
 		/* receive buffer 1 */
 		if (intf & CANINTF_RX1IF) {
+
 			mcp251x_hw_rx(spi, 1);
+
 			/* the MCP2515 does this automatically */
 			if (mcp251x_is_2510(spi))
 				clear_intf |= CANINTF_RX1IF;
 		}
 
 		/* any error or tx interrupt we need to clear? */
-		if (intf & (CANINTF_ERR | CANINTF_TX))
+		if (intf & (CANINTF_ERR | CANINTF_TX)) {
 			clear_intf |= intf & (CANINTF_ERR | CANINTF_TX);
+		} else {
+			// everything fine, check if we have something else
+			// to read unless there's something to transmit.
+			if (!work_busy(&priv->tx_work))
+				continue;
+		}
+
 		if (clear_intf)
 			mcp251x_write_bits(spi, CANINTF, clear_intf, 0x00);
 
-		if (eflag)
+		if (eflag) {
 			mcp251x_write_bits(spi, EFLG, eflag, 0x00);
-
-		/* Update can state */
-		if (eflag & EFLG_TXBO) {
-
-			netdev_err(net, "err: bus off\n");
-
-			new_state = CAN_STATE_BUS_OFF;
-			can_id |= CAN_ERR_BUSOFF;
-		} else if (eflag & EFLG_TXEP) {
-
-			netdev_err(net, "err: txep\n");
-
-			new_state = CAN_STATE_ERROR_PASSIVE;
-			can_id |= CAN_ERR_CRTL;
-			data1 |= CAN_ERR_CRTL_TX_PASSIVE;
-
-		} else if (eflag & EFLG_RXEP) {
-
-			netdev_err(net, "err: rxep\n");
-
-			new_state = CAN_STATE_ERROR_PASSIVE;
-			can_id |= CAN_ERR_CRTL;
-			data1 |= CAN_ERR_CRTL_RX_PASSIVE;
-		} else if (eflag & EFLG_TXWAR) {
-
-			netdev_err(net, "err: txwar\n");
-
-			new_state = CAN_STATE_ERROR_WARNING;
-			can_id |= CAN_ERR_CRTL;
-			data1 |= CAN_ERR_CRTL_TX_WARNING;
-		} else if (eflag & EFLG_RXWAR) {
-
-			netdev_err(net, "err: rxwar\n");
-
-			new_state = CAN_STATE_ERROR_WARNING;
-			can_id |= CAN_ERR_CRTL;
-			data1 |= CAN_ERR_CRTL_RX_WARNING;
-		} else {
-			new_state = CAN_STATE_ERROR_ACTIVE;
+			mcp251x_handle_errors(net, eflag, intf);
 		}
 
-		/* Update can state statistics */
-		switch (priv->can.state) {
-		case CAN_STATE_ERROR_ACTIVE:
-			if (new_state >= CAN_STATE_ERROR_WARNING &&
-			    new_state <= CAN_STATE_BUS_OFF)
-				priv->can.can_stats.error_warning++;
-		case CAN_STATE_ERROR_WARNING:	/* fallthrough */
-			if (new_state >= CAN_STATE_ERROR_PASSIVE &&
-			    new_state <= CAN_STATE_BUS_OFF)
-				priv->can.can_stats.error_passive++;
-			break;
-		default:
-			break;
-		}
-		priv->can.state = new_state;
-
-		if (intf & CANINTF_ERRIF) {
-			/* Handle overflow counters */
-			if (eflag & (EFLG_RX0OVR | EFLG_RX1OVR)) {
-				if (eflag & EFLG_RX0OVR) {
-					net->stats.rx_over_errors++;
-					net->stats.rx_errors++;
-				}
-				if (eflag & EFLG_RX1OVR) {
-					net->stats.rx_over_errors++;
-					net->stats.rx_errors++;
-				}
-				can_id |= CAN_ERR_CRTL;
-				data1 |= CAN_ERR_CRTL_RX_OVERFLOW;
-			}
-			mcp251x_error_skb(net, can_id, data1);
-		}
-
+		// we're off the bus!
 		if (priv->can.state == CAN_STATE_BUS_OFF) {
 			if (priv->can.restart_ms == 0) {
 				priv->force_quit = 1;
 				can_bus_off(net);
 				mcp251x_hw_sleep(spi);
-				break;
 			}
 		}
 
