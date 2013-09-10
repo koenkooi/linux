@@ -560,14 +560,30 @@ static int reserve_contiguous_slots(int ctlr, unsigned int id,
 static int prepare_unused_channel_list(struct device *dev, void *data)
 {
 	struct platform_device *pdev = to_platform_device(dev);
-	int i, ctlr;
+	int i = 0, ctlr;
+	u32 dma_chan;
+	const __be32 *dma_chan_p;
+	struct property *prop;
 
-	for (i = 0; i < pdev->num_resources; i++) {
+	if (dev->of_node) {
+		of_property_for_each_u32(dev->of_node, "dmas", prop,
+					 dma_chan_p, dma_chan) {
+			if (i++ & 1) {
+				ctlr = EDMA_CTLR(dma_chan);
+				clear_bit(EDMA_CHAN_SLOT(dma_chan),
+					  edma_cc[ctlr]->edma_unused);
+			}
+		}
+		return 0;
+	}
+
+	/* For non-OF case */
+	for (; i < pdev->num_resources; i++) {
 		if ((pdev->resource[i].flags & IORESOURCE_DMA) &&
 				(int)pdev->resource[i].start >= 0) {
 			ctlr = EDMA_CTLR(pdev->resource[i].start);
 			clear_bit(EDMA_CHAN_SLOT(pdev->resource[i].start),
-					edma_cc[ctlr]->edma_unused);
+				  edma_cc[ctlr]->edma_unused);
 		}
 	}
 
