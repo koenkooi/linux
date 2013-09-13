@@ -155,8 +155,11 @@ void xhci_ring_free(struct xhci_hcd *xhci, struct xhci_ring *ring)
 	if (!ring)
 		return;
 
-	if (ring->first_seg)
+	if (ring->first_seg) {
+		if (ring->type == TYPE_STREAM)
+			xhci_update_stream_ring(ring, false);
 		xhci_free_segments_for_ring(xhci, ring->first_seg);
+	}
 
 	kfree(ring);
 }
@@ -353,6 +356,11 @@ int xhci_ring_expansion(struct xhci_hcd *xhci, struct xhci_ring *ring,
 			"ring expansion succeed, now has %d segments",
 			ring->num_segs);
 
+	if (ring->type == TYPE_STREAM) {
+		ret = xhci_update_stream_ring(ring, true);
+		WARN_ON(ret); /* FIXME */
+	}
+
 	return 0;
 }
 
@@ -540,6 +548,35 @@ struct xhci_ring *xhci_stream_id_to_ring(
  * extended systems (where the DMA address can be bigger than 32-bits),
  * if we allow the PCI dma mask to be bigger than 32-bits.  So don't do that.
  */
+
+int xhci_update_stream_ring(struct xhci_ring *ring, bool insert)
+{
+	struct xhci_segment *seg;
+	unsigned long key;
+	bool present;
+	int ret;
+
+	if (WARN_ON_ONCE(ring->trb_address_map == NULL))
+		return 0;
+
+	seg = ring->first_seg;
+	do {
+		key = (unsigned long)(seg->dma >> TRB_SEGMENT_SHIFT);
+		present = radix_tree_lookup(ring->trb_address_map, key) != NULL;
+		if (!present && insert) {
+			ret = radix_tree_insert(ring->trb_address_map,
+						key, ring);
+			if (ret)
+				return ret;
+		}
+		if (present && !insert)
+			radix_tree_delete(ring->trb_address_map, key);
+		seg = seg->next;
+	} while (seg != ring->first_seg);
+
+	return 0;
+}
+
 struct xhci_stream_info *xhci_alloc_stream_info(struct xhci_hcd *xhci,
 		unsigned int num_stream_ctxs,
 		unsigned int num_streams, gfp_t mem_flags)
@@ -547,7 +584,6 @@ struct xhci_stream_info *xhci_alloc_stream_info(struct xhci_hcd *xhci,
 	struct xhci_stream_info *stream_info;
 	u32 cur_stream;
 	struct xhci_ring *cur_ring;
-	unsigned long key;
 	u64 addr;
 	int ret;
 
@@ -602,6 +638,7 @@ struct xhci_stream_info *xhci_alloc_stream_info(struct xhci_hcd *xhci,
 		if (!cur_ring)
 			goto cleanup_rings;
 		cur_ring->stream_id = cur_stream;
+		cur_ring->trb_address_map = &stream_info->trb_address_map;
 		/* Set deq ptr, cycle bit, and stream context type */
 		addr = cur_ring->first_seg->dma |
 			SCT_FOR_CTX(SCT_PRI_TR) |
@@ -611,10 +648,7 @@ struct xhci_stream_info *xhci_alloc_stream_info(struct xhci_hcd *xhci,
 		xhci_dbg(xhci, "Setting stream %d ring ptr to 0x%08llx\n",
 				cur_stream, (unsigned long long) addr);
 
-		key = (unsigned long)
-			(cur_ring->first_seg->dma >> TRB_SEGMENT_SHIFT);
-		ret = radix_tree_insert(&stream_info->trb_address_map,
-				key, cur_ring);
+		ret = xhci_update_stream_ring(cur_ring, true);
 		if (ret) {
 			xhci_ring_free(xhci, cur_ring);
 			stream_info->stream_rings[cur_stream] = NULL;
@@ -634,9 +668,6 @@ cleanup_rings:
 	for (cur_stream = 1; cur_stream < num_streams; cur_stream++) {
 		cur_ring = stream_info->stream_rings[cur_stream];
 		if (cur_ring) {
-			addr = cur_ring->first_seg->dma;
-			radix_tree_delete(&stream_info->trb_address_map,
-					addr >> TRB_SEGMENT_SHIFT);
 			xhci_ring_free(xhci, cur_ring);
 			stream_info->stream_rings[cur_stream] = NULL;
 		}
@@ -697,7 +728,6 @@ void xhci_free_stream_info(struct xhci_hcd *xhci,
 {
 	int cur_stream;
 	struct xhci_ring *cur_ring;
-	dma_addr_t addr;
 
 	if (!stream_info)
 		return;
@@ -706,9 +736,6 @@ void xhci_free_stream_info(struct xhci_hcd *xhci,
 			cur_stream++) {
 		cur_ring = stream_info->stream_rings[cur_stream];
 		if (cur_ring) {
-			addr = cur_ring->first_seg->dma;
-			radix_tree_delete(&stream_info->trb_address_map,
-					addr >> TRB_SEGMENT_SHIFT);
 			xhci_ring_free(xhci, cur_ring);
 			stream_info->stream_rings[cur_stream] = NULL;
 		}
