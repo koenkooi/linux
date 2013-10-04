@@ -68,6 +68,16 @@ config CAN_TI_HECC
 	  Driver for TI HECC (High End CAN Controller) module found on many
 	  TI devices. The device specifications are available from www.ti.com
 
+config CAN_MCP2515
+	tristate "Microchip MCP2515 SPI CAN controller"
+	depends on SPI
+	select CAN_DEV
+	help
+	Driver for the Microchip MCP2515 SPI CAN controllers.
+	This is a new driver that uses the asynchronous SPI API directly,
+	eliminating the overhead of threads, work queues and synchronous SPI
+	wrappers, thus reducing SPI transactions latency to a minimum.
+
 config CAN_MCP251X
 	tristate "Microchip MCP251x SPI CAN controllers"
 	depends on CAN_DEV && SPI && HAS_DMA
