@@ -61,11 +61,6 @@
 #include <linux/of_gpio.h>
 #include <linux/pinctrl/consumer.h>
 
-
-MODULE_DESCRIPTION("Driver for Microchip MCP2515 SPI CAN controller");
-MODULE_AUTHOR("Andre B. Oliveira <anbadeol@gmail.com>");
-MODULE_LICENSE("GPL");
-
 /* Registers */
 #define CANCTRL		0x0f
 #define CANCTRL_REQOP_MASK		0xe0
@@ -862,6 +857,13 @@ static int mcp2515_remove(struct spi_device *spi)
 	return 0;
 }
 
+static const struct spi_device_id mcp2515_id_table[] = {
+        { "mcp2515" },
+        { },
+};
+
+MODULE_DEVICE_TABLE(spi, mcp2515_id_table);
+
 static struct spi_driver mcp2515_driver = {
 
 	.driver = {
@@ -887,6 +889,6 @@ static void __exit mcp2515_exit(void)
 module_init(mcp2515_init);
 module_exit(mcp2515_exit);
 
-MODULE_DESCRIPTION("Driver for Microchip MCP2515 SPI CAN controller");
 MODULE_AUTHOR("Andre B. Oliveira <anbadeol@gmail.com>");
+MODULE_DESCRIPTION("Driver for Microchip MCP2515 SPI CAN controller");
 MODULE_LICENSE("GPL v2");
