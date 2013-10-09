@@ -1192,6 +1192,7 @@ static int proc_do_submiturb(struct dev_state *ps, struct usbdevfs_urb *uurb,
 	struct usb_ctrlrequest *dr = NULL;
 	unsigned int u, totlen, isofrmlen;
 	int i, ret, is_in, num_sgs = 0, ifnum = -1;
+	int number_of_packets = 0;
 	void *buf;
 
 	if (uurb->flags & ~(USBDEVFS_URB_ISO_ASAP |
@@ -1245,7 +1246,6 @@ static int proc_do_submiturb(struct dev_state *ps, struct usbdevfs_urb *uurb,
 				      le16_to_cpup(&dr->wIndex));
 		if (ret)
 			goto error;
-		uurb->number_of_packets = 0;
 		uurb->buffer_length = le16_to_cpup(&dr->wLength);
 		uurb->buffer += 8;
 		if ((dr->bRequestType & USB_DIR_IN) && uurb->buffer_length) {
@@ -1275,7 +1275,6 @@ static int proc_do_submiturb(struct dev_state *ps, struct usbdevfs_urb *uurb,
 			uurb->type = USBDEVFS_URB_TYPE_INTERRUPT;
 			goto interrupt_urb;
 		}
-		uurb->number_of_packets = 0;
 		num_sgs = DIV_ROUND_UP(uurb->buffer_length, USB_SG_SIZE);
 		if (num_sgs == 1 || num_sgs > ps->dev->bus->sg_tablesize)
 			num_sgs = 0;
@@ -1285,7 +1284,6 @@ static int proc_do_submiturb(struct dev_state *ps, struct usbdevfs_urb *uurb,
 		if (!usb_endpoint_xfer_int(&ep->desc))
 			return -EINVAL;
  interrupt_urb:
-		uurb->number_of_packets = 0;
 		break;
 
 	case USBDEVFS_URB_TYPE_ISO:
@@ -1295,15 +1293,16 @@ static int proc_do_submiturb(struct dev_state *ps, struct usbdevfs_urb *uurb,
 			return -EINVAL;
 		if (!usb_endpoint_xfer_isoc(&ep->desc))
 			return -EINVAL;
+		number_of_packets = uurb->number_of_packets;
 		isofrmlen = sizeof(struct usbdevfs_iso_packet_desc) *
-				   uurb->number_of_packets;
+				   number_of_packets;
 		if (!(isopkt = kmalloc(isofrmlen, GFP_KERNEL)))
 			return -ENOMEM;
 		if (copy_from_user(isopkt, iso_frame_desc, isofrmlen)) {
 			ret = -EFAULT;
 			goto error;
 		}
-		for (totlen = u = 0; u < uurb->number_of_packets; u++) {
+		for (totlen = u = 0; u < number_of_packets; u++) {
 			/*
 			 * arbitrary limit need for USB 3.0
 			 * bMaxBurst (0~15 allowed, 1~16 packets)
@@ -1334,7 +1333,7 @@ static int proc_do_submiturb(struct dev_state *ps, struct usbdevfs_urb *uurb,
 		ret = -EFAULT;
 		goto error;
 	}
-	as = alloc_async(uurb->number_of_packets);
+	as = alloc_async(number_of_packets);
 	if (!as) {
 		ret = -ENOMEM;
 		goto error;
@@ -1428,7 +1427,7 @@ static int proc_do_submiturb(struct dev_state *ps, struct usbdevfs_urb *uurb,
 	as->urb->setup_packet = (unsigned char *)dr;
 	dr = NULL;
 	as->urb->start_frame = uurb->start_frame;
-	as->urb->number_of_packets = uurb->number_of_packets;
+	as->urb->number_of_packets = number_of_packets;
 	if (uurb->type == USBDEVFS_URB_TYPE_ISO ||
 			ps->dev->speed == USB_SPEED_HIGH)
 		as->urb->interval = 1 << min(15, ep->desc.bInterval - 1);
@@ -1436,7 +1435,7 @@ static int proc_do_submiturb(struct dev_state *ps, struct usbdevfs_urb *uurb,
 		as->urb->interval = ep->desc.bInterval;
 	as->urb->context = as;
 	as->urb->complete = async_completed;
-	for (totlen = u = 0; u < uurb->number_of_packets; u++) {
+	for (totlen = u = 0; u < number_of_packets; u++) {
 		as->urb->iso_frame_desc[u].offset = totlen;
 		as->urb->iso_frame_desc[u].length = isopkt[u].length;
 		totlen += isopkt[u].length;
