@@ -1415,7 +1415,6 @@ static struct ctl_table vm_table[] = {
 		.extra1		= &zero,
 	},
 #endif
-#ifdef CONFIG_HIGHMEM
 	{
 		.procname	= "highmem_is_dirtyable",
 		.data		= &vm_highmem_is_dirtyable,
@@ -1425,7 +1424,6 @@ static struct ctl_table vm_table[] = {
 		.extra1		= &zero,
 		.extra2		= &one,
 	},
-#endif
 	{
 		.procname	= "scan_unevictable_pages",
 		.data		= &scan_unevictable_pages,

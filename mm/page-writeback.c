@@ -241,8 +241,13 @@ static unsigned long global_dirtyable_memory(void)
 	x = global_page_state(NR_FREE_PAGES) + global_reclaimable_pages();
 	x -= min(x, dirty_balance_reserve);
 
-	if (!vm_highmem_is_dirtyable)
+	if (!vm_highmem_is_dirtyable) {
+		const unsigned long GB_pages = 1024*1024*1024 / PAGE_SIZE;
+
 		x -= highmem_dirtyable_memory(x);
+		if (x > GB_pages)
+			x = GB_pages;
+	}
 
 	return x + 1;	/* Ensure that we never return 0 */
 }
