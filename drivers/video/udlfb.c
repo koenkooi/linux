@@ -573,7 +573,7 @@ static int dlfb_render_hline(struct dlfb_data *dev, struct urb **urb_ptr,
 	return 0;
 }
 
-static int dlfb_handle_damage(struct dlfb_data *dev, int x, int y,
+static int dlfb_handle_damage_queued(struct dlfb_data *dev, int x, int y,
 	       int width, int height, char *data)
 {
 	int i, ret;
@@ -632,6 +632,44 @@ error:
 		   &dev->cpu_kcycles_used);
 
 	return 0;
+}
+
+struct dlfb_handle_damage_work {
+	struct work_struct my_work;
+	struct dlfb_data *dev;
+	char *data;
+	int x, y, width, height;
+};
+
+static void dlfb_handle_damage_work(struct work_struct *work)
+{
+	struct dlfb_handle_damage_work *my_work =
+		(struct dlfb_handle_damage_work *)work;
+
+	dlfb_handle_damage_queued(my_work->dev, my_work->x, my_work->y,
+			my_work->width, my_work->height, my_work->data);
+	kfree(work);
+	return;
+}
+
+void dlfb_handle_damage(struct dlfb_data *dev, int x, int y,
+	       int width, int height, char *data)
+{
+	struct dlfb_handle_damage_work *work =
+		kmalloc(sizeof(struct dlfb_handle_damage_work), GFP_KERNEL);
+
+	if (!work) {
+		pr_err("unable to allocate work\n");
+		return;
+	}
+	INIT_WORK((struct work_struct *)work, dlfb_handle_damage_work);
+	work->dev = dev;
+	work->x = x;
+	work->y = y;
+	work->width = width;
+	work->height = height;
+	work->data = data;
+	queue_work(dev->handle_damage_wq, (struct work_struct *)work);
 }
 
 /*
@@ -948,6 +986,9 @@ static void dlfb_free_framebuffer(struct dlfb_data *dev)
 		int node = info->node;
 
 		unregister_framebuffer(info);
+
+		if (dev->handle_damage_wq)
+			destroy_workqueue(dev->handle_damage_wq);
 
 		if (info->cmap.len != 0)
 			fb_dealloc_cmap(&info->cmap);
@@ -1695,6 +1736,13 @@ static void dlfb_init_framebuffer_work(struct work_struct *work)
 	retval = dlfb_setup_modes(dev, info, NULL, 0);
 	if (retval != 0) {
 		pr_err("unable to find common mode for display and adapter\n");
+		goto error;
+	}
+
+	dev->handle_damage_wq = alloc_workqueue("udlfb_damage",
+						WQ_MEM_RECLAIM, 0);
+	if (dev->handle_damage_wq == NULL) {
+		pr_err("unable to allocate workqueue\n");
 		goto error;
 	}
 
