@@ -93,7 +93,7 @@
 
 	tfp410: encoder@0 {
 		compatible = "ti,tfp410";
-		powerdown-gpios = <&twl_gpio 2 GPIO_ACTIVE_LOW>;
+		/* powerdown-gpios = <&twl_gpio 2 GPIO_ACTIVE_LOW>; */
 
 		/* XXX pinctrl from twl */
 
