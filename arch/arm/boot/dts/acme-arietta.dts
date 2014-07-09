@@ -16,9 +16,6 @@
 		serial5 = &uart0;
 		serial6 = &uart1;
 	};
-	chosen {
-		bootargs = "console=ttyS0,115200 root=/dev/mmcblk0p2 rw rootwait";
-	};
 	memory {
 		reg = <0x20000000 0x8000000>;
 	};
