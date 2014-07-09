@@ -122,4 +122,14 @@
 			linux,default-trigger = "heartbeat";
 		};
 	};
+	keys {
+		compatible = "gpio-keys";
+		arietta_key {
+			label = "arietta_key";
+			gpios = <&pioC 17 GPIO_ACTIVE_LOW>; /* PC17 */
+			linux,code = <116>; /* this is the key power button defined in Linux input.h */
+			linux,input-type = <1>; /* EV_KEY */
+			gpio-key,wakeup;
+		};
+	};
 };
