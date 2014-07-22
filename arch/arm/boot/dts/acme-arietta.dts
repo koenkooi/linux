@@ -72,7 +72,7 @@
                                 	compatible = "adafruit,tft-lcd-1.8-green", "sitronix,st7735";
                                 	reg = <0>;
 
-                                	spi-max-frequency = <16000000>;
+                                	spi-max-frequency = <24000000>;
                                 	spi-cpol;
                                 	spi-cpha;
 
