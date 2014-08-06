@@ -120,8 +120,6 @@
 
 		digital;
 
-		ddc-i2c-bus = <&i2c3>;
-
 		port {
 			dvi_connector_in: endpoint {
 				remote-endpoint = <&tfp410_out>;
