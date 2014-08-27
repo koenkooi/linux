@@ -66,6 +66,7 @@
 				cs-gpios = <&pioA 8 0>, <&pioA 0 0>, <&pioA 31 0>, <&pioA 30 0>;
 				
 				lcd@0 {
+					status = "disabled";
                                 	#address-cells = <1>;
                                 	#size-cells = <0>;
 
