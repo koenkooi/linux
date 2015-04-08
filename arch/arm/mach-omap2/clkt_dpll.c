@@ -52,6 +52,14 @@
 #define DPLL_FINT_UNDERFLOW		-1
 #define DPLL_FINT_INVALID		-2
 
+/* copied from clock3xxx.c */
+/*
+ * DPLL5_FREQ_FOR_USBHOST: USBHOST and USBTLL are the only clocks
+ * that are sourced by DPLL5, and both of these require this clock
+ * to be at 120 MHz for proper operation.
+ */
+#define DPLL5_FREQ_FOR_USBHOST		120000000
+
 /* Private functions */
 
 /*
@@ -368,3 +376,62 @@ long omap2_dpll_round_rate(struct clk_hw *hw, unsigned long target_rate,
 	return dd->last_rounded_rate;
 }
 
+struct sprz319e_2_1_values {
+	unsigned long sys_clk_rate;
+	int m, n, div120m;
+};
+
+/**
+ * omap2_dpll5_round_rate - round a target rate for OMAP DPLL5
+ * according to DM37xx sprz319e 2.1 erratum
+ *
+ * @clk: struct clk * for a DPLL (presumably DPLL5)
+ * @target_rate: desired DPLL clock rate
+ *
+ * The erratum applies only for DM37xx, desired clock rates of
+ * div120m times 120 MHz and specified sys_clks.
+ */
+long omap2_dpll5_round_rate(struct clk_hw *hw, unsigned long target_rate,
+		unsigned long *parent_rate)
+{
+	struct clk_hw_omap *clk = to_clk_hw_omap(hw);
+	struct dpll_data *dd;
+	const char *clk_name;
+	int i;
+
+	/* erratum tables */
+	const struct sprz319e_2_1_values sprz319e_2_1_table[] = {
+		/* table 35 */
+		{ 12000000,  80,  0, 8 },
+		{ 19200000,  50,  0, 8 },
+		{ 38400000,  25,  0, 8 },
+		/* table 36 */
+		{ 13000000, 443,  5, 8 },
+		{ 26000000, 443, 11, 8 },
+	};
+
+	if (!clk || !clk->dpll_data)
+		return ~0;
+
+	dd = clk->dpll_data;
+
+	clk_name = __clk_get_name(hw->clk);
+
+	for (i = 0; i < (sizeof(sprz319e_2_1_table)/sizeof(struct sprz319e_2_1_values)); i++) {
+		const struct sprz319e_2_1_values *v = &sprz319e_2_1_table[i];
+
+		if (*parent_rate == v->sys_clk_rate &&
+			target_rate == DPLL5_FREQ_FOR_USBHOST * v->div120m) {
+
+			pr_info("clock: dpll5: Applying SPRZ319E 2.1: %8lu, %3d, %3d, %3d\n",
+				v->sys_clk_rate, v->m, v->n, v->div120m);
+
+			dd->last_rounded_m = v->m;
+			dd->last_rounded_n = v->n + 1;
+			dd->last_rounded_rate = v->sys_clk_rate * v->m / (v->n + 1);
+
+			return dd->last_rounded_rate;
+		}
+	}
+	return target_rate;
+}

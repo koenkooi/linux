@@ -501,6 +501,35 @@ long omap3_noncore_dpll_determine_rate(struct clk_hw *hw, unsigned long rate,
 	return rate;
 }
 
+long omap3630_noncore_dpll_determine_rate(struct clk_hw *hw, unsigned long rate,
+				       unsigned long min_rate,
+				       unsigned long max_rate,
+				       unsigned long *best_parent_rate,
+				       struct clk_hw **best_parent_clk)
+{
+	struct clk_hw_omap *clk = to_clk_hw_omap(hw);
+	struct dpll_data *dd;
+
+	if (!hw || !rate)
+		return -EINVAL;
+
+	dd = clk->dpll_data;
+	if (!dd)
+		return -EINVAL;
+
+	if (__clk_get_rate(dd->clk_bypass) == rate &&
+	    (dd->modes & (1 << DPLL_LOW_POWER_BYPASS))) {
+		*best_parent_clk = __clk_get_hw(dd->clk_bypass);
+	} else {
+		rate = omap2_dpll5_round_rate(hw, rate, best_parent_rate);
+		*best_parent_clk = __clk_get_hw(dd->clk_ref);
+	}
+
+	*best_parent_rate = rate;
+
+	return rate;
+}
+
 /**
  * omap3_noncore_dpll_set_parent - set parent for a DPLL clock
  * @hw: pointer to the clock to set parent for

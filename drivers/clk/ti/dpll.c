@@ -23,6 +23,8 @@
 #include <linux/clk/ti.h>
 #include "clock.h"
 
+static u8 omap3630_dpll_usb_clock_errata = 0;
+
 #undef pr_fmt
 #define pr_fmt(fmt) "%s: " fmt, __func__
 
@@ -113,6 +115,18 @@ static const struct clk_ops omap3_dpll_ck_ops = {
 	.round_rate	= &omap2_dpll_round_rate,
 };
 
+static const struct clk_ops omap3_dpll_ck_ops_3630 = {
+	.enable		= &omap3_noncore_dpll_enable,
+	.disable	= &omap3_noncore_dpll_disable,
+	.get_parent	= &omap2_init_dpll_parent,
+	.recalc_rate	= &omap3_dpll_recalc,
+	.set_rate	= &omap3_noncore_dpll_set_rate,
+	.set_parent	= &omap3_noncore_dpll_set_parent,
+	.set_rate_and_parent	= &omap3_noncore_dpll_set_rate_and_parent,
+	.determine_rate	= &omap3630_noncore_dpll_determine_rate,
+	.round_rate	= &omap2_dpll5_round_rate,
+};
+
 static const struct clk_ops omap3_dpll_per_ck_ops = {
 	.enable		= &omap3_noncore_dpll_enable,
 	.disable	= &omap3_noncore_dpll_disable,
@@ -123,6 +137,18 @@ static const struct clk_ops omap3_dpll_per_ck_ops = {
 	.set_rate_and_parent	= &omap3_dpll4_set_rate_and_parent,
 	.determine_rate	= &omap3_noncore_dpll_determine_rate,
 	.round_rate	= &omap2_dpll_round_rate,
+};
+
+static const struct clk_ops omap3_dpll_per_ck_ops_3630 = {
+	.enable		= &omap3_noncore_dpll_enable,
+	.disable	= &omap3_noncore_dpll_disable,
+	.get_parent	= &omap2_init_dpll_parent,
+	.recalc_rate	= &omap3_dpll_recalc,
+	.set_rate	= &omap3_dpll4_set_rate,
+	.set_parent	= &omap3_noncore_dpll_set_parent,
+	.set_rate_and_parent	= &omap3_dpll4_set_rate_and_parent,
+	.determine_rate	= &omap3630_noncore_dpll_determine_rate,
+	.round_rate	= &omap2_dpll5_round_rate,
 };
 #endif
 
@@ -201,6 +227,10 @@ struct clk *ti_clk_register_dpll(struct ti_clk *setup)
 	struct clk *clk_ref;
 	struct clk *clk_bypass;
 
+	if (omap3630_dpll_usb_clock_errata) {
+		ops = &omap3_dpll_ck_ops_3630;
+	}
+
 	dpll = setup->data;
 
 	if (dpll->num_parents < 2)
@@ -256,8 +286,17 @@ struct clk *ti_clk_register_dpll(struct ti_clk *setup)
 	if (dpll->flags & CLKF_CORE)
 		ops = &omap3_dpll_core_ck_ops;
 
-	if (dpll->flags & CLKF_PER)
-		ops = &omap3_dpll_per_ck_ops;
+	if (omap3630_dpll_usb_clock_errata) {
+
+		if (dpll->flags & CLKF_PER)
+			ops = &omap3_dpll_per_ck_ops_3630;
+
+	} else {
+
+		if (dpll->flags & CLKF_PER)
+			ops = &omap3_dpll_per_ck_ops;
+
+	}
 
 	if (dpll->flags & CLKF_J_TYPE)
 		dd->flags |= DPLL_J_TYPE;
@@ -414,6 +453,11 @@ static void __init of_ti_dpll_setup(struct device_node *node,
 	if (of_property_read_bool(node, "ti,lock"))
 		dpll_mode |= 1 << DPLL_LOCKED;
 
+	if (of_property_read_bool(node, "ti,omap3630-dpll-usb-clock-errata")){
+		omap3630_dpll_usb_clock_errata = 1;
+		pr_info("clock: omap3630-dpll-usb-clock-errata\n");
+	}
+
 	if (dpll_mode)
 		dd->modes = dpll_mode;
 
@@ -462,7 +506,11 @@ static void __init of_ti_omap3_dpll_setup(struct device_node *node)
 		.modes = (1 << DPLL_LOW_POWER_BYPASS) | (1 << DPLL_LOCKED),
 	};
 
-	of_ti_dpll_setup(node, &omap3_dpll_ck_ops, &dd);
+	if (omap3630_dpll_usb_clock_errata) {
+		of_ti_dpll_setup(node, &omap3_dpll_ck_ops_3630, &dd);
+	} else {
+		of_ti_dpll_setup(node, &omap3_dpll_ck_ops, &dd);
+	}
 }
 CLK_OF_DECLARE(ti_omap3_dpll_clock, "ti,omap3-dpll-clock",
 	       of_ti_omap3_dpll_setup);
@@ -501,7 +549,11 @@ static void __init of_ti_omap3_per_dpll_setup(struct device_node *node)
 		.modes = (1 << DPLL_LOW_POWER_STOP) | (1 << DPLL_LOCKED),
 	};
 
-	of_ti_dpll_setup(node, &omap3_dpll_per_ck_ops, &dd);
+	if (omap3630_dpll_usb_clock_errata) {
+		of_ti_dpll_setup(node, &omap3_dpll_per_ck_ops_3630, &dd);
+	} else {
+		of_ti_dpll_setup(node, &omap3_dpll_per_ck_ops, &dd);
+	}
 }
 CLK_OF_DECLARE(ti_omap3_per_dpll_clock, "ti,omap3-dpll-per-clock",
 	       of_ti_omap3_per_dpll_setup);
@@ -523,7 +575,11 @@ static void __init of_ti_omap3_per_jtype_dpll_setup(struct device_node *node)
 		.modes = (1 << DPLL_LOW_POWER_STOP) | (1 << DPLL_LOCKED),
 	};
 
-	of_ti_dpll_setup(node, &omap3_dpll_per_ck_ops, &dd);
+	if (omap3630_dpll_usb_clock_errata) {
+		of_ti_dpll_setup(node, &omap3_dpll_per_ck_ops_3630, &dd);
+	} else {
+		of_ti_dpll_setup(node, &omap3_dpll_per_ck_ops, &dd);
+	}
 }
 CLK_OF_DECLARE(ti_omap3_per_jtype_dpll_clock, "ti,omap3-dpll-per-j-type-clock",
 	       of_ti_omap3_per_jtype_dpll_setup);
