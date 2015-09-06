@@ -382,6 +382,7 @@ static void bfq_pd_init(struct blkcg_gq *blkg)
 				   */
 	bfqg->bfqd = bfqd;
 	bfqg->active_entities = 0;
+	bfqg->rq_pos_tree = RB_ROOT;
 
 	/* if the root_group does not exist, we are handling it right now */
 	if (bfqd->root_group && bfqg != bfqd->root_group)
@@ -484,6 +485,8 @@ static struct bfq_group *bfq_find_alloc_group(struct bfq_data *bfqd,
 	return bfqg;
 }
 
+static void bfq_pos_tree_add_move(struct bfq_data *bfqd, struct bfq_queue *bfqq);
+
 /**
  * bfq_bfqq_move - migrate @bfqq to @bfqg.
  * @bfqd: queue descriptor.
@@ -531,6 +534,7 @@ static void bfq_bfqq_move(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 	bfqg_get(bfqg);
 
 	if (busy) {
+		bfq_pos_tree_add_move(bfqd, bfqq);
 		if (resume)
 			bfq_activate_bfqq(bfqd, bfqq);
 	}
