@@ -6803,6 +6803,12 @@ static noinline int uncompress_inline(struct btrfs_path *path,
 	max_size = min_t(unsigned long, PAGE_SIZE, max_size);
 	ret = btrfs_decompress(compress_type, tmp, page,
 			       extent_offset, inline_size, max_size);
+	WARN_ON(max_size > PAGE_SIZE);
+	if (max_size < PAGE_SIZE) {
+		char *map = kmap(page);
+		memset(map + max_size, 0, PAGE_SIZE - max_size);
+		kunmap(page);
+	}
 	kfree(tmp);
 	return ret;
 }
