@@ -125,7 +125,8 @@ static bool bfq_update_next_in_service(struct bfq_sched_data *sd,
 	if (next_in_service) {
 		parent_sched_may_change = !sd->next_in_service ||
 			bfq_update_parent_budget(next_in_service);
-	}
+	} else
+		parent_sched_may_change = sd->next_in_service;
 
 	sd->next_in_service = next_in_service;
 
@@ -1301,7 +1302,7 @@ static void bfq_deactivate_entity(struct bfq_entity *entity,
 				  bool expiration)
 {
 	struct bfq_sched_data *sd;
-	struct bfq_entity *parent;
+	struct bfq_entity *parent = NULL;
 
 	for_each_entity_safe(entity, parent) {
 		sd = entity->sched_data;
@@ -1842,12 +1843,65 @@ static void __bfq_bfqd_reset_in_service(struct bfq_data *bfqd)
 		entity->sched_data->in_service_entity = NULL;
 }
 
+static void set_next_in_service_bfqq(struct bfq_data *bfqd)
+{
+	struct bfq_entity *entity = NULL;
+	struct bfq_queue *bfqq;
+	struct bfq_sched_data *sd = &bfqd->root_group->sched_data;
+
+	BUG_ON(!sd);
+
+	/* Traverse the path from the root to the in-service leaf entity */
+	for (; sd ; sd = entity->my_sched_data) {
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
+		if (entity) {
+			struct bfq_group *bfqg =
+				container_of(entity, struct bfq_group, entity);
+
+			bfq_log_bfqg(bfqd, bfqg,
+			"set_next_in_service_bfqq: lookup in this group");
+		} else
+			bfq_log_bfqg(bfqd, bfqd->root_group,
+			"set_next_in_service_bfqq: lookup in root group");
+#endif
+
+		entity = sd->next_in_service;
+
+		if (!entity) {
+			bfqd->next_in_service_queue = NULL;
+			return;
+		}
+
+		/* Log some information */
+		bfqq = bfq_entity_to_bfqq(entity);
+		if (bfqq)
+			bfq_log_bfqq(bfqd, bfqq,
+			"set_next_in_service_bfqq: this queue, finish %llu",
+				(((entity->finish>>10)*1000)>>10)>>2);
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
+		else {
+			struct bfq_group *bfqg =
+				container_of(entity, struct bfq_group, entity);
+
+			bfq_log_bfqg(bfqd, bfqg,
+			"set_next_in_service_bfqq: this entity, finish %llu",
+				(((entity->finish>>10)*1000)>>10)>>2);
+		}
+#endif
+
+	}
+	BUG_ON(!bfq_entity_to_bfqq(entity));
+
+	bfqd->next_in_service_queue = bfq_entity_to_bfqq(entity);
+}
+
 static void bfq_deactivate_bfqq(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 				bool ins_into_idle_tree, bool expiration)
 {
 	struct bfq_entity *entity = &bfqq->entity;
 
 	bfq_deactivate_entity(entity, ins_into_idle_tree, expiration);
+	set_next_in_service_bfqq(bfqd);
 }
 
 static void bfq_activate_bfqq(struct bfq_data *bfqd, struct bfq_queue *bfqq)
@@ -1862,6 +1916,7 @@ static void bfq_activate_bfqq(struct bfq_data *bfqd, struct bfq_queue *bfqq)
 	bfq_activate_requeue_entity(entity, bfq_bfqq_non_blocking_wait_rq(bfqq),
 				    false);
 	bfq_clear_bfqq_non_blocking_wait_rq(bfqq);
+	set_next_in_service_bfqq(bfqd);
 }
 
 static void bfq_requeue_bfqq(struct bfq_data *bfqd, struct bfq_queue *bfqq)
@@ -1870,6 +1925,7 @@ static void bfq_requeue_bfqq(struct bfq_data *bfqd, struct bfq_queue *bfqq)
 
 	bfq_activate_requeue_entity(entity, false,
 				    bfqq == bfqd->in_service_queue);
+	set_next_in_service_bfqq(bfqd);
 }
 
 static void bfqg_stats_update_dequeue(struct bfq_group *bfqg);
