@@ -132,7 +132,7 @@ static void meson_crtc_atomic_disable(struct drm_crtc *crtc,
 			    VPP_VD1_PREBLEND | VPP_POSTBLEND_ENABLE, 0,
 			    priv->io_base + _REG(VPP_MISC));
 
-	if (crtc->state->event && !crtc->state->active) {
+	if (crtc->state->event) {
 		spin_lock_irq(&crtc->dev->event_lock);
 		drm_crtc_send_vblank_event(crtc, crtc->state->event);
 		spin_unlock_irq(&crtc->dev->event_lock);
