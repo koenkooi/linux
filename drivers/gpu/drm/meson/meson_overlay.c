@@ -276,6 +276,8 @@ static void meson_overlay_setup_scaler_params(struct meson_drm *priv,
 
 	priv->viu.vpp_postblend_vd1_h_start_end = VD_H_START(hsc_startp) |
 						  VD_H_END(hsc_endp);
+	priv->viu.vpp_blend_vd2_h_start_end = VD_H_START(hd_start_lines) |
+					      VD_H_END(hd_end_lines);
 	priv->viu.vpp_hsc_region12_startp = VD_REGION13_END(0) |
 					    VD_REGION24_START(hsc_startp);
 	priv->viu.vpp_hsc_region34_startp = VD_REGION13_END(hsc_startp) |
@@ -291,6 +293,9 @@ static void meson_overlay_setup_scaler_params(struct meson_drm *priv,
 
 	priv->viu.vpp_postblend_vd1_v_start_end = VD_V_START(vsc_startp) |
 						  VD_V_END(vsc_endp);
+	priv->viu.vpp_blend_vd2_v_start_end =
+				VD_V_START((vd_end_lines + 1) >> 2) |
+				VD_V_END(vd_end_lines);
 
 	priv->viu.vpp_vsc_region12_startp = 0;
 	priv->viu.vpp_vsc_region34_startp =
@@ -467,6 +472,8 @@ static void meson_overlay_atomic_update(struct drm_plane *plane,
 			 priv->viu.vd1_height0);
 	}
 
+	priv->viu.vd1_enabled = true;
+
 	spin_unlock_irqrestore(&priv->drm->event_lock, flags);
 
 	DRM_DEBUG_DRIVER("\n");
@@ -479,6 +486,8 @@ static void meson_overlay_atomic_disable(struct drm_plane *plane,
 	struct meson_drm *priv = meson_overlay->priv;
 
 	DRM_DEBUG_DRIVER("\n");
+	
+	priv->viu.vd1_enabled = false;
 
 	/* TODO zorder */
 	/* Disable VD1 */

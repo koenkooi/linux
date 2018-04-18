@@ -108,19 +108,10 @@ static void meson_crtc_atomic_enable(struct drm_crtc *crtc,
 		writel(FIELD_PREP(GENMASK(11, 0), 1080 - 1),
 		       priv->io_base + _REG(VPP_PREBLEND_VD1_V_START_END));
 
-	/* VD1 Preblend horizontal start/end */
-	writel(FIELD_PREP(GENMASK(11, 0), 4096 - 1),
-	       priv->io_base + _REG(VPP_PREBLEND_VD1_H_START_END));
-
 	writel_bits_relaxed(VPP_POSTBLEND_ENABLE, VPP_POSTBLEND_ENABLE,
 			    priv->io_base + _REG(VPP_MISC));
 
-	/*
-	writel_bits_relaxed(VPP_PREBLEND_ENABLE, VPP_PREBLEND_ENABLE,
-			    priv->io_base + _REG(VPP_MISC)); */
-
 	priv->viu.osd1_enabled = true;
-	priv->viu.vd1_enabled = true;
 }
 
 static void meson_crtc_atomic_disable(struct drm_crtc *crtc,
@@ -138,12 +129,9 @@ static void meson_crtc_atomic_disable(struct drm_crtc *crtc,
 	priv->viu.vd1_commit = false;
 
 	/* Disable VPP Postblend */
-	writel_bits_relaxed(VPP_POSTBLEND_ENABLE, 0,
+	writel_bits_relaxed(VPP_OSD1_POSTBLEND | VPP_VD1_POSTBLEND |
+			    VPP_VD1_PREBLEND | VPP_POSTBLEND_ENABLE, 0,
 			    priv->io_base + _REG(VPP_MISC));
-
-	/* Disable VPP Preblend * /
-	writel_bits_relaxed(VPP_PREBLEND_ENABLE, 0,
-			    priv->io_base + _REG(VPP_MISC)); */
 
 	if (crtc->state->event && !crtc->state->active) {
 		spin_lock_irq(&crtc->dev->event_lock);
@@ -239,42 +227,109 @@ void meson_crtc_irq(struct meson_drm *priv)
 
 		DRM_INFO("VD1 update\n");
 
+		/* di_mif0_en=0 mif0_to_vpp_en=0 di_mad_en=0 */
+		writel_bits_relaxed(0x7 << 16, 0,
+				    priv->io_base + _REG(VIU_MISC_CTRL0));
+		/* afbc vd1 set=0 */
+		writel_bits_relaxed(BIT(20), 0,
+				    priv->io_base + _REG(VIU_MISC_CTRL0));
+		writel_relaxed(0, priv->io_base + _REG(AFBC_ENABLE));
 		writel_relaxed(priv->viu.vd1_if0_gen_reg,
 				priv->io_base + _REG(VD1_IF0_GEN_REG));
+		writel_relaxed(priv->viu.vd1_if0_gen_reg,
+				priv->io_base + _REG(VD2_IF0_GEN_REG));
 		writel_relaxed(priv->viu.vd1_if0_gen_reg2,
 				priv->io_base + _REG(VD1_IF0_GEN_REG2));
+		writel_bits_relaxed(0x3 << 8, 0,
+				    priv->io_base + _REG(VD1_IF0_GEN_REG3));
 		writel_relaxed(priv->viu.viu_vd1_fmt_ctrl,
 				priv->io_base + _REG(VIU_VD1_FMT_CTRL));
+		writel_relaxed(priv->viu.viu_vd1_fmt_ctrl,
+				priv->io_base + _REG(VIU_VD2_FMT_CTRL));
 		writel_relaxed(priv->viu.viu_vd1_fmt_w,
 				priv->io_base + _REG(VIU_VD1_FMT_W));
+		writel_relaxed(priv->viu.viu_vd1_fmt_w,
+				priv->io_base + _REG(VIU_VD2_FMT_W));
 		writel_relaxed(priv->viu.vd1_if0_canvas0,
 				priv->io_base + _REG(VD1_IF0_CANVAS0));
+		writel_relaxed(priv->viu.vd1_if0_canvas0,
+				priv->io_base + _REG(VD1_IF0_CANVAS1));
+		writel_relaxed(priv->viu.vd1_if0_canvas0,
+				priv->io_base + _REG(VD2_IF0_CANVAS0));
+		writel_relaxed(priv->viu.vd1_if0_canvas0,
+				priv->io_base + _REG(VD2_IF0_CANVAS1));
 		writel_relaxed(priv->viu.vd1_if0_luma_x0,
 				priv->io_base + _REG(VD1_IF0_LUMA_X0));
+		writel_relaxed(priv->viu.vd1_if0_luma_x0,
+				priv->io_base + _REG(VD1_IF0_LUMA_X1));
+		writel_relaxed(priv->viu.vd1_if0_luma_x0,
+				priv->io_base + _REG(VD2_IF0_LUMA_X0));
+		writel_relaxed(priv->viu.vd1_if0_luma_x0,
+				priv->io_base + _REG(VD2_IF0_LUMA_X1));
 		writel_relaxed(priv->viu.vd1_if0_luma_y0,
 				priv->io_base + _REG(VD1_IF0_LUMA_Y0));
+		writel_relaxed(priv->viu.vd1_if0_luma_y0,
+				priv->io_base + _REG(VD1_IF0_LUMA_Y1));
+		writel_relaxed(priv->viu.vd1_if0_luma_y0,
+				priv->io_base + _REG(VD2_IF0_LUMA_Y0));
+		writel_relaxed(priv->viu.vd1_if0_luma_y0,
+				priv->io_base + _REG(VD2_IF0_LUMA_Y1));
 		writel_relaxed(priv->viu.vd1_if0_chroma_x0,
 				priv->io_base + _REG(VD1_IF0_CHROMA_X0));
+		writel_relaxed(priv->viu.vd1_if0_chroma_x0,
+				priv->io_base + _REG(VD1_IF0_CHROMA_X1));
+		writel_relaxed(priv->viu.vd1_if0_chroma_x0,
+				priv->io_base + _REG(VD2_IF0_CHROMA_X0));
+		writel_relaxed(priv->viu.vd1_if0_chroma_x0,
+				priv->io_base + _REG(VD2_IF0_CHROMA_X1));
 		writel_relaxed(priv->viu.vd1_if0_chroma_y0,
 				priv->io_base + _REG(VD1_IF0_CHROMA_Y0));
+		writel_relaxed(priv->viu.vd1_if0_chroma_y0,
+				priv->io_base + _REG(VD1_IF0_CHROMA_Y1));
+		writel_relaxed(priv->viu.vd1_if0_chroma_y0,
+				priv->io_base + _REG(VD2_IF0_CHROMA_Y0));
+		writel_relaxed(priv->viu.vd1_if0_chroma_y0,
+				priv->io_base + _REG(VD2_IF0_CHROMA_Y1));
 		writel_relaxed(priv->viu.vd1_if0_repeat_loop,
 				priv->io_base + _REG(VD1_IF0_RPT_LOOP));
+		writel_relaxed(priv->viu.vd1_if0_repeat_loop,
+				priv->io_base + _REG(VD2_IF0_RPT_LOOP));
 		writel_relaxed(priv->viu.vd1_if0_luma0_rpt_pat,
 				priv->io_base + _REG(VD1_IF0_LUMA0_RPT_PAT));
+		writel_relaxed(priv->viu.vd1_if0_luma0_rpt_pat,
+				priv->io_base + _REG(VD2_IF0_LUMA0_RPT_PAT));
+		writel_relaxed(priv->viu.vd1_if0_luma0_rpt_pat,
+				priv->io_base + _REG(VD1_IF0_LUMA1_RPT_PAT));
+		writel_relaxed(priv->viu.vd1_if0_luma0_rpt_pat,
+				priv->io_base + _REG(VD2_IF0_LUMA1_RPT_PAT));
 		writel_relaxed(priv->viu.vd1_if0_chroma0_rpt_pat,
 				priv->io_base + _REG(VD1_IF0_CHROMA0_RPT_PAT));
-		writel_relaxed(priv->viu.vd1_range_map_y,
+		writel_relaxed(priv->viu.vd1_if0_chroma0_rpt_pat,
+				priv->io_base + _REG(VD2_IF0_CHROMA0_RPT_PAT));
+		writel_relaxed(priv->viu.vd1_if0_chroma0_rpt_pat,
+				priv->io_base + _REG(VD1_IF0_CHROMA1_RPT_PAT));
+		writel_relaxed(priv->viu.vd1_if0_chroma0_rpt_pat,
+				priv->io_base + _REG(VD2_IF0_CHROMA1_RPT_PAT));
+		writel_relaxed(0, priv->io_base + _REG(VD1_IF0_LUMA_PSEL));
+		writel_relaxed(0, priv->io_base + _REG(VD1_IF0_CHROMA_PSEL));
+		writel_relaxed(0, priv->io_base + _REG(VD2_IF0_LUMA_PSEL));
+		writel_relaxed(0, priv->io_base + _REG(VD2_IF0_CHROMA_PSEL));
+		/*writel_relaxed(priv->viu.vd1_range_map_y,
 				priv->io_base + _REG(VD1_IF0_RANGE_MAP_Y));
 		writel_relaxed(priv->viu.vd1_range_map_cb,
 				priv->io_base + _REG(VD1_IF0_RANGE_MAP_CB));
 		writel_relaxed(priv->viu.vd1_range_map_cr,
-				priv->io_base + _REG(VD1_IF0_RANGE_MAP_CR));
+				priv->io_base + _REG(VD1_IF0_RANGE_MAP_CR));*/
 		writel_relaxed(priv->viu.vpp_pic_in_height,
 				priv->io_base + _REG(VPP_PIC_IN_HEIGHT));
 		writel_relaxed(priv->viu.vpp_postblend_vd1_h_start_end,
 				priv->io_base + _REG(VPP_POSTBLEND_VD1_H_START_END));
+		writel_relaxed(priv->viu.vpp_blend_vd2_h_start_end,
+				priv->io_base + _REG(VPP_BLEND_VD2_H_START_END));
 		writel_relaxed(priv->viu.vpp_postblend_vd1_v_start_end,
 				priv->io_base + _REG(VPP_POSTBLEND_VD1_V_START_END));
+		writel_relaxed(priv->viu.vpp_blend_vd2_v_start_end,
+				priv->io_base + _REG(VPP_BLEND_VD2_V_START_END));
 		writel_relaxed(priv->viu.vpp_hsc_region12_startp,
 				priv->io_base + _REG(VPP_HSC_REGION12_STARTP));
 		writel_relaxed(priv->viu.vpp_hsc_region34_startp,

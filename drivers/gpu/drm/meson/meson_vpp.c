@@ -175,8 +175,15 @@ void meson_vpp_init(struct meson_drm *priv)
 
 	/* Force all planes off */
 	writel_bits_relaxed(VPP_OSD1_POSTBLEND | VPP_OSD2_POSTBLEND |
-			    VPP_VD1_POSTBLEND | VPP_VD2_POSTBLEND, 0,
+			    VPP_VD1_POSTBLEND | VPP_VD2_POSTBLEND |
+			    VPP_VD1_PREBLEND | VPP_VD2_PREBLEND, 0,
 			    priv->io_base + _REG(VPP_MISC));
+
+	/* Setup default VD settings */
+	writel_relaxed(4096,
+			priv->io_base + _REG(VPP_PREBLEND_VD1_H_START_END));
+	writel_relaxed(4096,
+			priv->io_base + _REG(VPP_BLEND_VD2_H_START_END));
 
 	/* Disable Scalers */
 	writel_relaxed(0, priv->io_base + _REG(VPP_OSD_SC_CTRL0));

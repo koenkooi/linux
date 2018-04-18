@@ -93,6 +93,8 @@ struct meson_drm {
 		uint32_t vpp_vsc_ini_phase;
 		uint32_t vpp_vsc_phase_ctrl;
 		uint32_t vpp_hsc_phase_ctrl;
+		uint32_t vpp_blend_vd2_h_start_end;
+		uint32_t vpp_blend_vd2_v_start_end;
 	} viu;
 
 	struct {
