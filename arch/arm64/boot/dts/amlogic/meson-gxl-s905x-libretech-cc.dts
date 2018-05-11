@@ -24,7 +24,8 @@
 		stdout-path = "serial0:115200n8";
 	};
 
-	cvbs-connector {
+	cvbs_connector: cvbs-connector {
+		status = "disabled";
 		compatible = "composite-video-connector";
 
 		port {
