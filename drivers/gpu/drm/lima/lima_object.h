@@ -19,6 +19,8 @@ struct lima_bo {
 	struct ttm_bo_kmap_obj kmap;
 
 	struct list_head va;
+
+	u64 modifier;
 };
 
 static inline struct lima_bo *

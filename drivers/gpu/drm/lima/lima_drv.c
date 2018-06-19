@@ -243,6 +243,18 @@ static int lima_ioctl_ctx(struct drm_device *dev, void *data, struct drm_file *f
 	return -EINVAL;
 }
 
+static int lima_ioctl_gem_mod(struct drm_device *dev, void *data, struct drm_file *file)
+{
+	struct drm_lima_gem_mod *args = data;
+
+	if (args->op == LIMA_GEM_MOD_OP_GET)
+		return lima_gem_get_modifier(file, args->handle, &args->modifier);
+	else if (args->op == LIMA_GEM_MOD_OP_SET)
+		return lima_gem_set_modifier(file, args->handle, args->modifier);
+
+	return -EINVAL;
+}
+
 static int lima_drm_driver_open(struct drm_device *dev, struct drm_file *file)
 {
 	int err;
@@ -287,6 +299,7 @@ static const struct drm_ioctl_desc lima_drm_driver_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(LIMA_WAIT_FENCE, lima_ioctl_wait_fence, DRM_AUTH|DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(LIMA_GEM_WAIT, lima_ioctl_gem_wait, DRM_AUTH|DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(LIMA_CTX, lima_ioctl_ctx, DRM_AUTH|DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(LIMA_GEM_MOD, lima_ioctl_gem_mod, DRM_AUTH|DRM_RENDER_ALLOW),
 };
 
 static const struct file_operations lima_drm_driver_fops = {

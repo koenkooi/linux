@@ -444,3 +444,35 @@ out:
 	drm_gem_object_put_unlocked(obj);
 	return ret;
 }
+
+int lima_gem_get_modifier(struct drm_file *file, u32 handle, u64 *modifier)
+{
+	struct drm_gem_object *obj;
+	struct lima_bo *bo;
+
+	obj = drm_gem_object_lookup(file, handle);
+	if (!obj)
+		return -ENOENT;
+
+	bo = to_lima_bo(obj);
+	*modifier = bo->modifier;
+
+	drm_gem_object_put_unlocked(obj);
+	return 0;
+}
+
+int lima_gem_set_modifier(struct drm_file *file, u32 handle, u64 modifier)
+{
+	struct drm_gem_object *obj;
+	struct lima_bo *bo;
+
+	obj = drm_gem_object_lookup(file, handle);
+	if (!obj)
+		return -ENOENT;
+
+	bo = to_lima_bo(obj);
+	bo->modifier = modifier;
+
+	drm_gem_object_put_unlocked(obj);
+	return 0;
+}

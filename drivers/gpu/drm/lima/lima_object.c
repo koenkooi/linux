@@ -2,6 +2,7 @@
 /* Copyright 2018 Qiang Yu <yuq825@gmail.com> */
 
 #include <drm/drm_prime.h>
+#include <drm/drm_fourcc.h>
 
 #include "lima_object.h"
 
@@ -70,6 +71,7 @@ struct lima_bo *lima_bo_create(struct lima_device *dev, u64 size,
 	if (err)
 		goto err_out;
 
+	bo->modifier = DRM_FORMAT_MOD_INVALID;
 	return bo;
 
 err_out:
