@@ -333,25 +333,18 @@ static struct ttm_bo_driver lima_bo_driver = {
 int lima_ttm_init(struct lima_device *dev)
 {
 	int err;
-	bool need_dma32;
 	u64 gtt_size;
 
 	err = lima_ttm_global_init(dev);
 	if (err)
 		return err;
 
-#if defined(CONFIG_ARM) && !defined(CONFIG_ARM_LPAE)
-	need_dma32 = false;
-#else
-	need_dma32 = true;
-#endif
-
 	err = ttm_bo_device_init(&dev->mman.bdev,
 				 dev->mman.bo_global_ref.ref.object,
 				 &lima_bo_driver,
 				 dev->ddev->anon_inode->i_mapping,
 				 DRM_FILE_PAGE_OFFSET,
-				 need_dma32);
+				 true);
 	if (err) {
 		dev_err(dev->dev, "failed initializing buffer object "
 			"driver(%d).\n", err);
