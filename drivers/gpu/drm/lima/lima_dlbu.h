@@ -7,7 +7,7 @@
 struct lima_ip;
 struct lima_device;
 
-void lima_dlbu_enable(struct lima_device *dev);
+void lima_dlbu_enable(struct lima_device *dev, int num_pp);
 void lima_dlbu_disable(struct lima_device *dev);
 
 void lima_dlbu_set_reg(struct lima_ip *ip, u32 *reg);

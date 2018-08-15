@@ -64,8 +64,9 @@ static irqreturn_t lima_pp_bcast_irq_handler(int irq, void *data)
 	struct lima_ip *pp_bcast = data;
 	struct lima_device *dev = pp_bcast->dev;
 	struct lima_sched_pipe *pipe = dev->pipe + lima_pipe_pp;
+	struct drm_lima_m450_pp_frame *frame = pipe->current_task->frame;
 
-	for (i = 0; i < pipe->num_processor; i++) {
+	for (i = 0; i < frame->num_pp; i++) {
 		struct lima_ip *ip = pipe->processor[i];
 		u32 status, state;
 
@@ -135,7 +136,9 @@ static int lima_pp_soft_reset_async_wait(struct lima_ip *ip)
 	if (ip->id == lima_ip_pp_bcast) {
 		struct lima_device *dev = ip->dev;
 		struct lima_sched_pipe *pipe = dev->pipe + lima_pipe_pp;
-		for (i = 0; i < pipe->num_processor; i++)
+		struct drm_lima_m450_pp_frame *frame = pipe->current_task->frame;
+
+		for (i = 0; i < frame->num_pp; i++)
 			err |= lima_pp_soft_reset_async_wait_one(pipe->processor[i]);
 	}
 	else
@@ -145,24 +148,17 @@ static int lima_pp_soft_reset_async_wait(struct lima_ip *ip)
 	return err;
 }
 
-static void lima_pp_start_task(struct lima_ip *ip, u32 *frame, u32 *wb,
-			       bool skip_stack_addr)
+static void lima_pp_write_frame(struct lima_ip *ip, u32 *frame, u32 *wb)
 {
 	int i, j, n = 0;
 
-	for (i = 0; i < LIMA_PP_FRAME_REG_NUM; i++) {
-		if (skip_stack_addr && i * 4 == LIMA_PP_STACK)
-			continue;
-
+	for (i = 0; i < LIMA_PP_FRAME_REG_NUM; i++)
 		writel(frame[i], ip->iomem + LIMA_PP_FRAME + i * 4);
-	}
 
 	for (i = 0; i < 3; i++) {
 		for (j = 0; j < LIMA_PP_WB_REG_NUM; j++)
 			writel(wb[n++], ip->iomem + LIMA_PP_WB(i) + j * 4);
 	}
-
-	pp_write(CTRL, LIMA_PP_CTRL_START_RENDERING);
 }
 
 static int lima_pp_hard_reset(struct lima_ip *ip)
@@ -271,12 +267,19 @@ void lima_pp_bcast_fini(struct lima_ip *ip)
 static int lima_pp_task_validate(struct lima_sched_pipe *pipe,
 				 struct lima_sched_task *task)
 {
-	if (!pipe->bcast_processor) {
-		struct drm_lima_m400_pp_frame *f = task->frame;
+	u32 num_pp;
 
-		if (f->num_pp > pipe->num_processor)
-			return -EINVAL;
+	if (pipe->bcast_processor) {
+		struct drm_lima_m450_pp_frame *f = task->frame;
+	        num_pp = f->num_pp;
 	}
+	else {
+		struct drm_lima_m400_pp_frame *f = task->frame;
+		num_pp = f->num_pp;
+	}
+
+	if (num_pp == 0 || num_pp > pipe->num_processor)
+		return -EINVAL;
 
 	return 0;
 }
@@ -287,23 +290,36 @@ static void lima_pp_task_run(struct lima_sched_pipe *pipe,
 	if (pipe->bcast_processor) {
 		struct drm_lima_m450_pp_frame *frame = task->frame;
 		struct lima_device *dev = pipe->bcast_processor->dev;
+		struct lima_ip *ip = pipe->bcast_processor;
 		int i;
 
 		pipe->done = 0;
-		atomic_set(&pipe->task, pipe->num_processor);
+		atomic_set(&pipe->task, frame->num_pp);
 
-		frame->frame[LIMA_PP_FRAME >> 2] = LIMA_VA_RESERVE_DLBU;
-		lima_dlbu_set_reg(dev->ip + lima_ip_dlbu, frame->dlbu_regs);
+		if (frame->use_dlbu) {
+			lima_dlbu_enable(dev, frame->num_pp);
 
-		lima_pp_soft_reset_async_wait(pipe->bcast_processor);
+		        frame->frame[LIMA_PP_FRAME >> 2] = LIMA_VA_RESERVE_DLBU;
+			lima_dlbu_set_reg(dev->ip + lima_ip_dlbu, frame->dlbu_regs);
+		}
+		else
+			lima_dlbu_disable(dev);
 
-		for (i = 0; i < pipe->num_processor; i++) {
+		lima_bcast_enable(dev, frame->num_pp);
+
+		lima_pp_soft_reset_async_wait(ip);
+
+	        lima_pp_write_frame(ip, frame->frame, frame->wb);
+
+		for (i = 0; i < frame->num_pp; i++) {
 			struct lima_ip *ip = pipe->processor[i];
+
 			pp_write(STACK, frame->fragment_stack_address[i]);
+			if (!frame->use_dlbu)
+				pp_write(FRAME, frame->plbu_array_address[i]);
 		}
 
-		lima_pp_start_task(pipe->bcast_processor, frame->frame,
-				   frame->wb, true);
+		pp_write(CTRL, LIMA_PP_CTRL_START_RENDERING);
 	}
 	else {
 		struct drm_lima_m400_pp_frame *frame = task->frame;
@@ -312,15 +328,18 @@ static void lima_pp_task_run(struct lima_sched_pipe *pipe,
 		atomic_set(&pipe->task, frame->num_pp);
 
 		for (i = 0; i < frame->num_pp; i++) {
+			struct lima_ip *ip = pipe->processor[i];
+
 			frame->frame[LIMA_PP_FRAME >> 2] =
 				frame->plbu_array_address[i];
 			frame->frame[LIMA_PP_STACK >> 2] =
 				frame->fragment_stack_address[i];
 
-			lima_pp_soft_reset_async_wait(pipe->processor[i]);
+			lima_pp_soft_reset_async_wait(ip);
 
-			lima_pp_start_task(pipe->processor[i], frame->frame,
-					   frame->wb, false);
+		        lima_pp_write_frame(ip, frame->frame, frame->wb);
+
+			pp_write(CTRL, LIMA_PP_CTRL_START_RENDERING);
 		}
 	}
 }
@@ -340,14 +359,8 @@ static void lima_pp_task_error(struct lima_sched_pipe *pipe)
 {
 	int i;
 
-	if (pipe->bcast_processor)
-		lima_bcast_disable(pipe->bcast_processor->dev);
-
 	for (i = 0; i < pipe->num_processor; i++)
 		lima_pp_hard_reset(pipe->processor[i]);
-
-	if (pipe->bcast_processor)
-		lima_bcast_enable(pipe->bcast_processor->dev);
 }
 
 static void lima_pp_task_mmu_error(struct lima_sched_pipe *pipe)

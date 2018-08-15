@@ -9,7 +9,6 @@ struct lima_ip;
 int lima_bcast_init(struct lima_ip *ip);
 void lima_bcast_fini(struct lima_ip *ip);
 
-void lima_bcast_enable(struct lima_device *dev);
-void lima_bcast_disable(struct lima_device *dev);
+void lima_bcast_enable(struct lima_device *dev, int num_pp);
 
 #endif

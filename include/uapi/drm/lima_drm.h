@@ -91,9 +91,14 @@ struct drm_lima_m400_pp_frame {
 
 struct drm_lima_m450_pp_frame {
 	__u32 frame[LIMA_PP_FRAME_REG_NUM];
-	__u32 _pad;
+	__u32 num_pp;
 	__u32 wb[3 * LIMA_PP_WB_REG_NUM];
-	__u32 dlbu_regs[4];
+	__u32 use_dlbu;
+	__u32 _pad;
+	union {
+		__u32 plbu_array_address[8];
+		__u32 dlbu_regs[4];
+	};
 	__u32 fragment_stack_address[8];
 };
 

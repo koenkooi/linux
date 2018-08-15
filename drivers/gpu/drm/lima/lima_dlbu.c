@@ -12,13 +12,13 @@
 #define dlbu_write(reg, data) writel(data, ip->iomem + LIMA_DLBU_##reg)
 #define dlbu_read(reg) readl(ip->iomem + LIMA_DLBU_##reg)
 
-void lima_dlbu_enable(struct lima_device *dev)
+void lima_dlbu_enable(struct lima_device *dev, int num_pp)
 {
 	struct lima_sched_pipe *pipe = dev->pipe + lima_pipe_pp;
 	struct lima_ip *ip = dev->ip + lima_ip_dlbu;
 	int i, mask = 0;
 
-	for (i = 0; i < pipe->num_processor; i++) {
+	for (i = 0; i < num_pp; i++) {
 		struct lima_ip *pp = pipe->processor[i];
 		mask |= 1 << (pp->id - lima_ip_pp0);
 	}

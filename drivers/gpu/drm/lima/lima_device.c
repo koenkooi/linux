@@ -338,11 +338,6 @@ int lima_device_init(struct lima_device *ldev)
 	if (err)
 		goto err_out6;
 
-	if (ldev->id == lima_gpu_mali450) {
-		lima_dlbu_enable(ldev);
-		lima_bcast_enable(ldev);
-	}
-
 	return 0;
 
 err_out6:
