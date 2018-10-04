@@ -116,6 +116,11 @@ one until ``EINVAL`` is returned.
       - This format is not native to the device but emulated through
 	software (usually libv4l2), where possible try to use a native
 	format instead for better performance.
+    * - ``V4L2_FMT_FLAG_NO_SOURCE_CHANGE``
+      - 0x0004
+      - The event ``V4L2_EVENT_SOURCE_CHANGE`` is not supported
+	for this format.
+
 
 
 Return Value
