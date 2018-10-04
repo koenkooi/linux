@@ -110,8 +110,7 @@ int lima_sched_task_init(struct lima_sched_task *task,
 {
 	int err;
 
-	err = drm_sched_job_init(&task->base, context->base.sched,
-				 &context->base, vm);
+	err = drm_sched_job_init(&task->base, &context->base, vm);
 	if (err)
 		return err;
 
@@ -169,7 +168,7 @@ int lima_sched_context_init(struct lima_sched_pipe *pipe,
 		return -ENOMEM;
 
 	mutex_init(&context->lock);
-	err = drm_sched_entity_init(&pipe->base, &context->base, rq, guilty);
+	err = drm_sched_entity_init(&context->base, &rq, 1, guilty);
 	if (err) {
 		kfree(context->fences);
 		context->fences = NULL;
@@ -182,7 +181,7 @@ int lima_sched_context_init(struct lima_sched_pipe *pipe,
 void lima_sched_context_fini(struct lima_sched_pipe *pipe,
 			     struct lima_sched_context *context)
 {
-	drm_sched_entity_fini(&pipe->base, &context->base);
+	drm_sched_entity_fini(&context->base);
 
 	mutex_destroy(&context->lock);
 
