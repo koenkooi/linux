@@ -203,6 +203,7 @@ struct amvdec_session {
 	struct v4l2_fh fh;
 	struct v4l2_m2m_dev *m2m_dev;
 	struct v4l2_m2m_ctx *m2m_ctx;
+	struct v4l2_ctrl_handler ctrl_handler;
 	struct mutex lock;
 
 	const struct amvdec_format *fmt_out;
@@ -242,6 +243,7 @@ struct amvdec_session {
 	u64 last_irq_jiffies;
 	u32 last_offset;
 	u32 wrap_count;
+	u32 dpb_size;
 
 	void *priv;
 };

@@ -21,6 +21,7 @@
 #include "vdec.h"
 #include "esparser.h"
 #include "vdec_helpers.h"
+#include "vdec_ctrls.h"
 
 struct dummy_buf {
 	struct vb2_v4l2_buffer vb;
@@ -290,6 +291,7 @@ static int vdec_start_streaming(struct vb2_queue *q, unsigned int count)
 	sess->keyframe_found = 0;
 	sess->last_offset = 0;
 	sess->wrap_count = 0;
+	sess->dpb_size = 0;
 	sess->pixelaspect.numerator = 1;
 	sess->pixelaspect.denominator = 1;
 	atomic_set(&sess->esparser_queued_bufs, 0);
@@ -812,6 +814,10 @@ static int vdec_open(struct file *file)
 		goto err_m2m_release;
 	}
 
+	ret = amvdec_init_ctrls(&sess->ctrl_handler);
+	if (ret)
+		goto err_m2m_release;
+
 	sess->pixfmt_cap = formats[0].pixfmts_cap[0];
 	sess->fmt_out = &formats[0];
 	sess->width = 1280;
@@ -827,6 +833,7 @@ static int vdec_open(struct file *file)
 	spin_lock_init(&sess->ts_spinlock);
 
 	v4l2_fh_init(&sess->fh, core->vdev_dec);
+	sess->fh.ctrl_handler = &sess->ctrl_handler;
 	v4l2_fh_add(&sess->fh);
 	sess->fh.m2m_ctx = sess->m2m_ctx;
 	file->private_data = &sess->fh;
