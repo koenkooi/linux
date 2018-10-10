@@ -403,6 +403,34 @@ void amvdec_set_par_from_dar(struct amvdec_session *sess,
 }
 EXPORT_SYMBOL_GPL(amvdec_set_par_from_dar);
 
+void amvdec_src_change(struct amvdec_session *sess, u32 width, u32 height, u32 dpb_size)
+{
+	static const struct v4l2_event ev = {
+		.type = V4L2_EVENT_SOURCE_CHANGE,
+		.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION };
+
+	sess->dpb_size = dpb_size;
+
+	/* Check if the capture queue is already configured well for our
+	 * usecase. If so, keep decoding with it and do not send the event
+	 */
+	if (sess->width == width &&
+	    sess->height == height &&
+	    dpb_size <= sess->num_dst_bufs) {
+		sess->fmt_out->codec_ops->resume(sess);
+		return;
+	}
+
+	sess->width = width;
+	sess->height = height;
+	sess->status = STATUS_NEEDS_RESUME;
+
+	dev_dbg(sess->core->dev, "Res. changed (%ux%u), DPB size %u\n",
+		width, height, dpb_size);
+	v4l2_event_queue_fh(&sess->fh, &ev);
+}
+EXPORT_SYMBOL_GPL(amvdec_src_change);
+
 void amvdec_abort(struct amvdec_session *sess)
 {
 	dev_info(sess->core->dev, "Aborting decoding session!\n");

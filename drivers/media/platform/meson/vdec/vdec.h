@@ -101,6 +101,7 @@ struct amvdec_ops {
 	u32 (*vififo_level)(struct amvdec_session *sess);
 };
 
+
 /**
  * struct amvdec_codec_ops - codec operations
  *
@@ -127,6 +128,7 @@ struct amvdec_codec_ops {
 	int (*can_recycle)(struct amvdec_core *core);
 	void (*recycle)(struct amvdec_core *core, u32 buf_idx);
 	void (*drain)(struct amvdec_session *sess);
+	void (*resume)(struct amvdec_session *sess);
 	const u8 * (*eos_sequence)(u32 *len);
 	irqreturn_t (*isr)(struct amvdec_session *sess);
 	irqreturn_t (*threaded_isr)(struct amvdec_session *sess);
@@ -140,6 +142,7 @@ struct amvdec_codec_ops {
  * @max_buffers: maximum amount of CAPTURE (dst) buffers
  * @max_width: maximum picture width supported
  * @max_height: maximum picture height supported
+ * @flags: enum flags associated with this pixfmt
  * @vdec_ops: the VDEC operations that support this format
  * @codec_ops: the codec operations that support this format
  * @firmware_path: Path to the firmware that supports this format
@@ -151,12 +154,19 @@ struct amvdec_format {
 	u32 max_buffers;
 	u32 max_width;
 	u32 max_height;
+	u32 flags;
 
 	struct amvdec_ops *vdec_ops;
 	struct amvdec_codec_ops *codec_ops;
 
 	char *firmware_path;
 	u32 pixfmts_cap[4];
+};
+
+enum amvdec_status {
+	STATUS_STOPPED,
+	STATUS_RUNNING,
+	STATUS_NEEDS_RESUME,
 };
 
 /**
@@ -195,6 +205,7 @@ struct amvdec_format {
  * @timestamps: chronological list of src timestamps
  * @ts_spinlock: spinlock for the timestamps list
  * @last_irq_jiffies: tracks last time the vdec triggered an IRQ
+ * @status: current decoding status
  * @priv: codec private data
  */
 struct amvdec_session {
@@ -225,6 +236,7 @@ struct amvdec_session {
 	unsigned int sequence_cap;
 	unsigned int should_stop;
 	unsigned int keyframe_found;
+	unsigned int num_dst_bufs;
 
 	u8 canvas_alloc[MAX_CANVAS];
 	u32 canvas_num;
@@ -245,6 +257,7 @@ struct amvdec_session {
 	u32 wrap_count;
 	u32 dpb_size;
 
+	enum amvdec_status status;
 	void *priv;
 };
 
