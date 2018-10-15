@@ -476,6 +476,9 @@ choice
 
 	config DEFAULT_PFIFO_FAST
 		bool "Priority FIFO Fast"
+
+	config DEFAULT_CAKE
+		bool "Common Applications Kept Enhanced"
 endchoice
 
 config DEFAULT_NET_SCH
@@ -485,6 +488,7 @@ config DEFAULT_NET_SCH
 	default "fq_codel" if DEFAULT_FQ_CODEL
 	default "fq_pie" if DEFAULT_FQ_PIE
 	default "sfq" if DEFAULT_SFQ
+	default "cake" if DEFAULT_CAKE
 	default "pfifo_fast"
 endif
 
