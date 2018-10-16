@@ -383,9 +383,10 @@ int lima_pp_pipe_init(struct lima_device *dev)
 		frame_size = sizeof(struct drm_lima_m450_pp_frame);
 
 	if (!lima_pp_task_slab) {
-		lima_pp_task_slab = kmem_cache_create(
+		lima_pp_task_slab = kmem_cache_create_usercopy(
 			"lima_pp_task", sizeof(struct lima_sched_task) + frame_size,
-			0, SLAB_HWCACHE_ALIGN, NULL);
+			0, SLAB_HWCACHE_ALIGN, sizeof(struct lima_sched_task),
+			frame_size, NULL);
 		if (!lima_pp_task_slab)
 			return -ENOMEM;
 	}

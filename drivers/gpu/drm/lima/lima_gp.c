@@ -245,9 +245,10 @@ int lima_gp_pipe_init(struct lima_device *dev)
 	struct lima_sched_pipe *pipe = dev->pipe + lima_pipe_gp;
 
 	if (!lima_gp_task_slab) {
-		lima_gp_task_slab = kmem_cache_create(
+		lima_gp_task_slab = kmem_cache_create_usercopy(
 			"lima_gp_task", sizeof(struct lima_sched_task) + frame_size,
-			0, SLAB_HWCACHE_ALIGN, NULL);
+			0, SLAB_HWCACHE_ALIGN, sizeof(struct lima_sched_task),
+			frame_size, NULL);
 		if (!lima_gp_task_slab)
 			return -ENOMEM;
 	}
