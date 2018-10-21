@@ -164,6 +164,7 @@ static int vdec_queue_setup(struct vb2_queue *q,
 	struct amvdec_session *sess = vb2_get_drv_priv(q);
 	const struct amvdec_format *fmt_out = sess->fmt_out;
 	u32 output_size = amvdec_get_output_size(sess);
+	u32 am21c_size = amvdec_am21c_size(sess->width, sess->height);
 	u32 buffers_total;
 
 	if (*num_planes) {
@@ -185,6 +186,10 @@ static int vdec_queue_setup(struct vb2_queue *q,
 				    sizes[0] < output_size ||
 				    sizes[1] < output_size / 4 ||
 				    sizes[2] < output_size / 4)
+					return -EINVAL;
+				break;
+			case V4L2_PIX_FMT_AM21C:
+				if (*num_planes != 1 || sizes[0] < am21c_size)
 					return -EINVAL;
 				break;
 			default:
@@ -214,6 +219,9 @@ static int vdec_queue_setup(struct vb2_queue *q,
 			sizes[2] = output_size / 4;
 			*num_planes = 3;
 			break;
+		case V4L2_PIX_FMT_AM21C:
+			sizes[0] = am21c_size;
+			*num_planes = 1;
 		default:
 			return -EINVAL;
 		}
@@ -498,6 +506,10 @@ vdec_try_fmt_common(struct amvdec_session *sess, u32 size,
 			      get_output_size(pixmp->width, pixmp->height) / 4;
 			pfmt[2].bytesperline = ALIGN(pixmp->width, 64) / 2;
 			pixmp->num_planes = 3;
+		} else if (pixmp->pixelformat == V4L2_PIX_FMT_AM21C) {
+			pfmt[0].sizeimage =
+				amvdec_am21c_size(pixmp->width, pixmp->height);
+			pfmt[0].bytesperline = 0;
 		}
 	} else {
 		return NULL;

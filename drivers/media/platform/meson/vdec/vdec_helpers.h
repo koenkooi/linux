@@ -26,6 +26,10 @@ void amvdec_clear_dos_bits(struct amvdec_core *core, u32 reg, u32 val);
 u32 amvdec_read_parser(struct amvdec_core *core, u32 reg);
 void amvdec_write_parser(struct amvdec_core *core, u32 reg, u32 val);
 
+u32 amvdec_am21c_body_size(u32 width, u32 height);
+u32 amvdec_am21c_head_size(u32 width, u32 height);
+u32 amvdec_am21c_size(u32 width, u32 height);
+
 void amvdec_dst_buf_done_idx(struct amvdec_session *sess, u32 buf_idx,
 			     u32 offset, u32 field);
 void amvdec_dst_buf_done(struct amvdec_session *sess,
