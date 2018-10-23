@@ -452,12 +452,15 @@ void amvdec_src_change(struct amvdec_session *sess, u32 width, u32 height, u32 d
 		return;
 	}
 
+	dev_dbg(sess->core->dev, "Res. changed (%ux%u), DPB size %u\n",
+		width, height, dpb_size);
+	dev_dbg(sess->core->dev, "Current: %ux%u, DPB %u\n",
+		sess->width, sess->height, sess->num_dst_bufs);
+
 	sess->width = width;
 	sess->height = height;
 	sess->status = STATUS_NEEDS_RESUME;
 
-	dev_dbg(sess->core->dev, "Res. changed (%ux%u), DPB size %u\n",
-		width, height, dpb_size);
 	v4l2_event_queue_fh(&sess->fh, &ev);
 }
 EXPORT_SYMBOL_GPL(amvdec_src_change);
