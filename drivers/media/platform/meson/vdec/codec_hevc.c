@@ -1415,7 +1415,6 @@ static int codec_hevc_process_rpm(struct codec_hevc *hevc)
 {
 	union rpm_param *param = &hevc->rpm_param;
 	int src_changed = 0;
-	u32 lcu_x_num_div, lcu_y_num_div;
 	u32 dst_width, dst_height;
 	u32 lcu_size;
 	u32 is_10bit;
@@ -1436,12 +1435,8 @@ static int codec_hevc_process_rpm(struct codec_hevc *hevc)
 	lcu_size = 1 << (param->p.log2_min_coding_block_size_minus3 +
 		   3 + param->p.log2_diff_max_min_coding_block_size);
 
-	lcu_x_num_div = (hevc->width / lcu_size);
-	lcu_y_num_div = (hevc->height / lcu_size);
-	hevc->lcu_x_num = (hevc->width % lcu_size) ? lcu_x_num_div + 1 :
-			  lcu_x_num_div;
-	hevc->lcu_y_num = (hevc->height % lcu_size) ? lcu_y_num_div + 1 :
-			  lcu_y_num_div;
+	hevc->lcu_x_num = (hevc->width + lcu_size - 1) / lcu_size;
+	hevc->lcu_y_num = (hevc->height + lcu_size - 1) / lcu_size;
 	hevc->lcu_total = hevc->lcu_x_num * hevc->lcu_y_num;
 
 	if (param->p.conformance_window_flag) {
