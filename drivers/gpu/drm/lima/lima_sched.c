@@ -128,8 +128,10 @@ int lima_sched_task_add_dep(struct lima_sched_task *task, struct dma_fence *fenc
 	int i, new_dep = 4;
 
 	/* same context's fence is definitly earlier then this task */
-	if (fence->context == task->base.s_fence->finished.context)
+	if (fence->context == task->base.s_fence->finished.context) {
+		dma_fence_put(fence);
 		return 0;
+	}
 
 	if (task->dep && task->num_dep == task->max_dep)
 		new_dep = task->max_dep * 2;
