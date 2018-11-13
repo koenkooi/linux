@@ -232,6 +232,7 @@ enum slice_type {
 struct hevc_frame {
 	struct list_head list;
 	struct vb2_v4l2_buffer *vbuf;
+	u32 offset;
 	u32 poc;
 
 	int referenced;
@@ -517,7 +518,8 @@ static void codec_hevc_output_frames(struct amvdec_session *sess)
 
 		dev_dbg(sess->core->dev, "DONE frame poc %u; vbuf %u\n",
 			tmp->poc, tmp->vbuf->vb2_buf.index);
-		amvdec_dst_buf_done(sess, tmp->vbuf, V4L2_FIELD_NONE);
+		amvdec_dst_buf_done_offset(sess, tmp->vbuf, tmp->offset,
+					   V4L2_FIELD_NONE);
 		list_del(&tmp->list);
 		kfree(tmp);
 		hevc->frames_num--;
@@ -877,9 +879,10 @@ codec_hevc_get_frame_by_poc(struct codec_hevc *hevc, u32 poc)
 static struct hevc_frame *
 codec_hevc_prepare_new_frame(struct amvdec_session *sess)
 {
-	struct vb2_v4l2_buffer *vbuf;
+	struct amvdec_core *core = sess->core;
 	struct hevc_frame *new_frame = NULL;
 	struct codec_hevc *hevc = sess->priv;
+	struct vb2_v4l2_buffer *vbuf;
 	union rpm_param *params = &hevc->rpm_param;
 
 	new_frame = kzalloc(sizeof(*new_frame), GFP_KERNEL);
@@ -897,6 +900,7 @@ codec_hevc_prepare_new_frame(struct amvdec_session *sess)
 	new_frame->poc = hevc->curr_poc;
 	new_frame->cur_slice_type = params->p.slice_type;
 	new_frame->num_reorder_pic = params->p.sps_num_reorder_pics_0;
+	new_frame->offset = amvdec_read_dos(core, HEVC_SHIFT_BYTE_COUNT);
 
 	list_add_tail(&new_frame->list, &hevc->ref_frames_list);
 	hevc->frames_num++;
