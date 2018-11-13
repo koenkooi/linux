@@ -349,10 +349,9 @@ void amvdec_dst_buf_done(struct amvdec_session *sess,
 }
 EXPORT_SYMBOL_GPL(amvdec_dst_buf_done);
 
-static void amvdec_dst_buf_done_offset(struct amvdec_session *sess,
-				       struct vb2_v4l2_buffer *vbuf,
-				       u32 offset,
-				       u32 field)
+void amvdec_dst_buf_done_offset(struct amvdec_session *sess,
+				struct vb2_v4l2_buffer *vbuf,
+				u32 offset, u32 field)
 {
 	struct device *dev = sess->core->dev_dec;
 	struct amvdec_timestamp *match = NULL;
@@ -399,6 +398,7 @@ static void amvdec_dst_buf_done_offset(struct amvdec_session *sess,
 	if (match)
 		atomic_dec(&sess->esparser_queued_bufs);
 }
+EXPORT_SYMBOL_GPL(amvdec_dst_buf_done_offset);
 
 void amvdec_dst_buf_done_idx(struct amvdec_session *sess,
 			     u32 buf_idx, u32 offset, u32 field)
