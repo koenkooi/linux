@@ -146,7 +146,7 @@ static void codec_mpeg12_update_dar(struct amvdec_session *sess)
 		sess->pixelaspect.numerator = 1;
 		sess->pixelaspect.denominator = 1;
 		break;
-	};
+	}
 }
 
 static irqreturn_t codec_mpeg12_threaded_isr(struct amvdec_session *sess)

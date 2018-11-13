@@ -211,7 +211,7 @@ int amvdec_set_canvases(struct amvdec_session *sess,
 			dev_err(sess->core->dev, "Unsupported pixfmt %08X\n",
 				pixfmt);
 			return -EINVAL;
-		};
+		}
 
 		reg_num_cur++;
 		if (reg_num_cur >= reg_num[reg_base_cur]) {

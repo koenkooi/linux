@@ -145,13 +145,11 @@ int esparser_queue_eos(struct amvdec_core *core, const u8 *data, u32 len)
 	dma_addr_t eos_paddr;
 	int ret;
 
-	eos_vaddr = dma_alloc_coherent(dev,
-				       len + SEARCH_PATTERN_LEN,
-				       &eos_paddr, GFP_KERNEL);
+	eos_vaddr = dma_zalloc_coherent(dev, len + SEARCH_PATTERN_LEN,
+					&eos_paddr, GFP_KERNEL);
 	if (!eos_vaddr)
 		return -ENOMEM;
 
-	memset(eos_vaddr, 0, len + SEARCH_PATTERN_LEN);
 	memcpy(eos_vaddr, data, len);
 	ret = esparser_write_data(core, eos_paddr, len);
 	dma_free_coherent(dev, len + SEARCH_PATTERN_LEN,
