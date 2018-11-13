@@ -519,7 +519,7 @@ static void codec_hevc_output_frames(struct amvdec_session *sess)
 		dev_dbg(sess->core->dev, "DONE frame poc %u; vbuf %u\n",
 			tmp->poc, tmp->vbuf->vb2_buf.index);
 		amvdec_dst_buf_done_offset(sess, tmp->vbuf, tmp->offset,
-					   V4L2_FIELD_NONE);
+					   V4L2_FIELD_NONE, false);
 		list_del(&tmp->list);
 		kfree(tmp);
 		hevc->frames_num--;
