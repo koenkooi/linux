@@ -303,7 +303,7 @@ static irqreturn_t pch_gpio_handler(int irq, void *dev_id)
 	int i, ret = IRQ_NONE;
 
 	for_each_set_bit(i, &reg_val, gpio_pins[chip->ioh]) {
-		dev_dbg(chip->dev, "[%d]:irq=%d  status=0x%lx\n", i, irq, reg_val);
+		//dev_dbg(chip->dev, "[%d]:irq=%d  status=0x%lx\n", i, irq, reg_val);
 		generic_handle_irq(chip->irq_base + i);
 		ret = IRQ_HANDLED;
 	}
