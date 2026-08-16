@@ -175,7 +175,7 @@ config PCMCIA_SA1111
 
 config PCMCIA_PXA2XX
 	tristate "PXA2xx support"
-	depends on ARM && ARCH_PXA && PCMCIA && PXA_SHARPSL
+	depends on ARM && ARCH_PXA && PCMCIA && (PXA_SHARPSL || MACH_H2200)
 	select PCMCIA_SOC_COMMON
 	help
 	  Say Y here to include support for the PXA2xx PCMCIA controller

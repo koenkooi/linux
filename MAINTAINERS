@@ -12000,6 +12000,7 @@ F:	drivers/leds/leds-hamcop.c
 F:	drivers/mfd/hamcop.c
 F:	drivers/mmc/host/hamcop-sdi.c
 F:	drivers/mtd/nand/raw/hamcop_nand.c
+F:	drivers/pcmcia/pxa2xx_h2200.c
 F:	include/linux/mfd/hamcop.h
 
 HP IPAQ SERIAL KEYBOARD DRIVER
