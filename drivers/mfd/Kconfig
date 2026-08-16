@@ -62,6 +62,24 @@ config MFD_HAMCOP
 	  of HAMCOP's individual peripherals -- select their own drivers,
 	  where they exist, separately.
 
+config MFD_SAMCOP
+	bool "Samsung SAMCOP companion ASIC (HP iPAQ h5xxx)"
+	depends on MACH_H5000
+	select MFD_CORE
+	help
+	  This is the core driver for the Samsung SAMCOP companion ASIC
+	  found on the HP iPAQ h51xx/h54xx/h55xx family. SAMCOP provides a
+	  USB host controller, an ADC + resistive touchscreen front-end, a
+	  DS1WM-compatible 1-Wire master, an LED blink controller, PCMCIA/
+	  expansion-pack status glue, and a five-bank GPIO block, 14 lines
+	  of which double as further interrupt sources on top of its own
+	  26-line interrupt controller.
+
+	  This option enables only the core chip driver (register access,
+	  IRQ demux, gpio_chip, clocks) and does not by itself enable any
+	  of SAMCOP's individual peripherals -- select their own drivers,
+	  where they exist, separately.
+
 config MFD_CS5535
 	tristate "AMD CS5535 and CS5536 southbridge core functions"
 	select MFD_CORE
