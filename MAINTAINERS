@@ -11991,6 +11991,7 @@ M:	Koen Kooi <koen@dominion.thruhere.net>
 L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
 S:	Maintained
 F:	arch/arm/boot/dts/intel/pxa/pxa250-hp-ipaq-h2200.dts
+F:	arch/arm/mach-pxa/h2200*
 
 HP IPAQ SERIAL KEYBOARD DRIVER
 M:	Koen Kooi <koen@dominion.thruhere.net>
