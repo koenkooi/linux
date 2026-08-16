@@ -13,6 +13,7 @@ obj-$(CONFIG_MFD_ASIC2)		+= asic2.o
 obj-$(CONFIG_MFD_HAMCOP)	+= hamcop.o
 obj-$(CONFIG_MFD_SM501)		+= sm501.o
 obj-$(CONFIG_MFD_ASIC3)		+= asic3.o
+obj-$(CONFIG_MFD_SAMCOP)	+= samcop.o
 obj-$(CONFIG_ARCH_BCM2835)	+= bcm2835-pm.o
 obj-$(CONFIG_MFD_BCM590XX)	+= bcm590xx.o
 obj-$(CONFIG_MFD_BD9571MWV)	+= bd9571mwv.o
