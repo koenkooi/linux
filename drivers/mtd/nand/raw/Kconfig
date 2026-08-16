@@ -83,6 +83,18 @@ config MTD_NAND_SHARPSL
 	depends on ARCH_PXA || COMPILE_TEST
 	depends on HAS_IOMEM
 
+config MTD_NAND_HAMCOP
+	tristate "Samsung HAMCOP NAND controller (HP iPAQ h2200)"
+	depends on MFD_HAMCOP
+	help
+	  Enables the NAND flash controller on the Samsung HAMCOP companion
+	  ASIC found on the HP iPAQ h2200 (h2210/h2212/h2215 are the same
+	  board). This is the only path to the on-board NAND flash, which
+	  holds the HTC first-stage bootstrap and rescue bootloader and,
+	  once formatted, the root filesystem.
+
+	  If unsure, say N.
+
 config MTD_NAND_CAFE
 	tristate "OLPC CAFÉ NAND controller"
 	depends on PCI

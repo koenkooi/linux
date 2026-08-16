@@ -11996,6 +11996,7 @@ F:	arch/arm/boot/dts/intel/pxa/pxa250-hp-ipaq-h2200.dts
 F:	arch/arm/mach-pxa/h2200*
 F:	drivers/leds/leds-hamcop.c
 F:	drivers/mfd/hamcop.c
+F:	drivers/mtd/nand/raw/hamcop_nand.c
 F:	include/linux/mfd/hamcop.h
 
 HP IPAQ SERIAL KEYBOARD DRIVER
