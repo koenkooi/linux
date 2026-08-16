@@ -11994,6 +11994,8 @@ F:	Documentation/devicetree/bindings/mfd/samsung,hamcop.yaml
 F:	Documentation/devicetree/bindings/mmc/samsung,hamcop-sdi.yaml
 F:	arch/arm/boot/dts/intel/pxa/pxa250-hp-ipaq-h2200.dts
 F:	arch/arm/mach-pxa/h2200*
+F:	drivers/mfd/hamcop.c
+F:	include/linux/mfd/hamcop.h
 
 HP IPAQ SERIAL KEYBOARD DRIVER
 M:	Koen Kooi <koen@dominion.thruhere.net>

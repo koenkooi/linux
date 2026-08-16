@@ -45,6 +45,23 @@ config MFD_ASIC2
 	  enable any of ASIC2's individual peripherals; select their
 	  drivers separately.
 
+config MFD_HAMCOP
+	bool "Samsung HAMCOP companion ASIC (HP iPAQ h2200)"
+	depends on MACH_H2200
+	select MFD_CORE
+	help
+	  This is the core driver for the Samsung HAMCOP companion ASIC
+	  found on the HP iPAQ h2200 (h2210/h2212/h2215 are the same
+	  board). HAMCOP provides a NAND controller, an SD/MMC host, an
+	  ADC + resistive touchscreen front-end, a DS1WM-compatible 1-Wire
+	  master, an LED blink controller, and a 32-line GPIO block that
+	  doubles as 16 of its own interrupt sources.
+
+	  This option enables only the core chip driver (register access,
+	  IRQ demux, gpio_chip, clocks) and does not by itself enable any
+	  of HAMCOP's individual peripherals -- select their own drivers,
+	  where they exist, separately.
+
 config MFD_CS5535
 	tristate "AMD CS5535 and CS5536 southbridge core functions"
 	select MFD_CORE
