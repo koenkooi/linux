@@ -64,6 +64,19 @@ config MMC_PXA
 
 	  If unsure, say N.
 
+config MMC_HAMCOP
+	tristate "Samsung HAMCOP SD/MMC Card Interface support (HP iPAQ h2200)"
+	depends on MFD_HAMCOP
+	help
+	  This selects the SDI (SD/MMC host) block on the Samsung HAMCOP
+	  companion ASIC found on the HP iPAQ h2200 (h2210/h2212/h2215 are
+	  the same board). This is the real SD card slot on this hardware
+	  -- the PXA25x SoC's own MMC controller is unwired.
+
+	  PIO only; say Y or M if you have an h2200.
+
+	  If unsure, say N.
+
 config MMC_SDHCI
 	tristate "Secure Digital Host Controller Interface support"
 	depends on HAS_DMA

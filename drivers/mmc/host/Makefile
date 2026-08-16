@@ -8,6 +8,7 @@ armmmci-y := mmci.o
 armmmci-$(CONFIG_MMC_QCOM_DML) += mmci_qcom_dml.o
 armmmci-$(CONFIG_MMC_STM32_SDMMC) += mmci_stm32_sdmmc.o
 obj-$(CONFIG_MMC_PXA)		+= pxamci.o
+obj-$(CONFIG_MMC_HAMCOP)	+= hamcop-sdi.o
 obj-$(CONFIG_MMC_MXC)		+= mxcmmc.o
 obj-$(CONFIG_MMC_MXS)		+= mxs-mmc.o
 obj-$(CONFIG_MMC_SDHCI)		+= sdhci.o
