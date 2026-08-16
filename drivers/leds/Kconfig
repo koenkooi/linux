@@ -301,6 +301,19 @@ config LEDS_LOCOMO
 	  This option enables support for the LEDs on Sharp Locomo.
 	  Zaurus models SL-5500 and SL-5600.
 
+config LEDS_HAMCOP
+	tristate "LED Support for Samsung HAMCOP companion ASIC"
+	depends on LEDS_CLASS
+	depends on MFD_HAMCOP
+	help
+	  This option enables support for the LEDs on Samsung HAMCOP
+	  companion ASIC. HAMCOP is found on HP iPAQ h2200/h2210/h2212/h2215
+	  PDAs and features a 5-channel blink-capable LED controller with
+	  independent duty-cycle and period timers.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called leds-hamcop.
+
 config LEDS_MIKROTIK_RB532
 	tristate "LED Support for Mikrotik Routerboard 532"
 	depends on LEDS_CLASS
