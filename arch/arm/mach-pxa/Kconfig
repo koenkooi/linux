@@ -53,12 +53,14 @@ config MACH_PXA3XX_DT
 config MACH_H2200
 	bool "HP iPAQ h2200"
 	depends on MACH_PXA25X_DT
+	depends on PM
 	select ARM_APPENDED_DTB
 	select ARM_ATAG_DTB_COMPAT
 	help
 	  Say Y here for the HP iPAQ h2200 (h2210/h2212/h2215 are the same
 	  board). Boots as a generic PXA25x device tree machine; this adds
-	  the pin muxing.
+	  the pin muxing and the suspend/reboot handling that
+	  preserves the bootloader in HAMCOP's SRAM.
 
 	  The bundled bootldr bootloader is ATAGS-only and cannot be
 	  updated to pass a real DTB, so this also selects the appended-DTB
