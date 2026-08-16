@@ -56,6 +56,7 @@ config MACH_H2200
 	depends on PM
 	select ARM_APPENDED_DTB
 	select ARM_ATAG_DTB_COMPAT
+	select MFD_HAMCOP
 	help
 	  Say Y here for the HP iPAQ h2200 (h2210/h2212/h2215 are the same
 	  board). Boots as a generic PXA25x device tree machine; this adds
