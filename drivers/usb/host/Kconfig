@@ -468,6 +468,19 @@ config USB_OHCI_HCD_PXA27X
 	  Enables support for the on-chip OHCI controller on
 	  PXA27x/PXA3xx chips.
 
+config USB_OHCI_HCD_SAMCOP
+	tristate "Support for the Samsung SAMCOP companion ASIC's OHCI USB controller"
+	depends on USB_OHCI_HCD && MFD_SAMCOP
+	help
+	  Enables support for the on-chip OHCI controller inside the
+	  Samsung SAMCOP companion ASIC found on the HP iPAQ h51xx/h54xx/
+	  h55xx family. This controller can only master its own 32 KiB
+	  on-chip SRAM, not system RAM, so this driver sets up a
+	  usb_hcd_setup_local_mem() pool over that SRAM.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called samcop-ohci.
+
 config USB_OHCI_HCD_AT91
 	tristate "Support for Atmel on-chip OHCI USB controller"
 	depends on USB_OHCI_HCD && (ARCH_AT91 || COMPILE_TEST) && OF
