@@ -57,11 +57,13 @@ config MACH_H2200
 	select ARM_APPENDED_DTB
 	select ARM_ATAG_DTB_COMPAT
 	select MFD_HAMCOP
+	select RFKILL
 	help
 	  Say Y here for the HP iPAQ h2200 (h2210/h2212/h2215 are the same
 	  board). Boots as a generic PXA25x device tree machine; this adds
-	  the pin muxing and the suspend/reboot handling that
-	  preserves the bootloader in HAMCOP's SRAM.
+	  the pin muxing, the suspend/reboot handling that
+	  preserves the bootloader in HAMCOP's SRAM, and Bluetooth power
+	  sequencing.
 
 	  The bundled bootldr bootloader is ATAGS-only and cannot be
 	  updated to pass a real DTB, so this also selects the appended-DTB

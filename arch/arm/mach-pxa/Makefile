@@ -22,7 +22,7 @@ obj-$(CONFIG_CPU_PXA320)	+= pxa320.o
 obj-$(CONFIG_MACH_PXA25X_DT)	+= pxa-dt.o
 obj-$(CONFIG_MACH_PXA27X_DT)	+= pxa-dt.o
 obj-$(CONFIG_MACH_PXA3XX_DT)	+= pxa-dt.o
-obj-$(CONFIG_MACH_H2200)	+= h2200.o h2200_pm.o
+obj-$(CONFIG_MACH_H2200)	+= h2200.o h2200_pm.o h2200_bt.o
 
 # 3rd Party Dev Platforms
 obj-$(CONFIG_ARCH_GUMSTIX)	+= gumstix.o
