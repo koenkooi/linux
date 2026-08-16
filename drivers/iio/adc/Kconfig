@@ -816,6 +816,19 @@ config ASIC2_ADC
 	  To compile this driver as a module, choose M here: the module
 	  will be called asic2-adc.
 
+config HAMCOP_ADC
+	tristate "HAMCOP ADC and resistive touchscreen front-end"
+	depends on MFD_HAMCOP
+	select IIO_BUFFER
+	help
+	  Say Y here to build support for the ADC and resistive touchscreen
+	  front-end inside the Samsung HAMCOP companion ASIC used on the HP
+	  iPAQ h2200 series. Pair with CONFIG_TOUCHSCREEN_ADC (the generic
+	  "resistive-adc-touch" driver) for touchscreen input events.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called hamcop-adc.
+
 config HI8435
 	tristate "Holt Integrated Circuits HI-8435 threshold detector"
 	select IIO_TRIGGERED_EVENT

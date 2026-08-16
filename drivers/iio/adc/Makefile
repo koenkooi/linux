@@ -69,6 +69,7 @@ obj-$(CONFIG_EXYNOS_ADC) += exynos_adc.o
 obj-$(CONFIG_FSL_MX25_ADC) += fsl-imx25-gcq.o
 obj-$(CONFIG_GEHC_PMC_ADC) += gehc-pmc-adc.o
 obj-$(CONFIG_ASIC2_ADC) += asic2-adc.o
+obj-$(CONFIG_HAMCOP_ADC) += hamcop-adc.o
 obj-$(CONFIG_HI8435) += hi8435.o
 obj-$(CONFIG_HX711) += hx711.o
 obj-$(CONFIG_IMX7D_ADC) += imx7d_adc.o
