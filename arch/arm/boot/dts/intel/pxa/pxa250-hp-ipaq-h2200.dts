@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Device tree for the HP iPAQ h2200 handheld (h2210/h2212/h2215 are the
+ * same target).
+ *
+ * Pin muxing, the HAMCOP companion ASIC and every peripheral it hosts
+ * (SD, NAND, ADC/touchscreen, backlight, audio) are not described here yet:
+ * the pin table is still applied from arch/arm/mach-pxa/h2200.c by a
+ * temporary of_machine_is_compatible() initcall. This file carries only
+ * what is needed for the board to be recognised and for RAM to be sized
+ * correctly.
+ *
+ * Copyright (C) 2026 Koen Kooi
+ */
+
+/dts-v1/;
+
+#include "pxa25x.dtsi"
+
+/ {
+	model = "HP iPAQ h2200";
+	compatible = "hp,ipaq-h2200", "marvell,pxa250";
+
+	chosen {
+		stdout-path = &ffuart;
+	};
+
+	memory@a0000000 {
+		device_type = "memory";
+		reg = <0xa0000000 0x04000000>; /* 64 MiB */
+	};
+};
+
+&ffuart {
+	status = "okay";
+};

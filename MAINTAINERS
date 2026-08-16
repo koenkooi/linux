@@ -11986,6 +11986,12 @@ L:	platform-driver-x86@vger.kernel.org
 S:	Orphan
 F:	drivers/platform/x86/hp/tc1100-wmi.c
 
+HP IPAQ H2200 AND SAMSUNG HAMCOP SUPPORT
+M:	Koen Kooi <koen@dominion.thruhere.net>
+L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
+S:	Maintained
+F:	arch/arm/boot/dts/intel/pxa/pxa250-hp-ipaq-h2200.dts
+
 HP IPAQ SERIAL KEYBOARD DRIVER
 M:	Koen Kooi <koen@dominion.thruhere.net>
 L:	linux-input@vger.kernel.org
