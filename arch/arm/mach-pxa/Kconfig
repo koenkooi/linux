@@ -77,6 +77,22 @@ config MACH_H2200
 	  not needed on this boot path (verified by reading
 	  arch/arm/kernel/setup.c).
 
+config MACH_H5000
+	bool "HP iPAQ h5000 family"
+	depends on MACH_PXA25X_DT
+	select ARM_APPENDED_DTB
+	select ARM_ATAG_DTB_COMPAT
+	help
+	  Say Y here for the HP iPAQ h51xx/h54xx/h55xx family (h5150,
+	  h5450/h5455, h5550/h5555 and siblings). Boots as a generic
+	  PXA25x device tree machine from pxa250-hp-ipaq-h5000.dts; this
+	  adds the pin muxing and the static memory timings.
+
+	  The bundled bootldr bootloader is ATAGS-only and cannot be
+	  updated to pass a real DTB, so this also selects the appended-DTB
+	  + ATAGS-compat mechanism (cat zImage h5000.dtb > zImage) instead
+	  of a MACH_TYPE_* registration.
+
 if ATAGS
 
 comment "Legacy board files"
