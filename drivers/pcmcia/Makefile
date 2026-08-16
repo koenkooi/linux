@@ -39,5 +39,6 @@ sa1100_cs-$(CONFIG_SA1100_COLLIE)		+= pxa2xx_sharpsl.o
 sa1100_cs-$(CONFIG_SA1100_H3600)		+= sa1100_h3600.o
 
 pxa2xx-obj-$(CONFIG_PXA_SHARPSL)		+= pxa2xx_sharpsl.o
+pxa2xx-obj-$(CONFIG_MACH_H2200)		+= pxa2xx_h2200.o
 obj-$(CONFIG_PCMCIA_PXA2XX)			+= pxa2xx_base.o $(pxa2xx-obj-y)
 obj-$(CONFIG_PCMCIA_XXS1500)			+= xxs1500_ss.o
