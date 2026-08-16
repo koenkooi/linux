@@ -1586,6 +1586,20 @@ config RZT2H_ADC
 	  To compile this driver as a module, choose M here: the
 	  module will be called rzt2h_adc.
 
+config SAMCOP_ADC
+	tristate "SAMCOP ADC, resistive touchscreen and light sensor front-end"
+	depends on MFD_SAMCOP
+	select IIO_BUFFER
+	help
+	  Say Y here to build support for the ADC, resistive touchscreen and
+	  light sensor front-end inside the Samsung SAMCOP companion ASIC
+	  used on the HP iPAQ h51xx/h54xx/h55xx series. Pair with
+	  CONFIG_TOUCHSCREEN_ADC (the generic "resistive-adc-touch" driver)
+	  for touchscreen input events.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called samcop-adc.
+
 config SC27XX_ADC
 	tristate "Spreadtrum SC27xx series PMICs ADC"
 	depends on MFD_SC27XX_PMIC || COMPILE_TEST
