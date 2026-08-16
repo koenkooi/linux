@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Device tree for the HP iPAQ h51xx/h54xx/h55xx handheld family
+ * (h5150/h5450/h5455/h5550/h5555 and siblings -- one board design,
+ * three RAM/flash/SoC configurations).
+ *
+ * Named pxa250-* despite h51xx/h55xx being PXA255, following the
+ * pxa250-hp-ipaq-h2200.dts precedent: "marvell,pxa250" is the only
+ * string pxa25x_dt_board_compat[] (arch/arm/mach-pxa/pxa-dt.c) and
+ * pxa25x.dtsi both advertise, so it is the mandatory fallback
+ * compatible regardless of which PXA25x part is actually fitted.
+ * cpu_is_pxa255() at runtime (include/linux/soc/pxa/cpu.h) is how
+ * board code tells the two apart.
+ *
+ * The memory node describes the 128 MiB of the h55xx. The h51xx and
+ * h54xx have 64 MiB and must not inherit this value. The boot loader is
+ * ATAGS-only, so the board boots from an appended DTB with
+ * ARM_ATAG_DTB_COMPAT, which lets the boot loader's ATAG_MEM replace the
+ * reg property (arch/arm/boot/compressed/atags_to_fdt.c).
+ *
+ * Every pad except the ones the pin controller owns is muxed by the
+ * pxa2xx_mfp_config() table in arch/arm/mach-pxa/h5000.c, applied from an
+ * of_machine_is_compatible() gated initcall because the generic PXA25x DT
+ * machine has no per-board hook.
+ *
+ * pxa25x.dtsi has no static memory controller node or chip-select
+ * ranges, so the devices on the static chip selects are described at
+ * their raw physical addresses.
+ *
+ * Copyright (C) 2026 Koen Kooi
+ */
+
+/dts-v1/;
+
+#include "pxa25x.dtsi"
+
+/ {
+	model = "HP iPAQ h5000";
+	compatible = "hp,ipaq-h5000", "marvell,pxa250";
+
+	chosen {
+		stdout-path = &ffuart;
+	};
+
+	memory@a0000000 {
+		device_type = "memory";
+		reg = <0xa0000000 0x08000000>; /* 128 MiB, h55xx */
+	};
+
+	/*
+	 * NOR flash on nCS_0. The CFI probe of the fitted part finds 32 MiB
+	 * (0x00000000-0x01ffffff). Vendor sources describe a further 16 MiB
+	 * bank at 0x02000000 on h54xx/h55xx, but it has not been probed on
+	 * live hardware, so it is not described here: probing a bank that
+	 * is absent can alias bank 0, and a partition on that alias would
+	 * then write over the boot loader.
+	 *
+	 * The partitions come from this node rather than from the boot
+	 * loader's mtdparts= argument, because cmdlinepart matches the mtd_id
+	 * of that argument ("ipaq") against the device name ("0.flash") and
+	 * so never applies.
+	 */
+	flash@0 {
+		compatible = "cfi-flash";
+		reg = <0x00000000 0x02000000>;
+		bank-width = <4>;
+
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "bootldr";
+				reg = <0x00000000 0x00040000>;
+				read-only;
+			};
+
+			partition@40000 {
+				label = "root";
+				reg = <0x00040000 0x01fc0000>;
+			};
+		};
+	};
+};
+
+&ffuart {
+	status = "okay";
+};
+
+/*
+ * The onboard Bluetooth (LMX9814) is on the HWUART pins GPIO42-45, not
+ * on the BTUART, so the BTUART stays disabled: both would drive the same
+ * pads.
+ */
+&hwuart {
+	status = "okay";
+};
