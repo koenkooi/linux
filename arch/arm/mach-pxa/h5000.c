@@ -33,6 +33,7 @@
 #include <linux/gpio/legacy.h>
 #include <linux/init.h>
 #include <linux/io.h>
+#include <linux/kstrtox.h>
 #include <linux/of.h>
 #include <linux/printk.h>
 #include <linux/soc/pxa/cpu.h>
@@ -71,6 +72,10 @@ static unsigned long h5000_pin_config[] __initdata = {
 	GPIO7_GPIO,				/* H5000_GPIO_RESET_BUTTON_AGAIN_N */
 	MFP_CFG_OUT(GPIO8, AF0, DRIVE_HIGH),	/* not connected */
 	GPIO9_GPIO,				/* H5000_GPIO_RSO_N (BATT_FAULT) */
+	/*
+	 * Not a wakeup pin by default even though every SAMCOP source asserts
+	 * through it; see h5000.asic_wake below.
+	 */
 	GPIO10_GPIO,				/* H5000_GPIO_ASIC_INT_N */
 
 	/* Bluetooth (LMX9814) control lines */
@@ -227,12 +232,57 @@ static void __init fix_msc(void)
 	pxa2xx_clk_exclude_mdrefr_db2(MDREFR_K2DB2);
 }
 
+/*
+ * "h5000.asic_wake=1" arms GPIO10 (ASIC_INT_N), the one line all of the
+ * SAMCOP's interrupt sources assert through, as a wakeup source on its
+ * falling edge. gpio_set_wake() writes PWER/PRER/PFER only for a pin whose
+ * config carries MFP_LPM_CAN_WAKEUP, so without this the .irq_set_wake
+ * callbacks of drivers/mfd/samcop.c succeed and arm nothing.
+ *
+ * Off by default and a boot argument rather than a build option: no
+ * suspend and resume round trip has been run on this board, and an edge
+ * armed the wrong way gives a board that never wakes or wakes spuriously.
+ * The line is active low, and the SAMCOP driver arms the same pin's runtime
+ * trigger as falling edge, so a single edge is armed, not both.
+ */
+static bool h5000_asic_wake __initdata;
+
+static int __init h5000_asic_wake_setup(char *str)
+{
+	if (!str || kstrtobool(str, &h5000_asic_wake))
+		return 0;
+
+	return 1;
+}
+early_param("h5000.asic_wake", h5000_asic_wake_setup);
+
+static void __init h5000_arm_asic_wake(void)
+{
+	unsigned int i;
+
+	if (!h5000_asic_wake)
+		return;
+
+	/* By pin number, so reordering the table cannot arm another pin. */
+	for (i = 0; i < ARRAY_SIZE(h5000_pin_config); i++) {
+		if (MFP_PIN(h5000_pin_config[i]) != MFP_PIN_GPIO10)
+			continue;
+
+		h5000_pin_config[i] |= WAKEUP_ON_EDGE_FALL;
+		pr_info("h5000: ASIC_INT_N (GPIO10) armed as a wakeup source, falling edge\n");
+		return;
+	}
+
+	pr_warn("h5000: no GPIO10 entry in the pin table, asic_wake ignored\n");
+}
+
 static int __init h5000_init(void)
 {
 	if (!of_machine_is_compatible("hp,ipaq-h5000"))
 		return 0;
 
 	fix_msc();
+	h5000_arm_asic_wake();
 	pxa2xx_mfp_config(ARRAY_AND_SIZE(h5000_pin_config));
 	if (!cpu_is_pxa255())
 		pxa2xx_mfp_config(ARRAY_AND_SIZE(h5400_btuart_pin_config));
