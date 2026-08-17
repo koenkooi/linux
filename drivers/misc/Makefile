@@ -67,6 +67,7 @@ obj-$(CONFIG_MARVELL_CN10K_DPI)	+= mrvl_cn10k_dpi.o
 obj-$(CONFIG_IPAQ_SLEEVE_BUS)	+= ipaq-sleeve.o
 obj-$(CONFIG_MISC_ASIC2_SLEEVE)	+= asic2-sleeve.o
 obj-$(CONFIG_MISC_NAVMAN_GPS_SLEEVE) += navman-gps-sleeve.o
+obj-$(CONFIG_MISC_SAMCOP_FSI)	+= samcop-fsi.o
 lan966x-pci-objs		:= lan966x_pci.o
 lan966x-pci-objs		+= lan966x_pci.dtbo.o
 obj-$(CONFIG_MCHP_LAN966X_PCI)	+= lan966x-pci.o
