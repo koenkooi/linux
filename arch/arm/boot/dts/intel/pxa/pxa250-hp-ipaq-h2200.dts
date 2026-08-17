@@ -32,6 +32,28 @@
 	};
 
 	/*
+	 * MediaQ 1178 panel backlight. GPIO16 (PWM0 output) drives
+	 * brightness via duty cycle; GPIO17 is the digital enable for the
+	 * backlight power transistor, active-high. Both pins are still muxed
+	 * by h2200.c's pxa2xx_mfp_config() table rather than by a &pinctrl
+	 * state, although drivers/pinctrl/pxa/pinctrl-pxa25x.c does describe
+	 * the "PWM0" function on GPIO16.
+	 *
+	 * brightness-levels/num-interpolated-steps give a linear 0-1023
+	 * duty-cycle range with full brightness as the default, rather than
+	 * the driver's default CIE1931-corrected table.
+	 */
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&pwm0 1000000>; /* 1 kHz */
+		enable-gpios = <&gpio 17 GPIO_ACTIVE_HIGH>;
+
+		brightness-levels = <0 1023>;
+		num-interpolated-steps = <1023>;
+		default-brightness-level = <1023>;
+	};
+
+	/*
 	 * CompactFlash socket. The shared PXA PCMCIA driver is matched by
 	 * name and needs board callbacks that no property can express, so
 	 * the board code registers the platform device and merely looks this
