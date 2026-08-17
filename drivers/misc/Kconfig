@@ -616,6 +616,26 @@ config MISC_NAVMAN_GPS_SLEEVE
 	  To compile this driver as a module, choose M here: the module
 	  will be called navman-gps-sleeve.
 
+config MISC_SAMCOP_FSI
+	tristate "SAMCOP FSI fingerprint sensor (HP iPAQ h54xx/h55xx)"
+	depends on MFD_SAMCOP
+	help
+	  Raw-acquisition driver for the SAMCOP FSI cell wired to an Atmel
+	  AT77C101B "FingerChip" thermal swipe fingerprint sensor, found on
+	  the HP iPAQ h54xx and h55xx family (not h51xx, which has no
+	  sensor -- this option is nonetheless safe to enable for every
+	  h5xxx variant, since the register window exists and probes
+	  cleanly regardless of whether a sensor is wired to it).
+
+	  This exposes a /dev/fsi misc character device returning raw
+	  32-bit acquisition words. Presence detection, frame assembly and
+	  minutiae matching are not done here -- they belong to a userspace
+	  stack such as libfprint plus NBIS, built against this device
+	  separately.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called samcop-fsi.
+
 config MCHP_LAN966X_PCI
 	tristate "Microchip LAN966x PCIe Support"
 	depends on PCI
