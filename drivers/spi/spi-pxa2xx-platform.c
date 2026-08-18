@@ -194,6 +194,7 @@ MODULE_DEVICE_TABLE(acpi, pxa2xx_spi_acpi_match);
 
 static const struct of_device_id pxa2xx_spi_of_match[] = {
 	{ .compatible = "marvell,mmp2-ssp", .data = (void *)MMP2_SSP },
+	{ .compatible = "mrvl,pxa27x-ssp", .data = (void *)PXA27x_SSP },
 	{}
 };
 MODULE_DEVICE_TABLE(of, pxa2xx_spi_of_match);
