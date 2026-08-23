@@ -4,6 +4,7 @@
  *
  * Copyright (C) 2015 Robert Jarzmik
  */
+#include <linux/io.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
@@ -504,25 +505,50 @@ static const struct pxa_desc_pin pxa27x_pins[] = {
 static int pxa27x_pinctrl_probe(struct platform_device *pdev)
 {
 	int i;
+	struct resource *res;
 	void __iomem *base_af[8];
 	void __iomem *base_dir[4];
 	void __iomem *base_sleep[4];
 
-	base_af[0] = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(base_af[0]))
-		return PTR_ERR(base_af[0]);
+	/*
+	 * Do not use devm_platform_ioremap_resource() here: it calls
+	 * devm_ioremap_resource(), which takes exclusive ownership of the
+	 * memory region via devm_request_mem_region(). These GAFR/GPDR
+	 * register windows are also accessed directly by the pxa-gpio
+	 * driver (drivers/gpio/gpio-pxa.c) for the same physical range, so
+	 * claiming them exclusively here makes gpio-pxa's own
+	 * devm_platform_ioremap_resource() fail with -EBUSY whenever this
+	 * driver probes first, and no gpiochip is ever registered. Map the
+	 * regions with plain devm_ioremap() instead, which does not reserve
+	 * them, so both drivers can legitimately share the same registers.
+	 */
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res)
+		return -ENODEV;
+	base_af[0] = devm_ioremap(&pdev->dev, res->start, resource_size(res));
+	if (!base_af[0])
+		return -ENOMEM;
 
-	base_dir[0] = devm_platform_ioremap_resource(pdev, 1);
-	if (IS_ERR(base_dir[0]))
-		return PTR_ERR(base_dir[0]);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+	if (!res)
+		return -ENODEV;
+	base_dir[0] = devm_ioremap(&pdev->dev, res->start, resource_size(res));
+	if (!base_dir[0])
+		return -ENOMEM;
 
-	base_dir[3] = devm_platform_ioremap_resource(pdev, 2);
-	if (IS_ERR(base_dir[3]))
-		return PTR_ERR(base_dir[3]);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 2);
+	if (!res)
+		return -ENODEV;
+	base_dir[3] = devm_ioremap(&pdev->dev, res->start, resource_size(res));
+	if (!base_dir[3])
+		return -ENOMEM;
 
-	base_sleep[0] = devm_platform_ioremap_resource(pdev, 3);
-	if (IS_ERR(base_sleep[0]))
-		return PTR_ERR(base_sleep[0]);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 3);
+	if (!res)
+		return -ENODEV;
+	base_sleep[0] = devm_ioremap(&pdev->dev, res->start, resource_size(res));
+	if (!base_sleep[0])
+		return -ENOMEM;
 
 	for (i = 0; i < ARRAY_SIZE(base_af); i++)
 		base_af[i] = base_af[0] + sizeof(base_af[0]) * i;
