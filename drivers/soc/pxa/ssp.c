@@ -114,6 +114,17 @@ static int pxa_ssp_probe(struct platform_device *pdev)
 	struct ssp_device *ssp;
 	struct device *dev = &pdev->dev;
 
+	/*
+	 * An SSP node with a DT child is wired up as a SPI controller.
+	 * spi-pxa2xx-platform.c matches the same compatibles and creates the
+	 * spi_device children; this driver cannot. Decline with -ENODEV, not
+	 * -EPROBE_DEFER, so the device stays unbound until that driver
+	 * registers and claims it. Childless nodes, such as the ones the ASoC
+	 * SSP DAI borrows through pxa_ssp_request_of(), still bind here.
+	 */
+	if (dev->of_node && of_get_available_child_count(dev->of_node) > 0)
+		return -ENODEV;
+
 	ssp = devm_kzalloc(dev, sizeof(struct ssp_device), GFP_KERNEL);
 	if (ssp == NULL)
 		return -ENOMEM;
