@@ -1856,13 +1856,16 @@ static irqreturn_t
 pxa25x_udc_irq(int irq, void *_dev)
 {
 	struct pxa25x_udc	*dev = _dev;
-	int			handled;
 
 	dev->stats.irqs++;
-	do {
+	/*
+	 * Handle one batch of events and return: a UDCCR_RSTIR that keeps
+	 * reasserting (bus in reset with no cable) must not keep the handler
+	 * looping in hard-IRQ context.
+	 */
+	{
 		u32		udccr = udc_get_reg(dev, UDCCR);
-
-		handled = 0;
+		int		handled = 0;
 
 		/* SUSpend Interrupt Request */
 		if (unlikely(udccr & UDCCR_SUSIR)) {
@@ -1917,7 +1920,7 @@ pxa25x_udc_irq(int irq, void *_dev)
 			int	i;
 
 			if (unlikely (!usir0 && !usir1))
-				continue;
+				return IRQ_HANDLED;
 
 			DBG(DBG_VERY_NOISY, "irq %02x.%02x\n", usir1, usir0);
 
@@ -1951,7 +1954,7 @@ pxa25x_udc_irq(int irq, void *_dev)
 
 		/* we could also ask for 1 msec SOF (SIR) interrupts */
 
-	} while (handled);
+	}
 	return IRQ_HANDLED;
 }
 
