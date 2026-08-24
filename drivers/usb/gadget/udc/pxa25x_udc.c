@@ -336,14 +336,14 @@ static inline void udc_set_mask_UDCCR(struct pxa25x_udc *dev, int mask)
 {
 	u32 udccr = udc_get_reg(dev, UDCCR);
 
-	udc_set_reg(dev, (udccr & UDCCR_MASK_BITS) | (mask & UDCCR_MASK_BITS), UDCCR);
+	udc_set_reg(dev, UDCCR, (udccr & UDCCR_MASK_BITS) | (mask & UDCCR_MASK_BITS));
 }
 
 static inline void udc_clear_mask_UDCCR(struct pxa25x_udc *dev, int mask)
 {
 	u32 udccr = udc_get_reg(dev, UDCCR);
 
-	udc_set_reg(dev, (udccr & UDCCR_MASK_BITS) & ~(mask & UDCCR_MASK_BITS), UDCCR);
+	udc_set_reg(dev, UDCCR, (udccr & UDCCR_MASK_BITS) & ~(mask & UDCCR_MASK_BITS));
 }
 
 static inline void udc_ack_int_UDCCR(struct pxa25x_udc *dev, int mask)
@@ -351,7 +351,7 @@ static inline void udc_ack_int_UDCCR(struct pxa25x_udc *dev, int mask)
 	/* udccr contains the bits we dont want to change */
 	u32 udccr = udc_get_reg(dev, UDCCR) & UDCCR_MASK_BITS;
 
-	udc_set_reg(dev, udccr | (mask & ~UDCCR_MASK_BITS), UDCCR);
+	udc_set_reg(dev, UDCCR, udccr | (mask & ~UDCCR_MASK_BITS));
 }
 
 static inline u32 udc_ep_get_UDCCS(struct pxa25x_ep *ep)
@@ -361,7 +361,7 @@ static inline u32 udc_ep_get_UDCCS(struct pxa25x_ep *ep)
 
 static inline void udc_ep_set_UDCCS(struct pxa25x_ep *ep, u32 data)
 {
-	udc_set_reg(ep->dev, data, ep->regoff_udccs);
+	udc_set_reg(ep->dev, ep->regoff_udccs, data);
 }
 
 static inline u32 udc_ep0_get_UDCCS(struct pxa25x_udc *dev)
@@ -371,7 +371,7 @@ static inline u32 udc_ep0_get_UDCCS(struct pxa25x_udc *dev)
 
 static inline void udc_ep0_set_UDCCS(struct pxa25x_udc *dev, u32 data)
 {
-	udc_set_reg(dev, data, UDCCS0);
+	udc_set_reg(dev, UDCCS0, data);
 }
 
 static inline u32 udc_ep_get_UDDR(struct pxa25x_ep *ep)
@@ -381,7 +381,7 @@ static inline u32 udc_ep_get_UDDR(struct pxa25x_ep *ep)
 
 static inline void udc_ep_set_UDDR(struct pxa25x_ep *ep, u32 data)
 {
-	udc_set_reg(ep->dev, data, ep->regoff_uddr);
+	udc_set_reg(ep->dev, ep->regoff_uddr, data);
 }
 
 static inline u32 udc_ep_get_UBCR(struct pxa25x_ep *ep)
