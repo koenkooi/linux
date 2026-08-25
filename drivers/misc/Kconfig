@@ -545,6 +545,25 @@ config MARVELL_CN10K_DPI
 	  To compile this driver as a module, choose M here: the module
 	  will be called mrvl_cn10k_dpi.
 
+config IPAQ_SLEEVE_BUS
+	tristate "iPAQ H3xxx/h5xxx expansion pack (sleeve) bus"
+	help
+	  Generic bus abstraction for the Compaq/HP iPAQ H3xxx and h5xxx
+	  expansion-pack ("sleeve") connector: one physical connector, one
+	  SPI-readable ID EEPROM protocol (vendor ID at offset 6, device
+	  ID at offset 8) and one vendor/device ID namespace, shared
+	  across both device families.
+
+	  This is the bus core only. It enumerates whichever sleeve is
+	  plugged in against registered ipaq_sleeve_driver::id_table
+	  entries, and exposes a small vtable (struct ipaq_sleeve_ops)
+	  that a per-machine backend implements to drive the real SPI link
+	  and EGPIO lines. It does nothing on its own; enable it only
+	  alongside a backend driver and/or a sleeve device driver.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called ipaq-sleeve.
+
 config MCHP_LAN966X_PCI
 	tristate "Microchip LAN966x PCIe Support"
 	depends on PCI
