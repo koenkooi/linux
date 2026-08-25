@@ -112,6 +112,15 @@ PARENTS(pxa25x_pbus95) = { "ppll_95_85mhz", "ppll_95_85mhz" };
 PARENTS(pxa25x_pbus147) = { "ppll_147_46mhz", "ppll_147_46mhz" };
 PARENTS(pxa25x_osc3) = { "osc_3_6864mhz", "osc_3_6864mhz" };
 
+/*
+ * Parent lists fed to a PXA25X_CKEN* entry are consumed with a hardcoded
+ * num_parents of 2: index 0 is the run-mode source and index 1 the
+ * low-power one, which is why the single-source lists above name their
+ * clock twice. clk_pxa25x_memory_parents is the one-entry parent list of
+ * the "memory" clock itself and must not be used for a CKEN entry.
+ */
+PARENTS(pxa25x_cken_memc) = { "memory", "memory" };
+
 #define PXA25X_CKEN(dev_id, con_id, parents, mult, div,			\
 		    bit, is_lp, flags)					\
 	PXA_CKEN(dev_id, con_id, bit, parents, mult, div, mult, div,	\
@@ -150,9 +159,18 @@ static struct desc_clk_cken pxa25x_clocks[] __initdata = {
 	PXA25X_OSC3_CKEN("pxa25x-pwm.0", NULL, PWM0, 1, 1, 0),
 	PXA25X_OSC3_CKEN("pxa25x-pwm.1", NULL, PWM1, 1, 1, 0),
 
-	PXA25X_CKEN_1RATE("pxa2xx-fb", NULL, LCD, clk_pxa25x_memory_parents, 0),
+	/*
+	 * The LCD controller divides MEMCLK, not the run clock: the PCD field
+	 * of LCCR3 is a divisor of the memory clock, and pxafb derives it from
+	 * the rate of this clock.
+	 */
+	PXA25X_CKEN_1RATE("pxa2xx-fb", NULL, LCD, pxa25x_cken_memc_parents, 0),
+	/*
+	 * The PCMCIA timings pxa2xx_base.c computes are in memory clock
+	 * cycles, so the controller has to be sourced from "memory".
+	 */
 	PXA25X_CKEN_1RATE_AO("pxa2xx-pcmcia", NULL, MEMC,
-			     clk_pxa25x_memory_parents, 0),
+			     pxa25x_cken_memc_parents, 0),
 };
 
 /*
