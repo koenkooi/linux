@@ -1042,7 +1042,7 @@ static int pxa25x_ep_set_halt(struct usb_ep *_ep, int value)
 
 	/* and bulk/intr endpoints like dropping stalls too */
 	} else {
-		unsigned i;
+		unsigned int i;
 		for (i = 0; i < 1000; i += 20) {
 			if (udc_ep_get_UDCCS(ep) & UDCCS_BI_SST)
 				break;
@@ -1584,7 +1584,7 @@ static int pxa25x_udc_stop(struct usb_gadget*g)
 
 static inline void clear_ep_state (struct pxa25x_udc *dev)
 {
-	unsigned i;
+	unsigned int i;
 
 	/* hardware SET_{CONFIGURATION,INTERFACE} automagic resets endpoint
 	 * fifos, and pending transactions mustn't be continued in any case.
@@ -1760,7 +1760,7 @@ stall:
 
 		} else if (likely((udccs0 & (UDCCS0_OPR|UDCCS0_SA))
 				== (UDCCS0_OPR|UDCCS0_SA))) {
-			unsigned i;
+			unsigned int i;
 
 			/* pxa210/250 erratum 131 for B0/B1 says RNE lies.
 			 * still observed on a pxa255 a0.
