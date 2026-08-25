@@ -13834,6 +13834,7 @@ S:	Maintained
 F:	Documentation/ABI/testing/sysfs-bus-ipaq-sleeve
 F:	drivers/misc/asic2-sleeve.c
 F:	drivers/misc/ipaq-sleeve.c
+F:	drivers/misc/navman-gps-sleeve.c
 F:	include/linux/ipaq-sleeve.h
 
 IPMI SUBSYSTEM

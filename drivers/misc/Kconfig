@@ -587,6 +587,35 @@ config MISC_ASIC2_SLEEVE
 	  To compile this driver as a module, choose M here: the module
 	  will be called asic2-sleeve.
 
+config MISC_NAVMAN_GPS_SLEEVE
+	tristate "Navman GPS/CF sleeve support (HP iPAQ h39xx/h5xxx)"
+	depends on IPAQ_SLEEVE_BUS
+	depends on SERIAL_8250
+	depends on PCMCIA
+	depends on HAS_IOMEM
+	help
+	  Driver for the GPS receiver in the Navman GPS 3000/3400/3450
+	  "Smart sleeve", a snap-on iPAQ expansion pack that combines a
+	  built-in GPS receiver with a CompactFlash slot. The receiver is
+	  a 16550-class serial port mapped into the host's PC Card I/O
+	  window and is registered against the generic 8250 core, so it
+	  appears as an ordinary ttyS. A standard NMEA-speaking userspace
+	  daemon such as gpsd then talks to it; no protocol handling is
+	  done in the kernel.
+
+	  The jacket's CompactFlash slot is not this driver's: it is
+	  instantiated by the board's own PCMCIA socket driver, as a
+	  separate consumer of the same expansion-pack bus, and works
+	  whether or not this driver is enabled.
+
+	  The UART answers at the I/O base of PC Card socket 1, the
+	  jacket's own socket. The driver orders itself after the board's
+	  PCMCIA socket driver on the same jacket event. If that socket
+	  driver is a module too, load it before this one.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called navman-gps-sleeve.
+
 config MCHP_LAN966X_PCI
 	tristate "Microchip LAN966x PCIe Support"
 	depends on PCI
