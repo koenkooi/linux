@@ -71,8 +71,32 @@
 		add-en-gpios = <&gpio 25 GPIO_ACTIVE_LOW>;
 		buff-en-gpios = <&gpio 63 GPIO_ACTIVE_HIGH>;
 	};
+
+	/*
+	 * Zeevo Bluetooth module power control; its HCI UART is &hwuart below.
+	 * BT_RESET_N (GPIO74) is the module's active-low reset, BT_POWER_ON
+	 * (GPIO76) and BT_WAKE (GPIO10) are plain active-high lines, and
+	 * BT_IDENT (GPIO75) reads high when the Zeevo module is fitted.
+	 */
+	bluetooth {
+		compatible = "hp,ipaq-h2200-bt";
+		reset-gpios = <&gpio 74 GPIO_ACTIVE_LOW>;
+		power-gpios = <&gpio 76 GPIO_ACTIVE_HIGH>;
+		device-wakeup-gpios = <&gpio 10 GPIO_ACTIVE_HIGH>;
+		ident-gpios = <&gpio 75 GPIO_ACTIVE_HIGH>;
+	};
 };
 
 &ffuart {
+	status = "okay";
+};
+
+/*
+ * Onboard Zeevo Bluetooth chip, HCI transport over HWUART rather than
+ * BTUART (see the comment on GPIO42-45 in h2200_pin_config[] in
+ * arch/arm/mach-pxa/h2200.c). Power sequencing is the root-level
+ * "bluetooth" node's, handled separately by the h2200_bt rfkill driver.
+ */
+&hwuart {
 	status = "okay";
 };
