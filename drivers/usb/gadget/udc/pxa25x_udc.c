@@ -926,10 +926,17 @@ pxa25x_ep_queue(struct usb_ep *_ep, struct usb_request *_req, gfp_t gfp_flags)
 					&& read_fifo(ep, req))
 				req = NULL;
 		}
-
-		if (likely(req && ep->ep.desc))
-			pio_irq_enable(ep);
 	}
+
+	/*
+	 * Unmask when the queue will not be empty on return, not when this
+	 * request survived: done() runs the completion callback inline with
+	 * ep->stopped set, which fails the kickstart test above, and a gadget
+	 * that requeues from it (u_serial, u_ether) would otherwise leave the
+	 * new request on an endpoint whose interrupt stays masked.
+	 */
+	if (likely(ep->ep.desc) && (req || !list_empty(&ep->queue)))
+		pio_irq_enable(ep);
 
 	/* pio or dma irq handler advances the queue. */
 	if (likely(req != NULL))
