@@ -153,10 +153,14 @@ static const char *state_name[] = {
 #    define UDC_DEBUG DBG_NORMAL
 #endif
 
+/* pxa25x_udc.c includes this header before it defines these accessors */
+static inline u32 udc_get_reg(struct pxa25x_udc *, u32);
+static inline u32 udc_ep0_get_UDCCS(struct pxa25x_udc *);
+
 static void __maybe_unused
 dump_udccr(const char *label)
 {
-	u32	udccr = UDCCR;
+	u32	udccr = udc_get_reg(the_controller, UDCCR);
 	DMSG("%s %02X =%s%s%s%s%s%s%s%s\n",
 		label, udccr,
 		(udccr & UDCCR_REM) ? " rem" : "",
@@ -172,7 +176,7 @@ dump_udccr(const char *label)
 static void __maybe_unused
 dump_udccs0(const char *label)
 {
-	u32		udccs0 = UDCCS0;
+	u32		udccs0 = udc_ep0_get_UDCCS(the_controller);
 
 	DMSG("%s %s %02X =%s%s%s%s%s%s%s%s\n",
 		label, state_name[the_controller->ep0state], udccs0,
@@ -196,10 +200,12 @@ dump_state(struct pxa25x_udc *dev)
 
 	DMSG("%s, uicr %02X.%02X, usir %02X.%02x, ufnr %02X.%02X\n",
 		state_name[dev->ep0state],
-		UICR1, UICR0, USIR1, USIR0, UFNRH, UFNRL);
+		udc_get_reg(dev, UICR1), udc_get_reg(dev, UICR0),
+		udc_get_reg(dev, USIR1), udc_get_reg(dev, USIR0),
+		udc_get_reg(dev, UFNRH), udc_get_reg(dev, UFNRL));
 	dump_udccr("udccr");
 	if (dev->has_cfr) {
-		tmp = UDCCFR;
+		tmp = udc_get_reg(dev, UDCCFR);
 		DMSG("udccfr %02X =%s%s\n", tmp,
 			(tmp & UDCCFR_AREN) ? " aren" : "",
 			(tmp & UDCCFR_ACM) ? " acm" : "");
