@@ -909,9 +909,22 @@ pxa25x_ep_queue(struct usb_ep *_ep, struct usb_request *_req, gfp_t gfp_flags)
 			if ((udc_ep_get_UDCCS(ep) & UDCCS_BI_TFS) != 0
 					&& write_fifo(ep, req))
 				req = NULL;
-		} else if ((udc_ep_get_UDCCS(ep) & UDCCS_BO_RFS) != 0
-				&& read_fifo(ep, req)) {
-			req = NULL;
+		} else {
+			/*
+			 * Test RPC (packet complete), not RFS: the PXA255 manual
+			 * says RPC must be used to validate the other status bits,
+			 * which are not updated until RPC is set, so gating on RFS
+			 * without RPC reads a bit that need not be valid yet.
+			 * read_fifo() and handle_ep() already key off RPC, and
+			 * pxa27x_udc does the same.
+			 * An OUT packet can arrive with no request queued; handle_ep()
+			 * then masks the interrupt and leaves the packet in the FIFO,
+			 * and draining it here is the only way to recover it.
+			 * read_fifo() re-tests RPC, so this cannot over-read.
+			 */
+			if ((udc_ep_get_UDCCS(ep) & UDCCS_BO_RPC) != 0
+					&& read_fifo(ep, req))
+				req = NULL;
 		}
 
 		if (likely(req && ep->ep.desc))
@@ -1066,10 +1079,24 @@ static void pxa25x_ep_fifo_flush(struct usb_ep *_ep)
 
 	/* toggle and halt bits stay unchanged */
 
-	/* for OUT, just read and discard the FIFO contents. */
+	/*
+	 * For OUT, read and discard the FIFO contents and then ack RPC, which
+	 * draining alone does not clear: a stale RPC would look like a waiting
+	 * packet to pxa25x_ep_queue() and complete the next request with no
+	 * data. The FIFO is double buffered, so a second pass may find another
+	 * packet; two passes bound it. The RPC and RNE bits are the same for
+	 * the iso-OUT endpoints.
+	 */
 	if ((ep->bEndpointAddress & USB_DIR_IN) == 0) {
-		while (((udc_ep_get_UDCCS(ep)) & UDCCS_BO_RNE) != 0)
-			(void)udc_ep_get_UDDR(ep);
+		unsigned int i;
+
+		for (i = 0; i < 2; i++) {
+			while (((udc_ep_get_UDCCS(ep)) & UDCCS_BO_RNE) != 0)
+				(void)udc_ep_get_UDDR(ep);
+			if ((udc_ep_get_UDCCS(ep) & UDCCS_BO_RPC) == 0)
+				break;
+			udc_ep_set_UDCCS(ep, UDCCS_BO_RPC);
+		}
 		return;
 	}
 
