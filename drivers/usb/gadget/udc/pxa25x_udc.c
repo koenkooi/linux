@@ -1965,21 +1965,27 @@ pxa25x_udc_irq(int irq, void *_dev)
 				handled = 1;
 			}
 
-			/* endpoint data transfers */
+			/*
+			 * Endpoint data transfers. Ack only this endpoint's bit, and
+			 * before servicing it: USIRn is write-1-to-clear, so writing
+			 * back the register ORed with the bit also cleared endpoints
+			 * whose interrupt arrived after the snapshot above. Those were
+			 * never dispatched and never announced again, and a stuck
+			 * bulk-IN endpoint stalls its whole TX queue. This matches
+			 * irq_handle_data() of pxa27x_udc.
+			 */
 			for (i = 0; i < 8; i++) {
 				u32	tmp = 1 << i;
 
 				if (i && (usir0 & tmp)) {
+					udc_set_reg(dev, USIR0, tmp);
 					handle_ep(&dev->ep[i]);
-					udc_set_reg(dev, USIR0,
-						udc_get_reg(dev, USIR0) | tmp);
 					handled = 1;
 				}
 #ifndef	CONFIG_USB_PXA25X_SMALL
 				if (usir1 & tmp) {
+					udc_set_reg(dev, USIR1, tmp);
 					handle_ep(&dev->ep[i+8]);
-					udc_set_reg(dev, USIR1,
-						udc_get_reg(dev, USIR1) | tmp);
 					handled = 1;
 				}
 #endif
