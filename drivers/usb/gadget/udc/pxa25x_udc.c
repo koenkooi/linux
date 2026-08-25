@@ -735,7 +735,7 @@ read_fifo (struct pxa25x_ep *ep, struct pxa25x_request *req)
 			is_short ? "/S" : "",
 			req, req->req.actual, req->req.length);
 		while (likely (count-- != 0)) {
-			u8	byte = (u8) udc_ep_get_UDDR(ep);
+			u8	byte = (u8)udc_ep_get_UDDR(ep);
 
 			if (unlikely (bufferspace == 0)) {
 				/* this happens when the driver's buffer
@@ -791,7 +791,7 @@ read_ep0_fifo (struct pxa25x_ep *ep, struct pxa25x_request *req)
 	bufferspace = req->req.length - req->req.actual;
 
 	while (udc_ep_get_UDCCS(ep) & UDCCS0_RNE) {
-		byte = (u8) UDDR0;
+		byte = (u8)udc_ep_get_UDDR(ep);
 
 		if (unlikely (bufferspace == 0)) {
 			/* this happens when the driver's buffer
@@ -1624,7 +1624,7 @@ bad_setup:
 					DMSG("SETUP %d!\n", i);
 					goto stall;
 				}
-				u.raw [i] = (u8) UDDR0;
+				u.raw[i] = (u8)udc_ep_get_UDDR(ep);
 			}
 			if (unlikely((udc_ep0_get_UDCCS(dev) & UDCCS0_RNE) != 0))
 				goto bad_setup;
@@ -1736,7 +1736,7 @@ stall:
 
 			/* read SETUP data, but don't trust it too much */
 			for (i = 0; i < 8; i++)
-				u.raw [i] = (u8) UDDR0;
+				u.raw[i] = (u8)udc_ep_get_UDDR(ep);
 			if ((u.r.bRequestType & USB_RECIP_MASK)
 					> USB_RECIP_OTHER)
 				goto stall;
