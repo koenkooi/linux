@@ -20,6 +20,7 @@
 	static struct clk_hw name ## _mux_hw;			\
 	static struct clk_hw name ## _rate_hw;			\
 	static const struct clk_ops name ## _mux_ops = {	\
+		.determine_rate = clk_hw_determine_rate_no_reparent, \
 		.get_parent = name ## _get_parent,		\
 		.set_parent = dummy_clk_set_parent,		\
 	};							\
