@@ -2322,7 +2322,8 @@ static int pxa25x_udc_probe(struct platform_device *pdev)
 	if (IS_ERR(dev->regs))
 		return PTR_ERR(dev->regs);
 
-	dev->clk = devm_clk_get(&pdev->dev, NULL);
+	/* pullup() only enables and disables the clock, so prepare it once here */
+	dev->clk = devm_clk_get_prepared(&pdev->dev, NULL);
 	if (IS_ERR(dev->clk))
 		return PTR_ERR(dev->clk);
 
