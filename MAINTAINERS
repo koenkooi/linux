@@ -13794,6 +13794,12 @@ S:	Maintained
 F:	io_uring/bpf-ops.*
 F:	io_uring/loop.*
 
+IPAQ EXPANSION PACK (SLEEVE) BUS DRIVERS
+M:	Koen Kooi <koen@dominion.thruhere.net>
+S:	Maintained
+F:	drivers/misc/ipaq-sleeve.c
+F:	include/linux/ipaq-sleeve.h
+
 IPMI SUBSYSTEM
 M:	Corey Minyard <corey@minyard.net>
 L:	openipmi-developer@lists.sourceforge.net (moderated for non-subscribers)
