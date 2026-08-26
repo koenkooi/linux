@@ -1093,12 +1093,21 @@ static void pxa25x_ep_fifo_flush(struct usb_ep *_ep)
 	 * data. The FIFO is double buffered, so a second pass may find another
 	 * packet; two passes bound it. The RPC and RNE bits are the same for
 	 * the iso-OUT endpoints.
+	 *
+	 * The byte count comes from UBCR, as in read_fifo(), instead of
+	 * draining while RNE is set: RNE is unreliable (pxa210/250 erratum
+	 * 131), and clear_ep_state() calls this from the interrupt handler,
+	 * where a stuck RNE would be an endless loop with interrupts off.
 	 */
 	if ((ep->bEndpointAddress & USB_DIR_IN) == 0) {
 		unsigned int i;
 
 		for (i = 0; i < 2; i++) {
-			while (((udc_ep_get_UDCCS(ep)) & UDCCS_BO_RNE) != 0)
+			unsigned int count = 0;
+
+			if (udc_ep_get_UDCCS(ep) & UDCCS_BO_RNE)
+				count = 1 + (0x0ff & udc_ep_get_UBCR(ep));
+			while (count--)
 				(void)udc_ep_get_UDDR(ep);
 			if ((udc_ep_get_UDCCS(ep) & UDCCS_BO_RPC) == 0)
 				break;
@@ -1589,9 +1598,20 @@ static inline void clear_ep_state (struct pxa25x_udc *dev)
 
 	/* hardware SET_{CONFIGURATION,INTERFACE} automagic resets endpoint
 	 * fifos, and pending transactions mustn't be continued in any case.
+	 *
+	 * The automagic only flushes the transmit FIFOs (FTF); the manual
+	 * leaves emptying the OUT endpoint FIFOs after these commands to
+	 * software. A packet the host sent just before the change would stay
+	 * in an OUT FIFO with RPC latched, and the RPC-gated fast path in
+	 * pxa25x_ep_queue() would hand that stale packet to the first request
+	 * queued afterwards. nuke() has emptied the queue, which
+	 * pxa25x_ep_fifo_flush() requires, and it drains the FIFO and acks RPC.
 	 */
-	for (i = 1; i < PXA_UDC_NUM_ENDPOINTS; i++)
+	for (i = 1; i < PXA_UDC_NUM_ENDPOINTS; i++) {
 		nuke(&dev->ep[i], -ECONNABORTED);
+		if ((dev->ep[i].bEndpointAddress & USB_DIR_IN) == 0)
+			pxa25x_ep_fifo_flush(&dev->ep[i].ep);
+	}
 }
 
 static void udc_watchdog(struct timer_list *t)
