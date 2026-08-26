@@ -1,0 +1,367 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/mfd/samsung,samcop.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung SAMCOP companion ASIC
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: |
+  SAMCOP is the Samsung companion ASIC used on the HP iPAQ h51xx/h54xx/h55xx
+  family. It sits on a static-memory chip select as a 32-bit MMIO device with
+  one upstream GPIO interrupt line, and is at once an interrupt controller
+  and a GPIO controller (five banks, A-E). It bundles an SD/MMC host, an ADC
+  with a resistive-touchscreen front-end, a DS1WM-compatible 1-Wire master, a
+  5-channel LED blink controller, a USB OHCI host controller with its own
+  on-chip SRAM, a fingerprint-sensor acquisition block and the status and
+  control glue of the expansion-pack ("sleeve") connector.
+
+  The fixed-function blocks are child nodes with their own compatible
+  strings. The chip hands each block its register sub-range and its
+  interrupts, so those nodes carry no reg or interrupts of their own. Board
+  wiring that terminates on the chip -- the mains presence sense, the
+  front-panel buttons, the SD card slot signals, the expansion connector
+  control lines -- is described on child nodes as well, using the generic
+  compatibles gpio-charger and gpio-keys where the function is a plain GPIO
+  or interrupt consumer. Their GPIO lines
+  are SAMCOP GPIO pins and their interrupts are SAMCOP interrupt sources,
+  except where a property says that a line is a SoC GPIO.
+
+properties:
+  compatible:
+    const: samsung,samcop
+
+  reg:
+    maxItems: 1
+    description:
+      SAMCOP's full 1 MiB chip window.
+
+  interrupts:
+    maxItems: 1
+    description:
+      The chip's single upstream interrupt line (ASIC_INT_N), active-low
+      falling-edge, chained through this node's own interrupt-controller
+      domain.
+
+  interrupt-controller: true
+
+  '#interrupt-cells':
+    const: 2
+    description:
+      Cell 1 is the hwirq number in SAMCOP's single linear interrupt domain.
+      Hwirqs 0-25 are the chip's top-level interrupt-controller sources;
+      hwirqs 26-39 are the sparse GPIO fan-out sources for selected GPA/GPB
+      pins; hwirqs 40-45 are the expansion-pack status fan-out sources. Cell
+      2 is a standard IRQ_TYPE_* flag. Only the GPIO fan-out hwirqs have a
+      per-line trigger-type register and honour level and edge types. The
+      other sources have a trigger fixed by the chip's setup and ignore the
+      flag, except hwirq 13 (SD card-detect wakeup), which accepts the edge
+      types.
+
+  gpio-controller: true
+
+  '#gpio-cells':
+    const: 2
+    description:
+      Cell 1 is the flat line offset, bank * 32 + pin with banks A-E
+      numbered 0-4, which spans 160 offsets with holes. GPA has 20 valid
+      pins; banks B-E are limited to the 16 pins addressable by their single
+      configuration register. Cell 2 is a standard GPIO_* flags value.
+
+  adc:
+    type: object
+    description:
+      SAMCOP's shared ADC and resistive-touchscreen front-end, an IIO
+      producer.
+    properties:
+      compatible:
+        const: samsung,samcop-adc
+      "#io-channel-cells":
+        const: 1
+        description:
+          Channel index - x=0, y=1, z1=2, z2=3, light=4, ain1=5, ain2=6.
+      light-sensor-supply:
+        description:
+          Switched supply of the ambient light sensor wired to analog input
+          AIN0. The sensor output is only valid while this supply is on.
+    required:
+      - compatible
+    additionalProperties: false
+
+  touchscreen:
+    type: object
+    $ref: /schemas/input/touchscreen/resistive-adc-touch.yaml#
+    description:
+      The resistive touchscreen panel wired to the four touch channels of
+      the ADC block above.
+    unevaluatedProperties: false
+
+  led-controller:
+    type: object
+    description:
+      SAMCOP's 5-channel LED blink controller. Each channel the board wires
+      is a child node whose reg is the channel number.
+    properties:
+      compatible:
+        const: samsung,samcop-leds
+
+      "#address-cells":
+        const: 1
+
+      "#size-cells":
+        const: 0
+
+    patternProperties:
+      "^led@[0-4]$":
+        type: object
+        $ref: /schemas/leds/common.yaml#
+        unevaluatedProperties: false
+        properties:
+          reg:
+            description: LED channel number.
+            maximum: 4
+        required:
+          - reg
+
+    required:
+      - compatible
+      - "#address-cells"
+      - "#size-cells"
+    additionalProperties: false
+
+  onewire:
+    type: object
+    $ref: /schemas/w1/dallas,ds1wm.yaml#
+    unevaluatedProperties: false
+    description:
+      SAMCOP's DS1WM-compatible 1-Wire master. The same core is embedded in
+      every companion ASIC of this family, so its properties -- the register
+      stride, the interrupt polarity, the post-reset recovery delay and the
+      battery-pack gas gauge on the bus -- are described once, in the
+      binding referenced above, rather than per ASIC.
+
+  ohci:
+    type: object
+    description:
+      SAMCOP's OHCI USB host controller. The controller can DMA only to
+      SAMCOP's on-chip SRAM, which is fixed local memory. The on-board WLAN
+      radio sits behind this root hub; its power rails are sequenced by a
+      separate node (net/hp,ipaq-h5000-wlan.yaml) so that the radio can be
+      blocked and unblocked independently of the host controller.
+    properties:
+      compatible:
+        const: samsung,samcop-ohci
+    required:
+      - compatible
+    additionalProperties: false
+
+  fsi:
+    type: object
+    description:
+      SAMCOP's FSI/FCD fingerprint raw-acquisition block. It is present as a
+      register block on all h5xxx variants, although only h54xx/h55xx devices
+      are known to wire the external sensor.
+    properties:
+      compatible:
+        const: samsung,samcop-fsi
+    required:
+      - compatible
+    additionalProperties: false
+
+  sleeve:
+    type: object
+    description:
+      SAMCOP expansion-pack ("sleeve") status and control glue. The four
+      PCMCIA status lines of the connector (two card-detect, two
+      card-interrupt) and the jacket-presence detect are bits of this
+      block's own status register and interrupt sources rather than GPIOs,
+      and so are not properties of this node. The jacket's ID EEPROM is
+      wired to a synchronous serial port of the SoC.
+    properties:
+      compatible:
+        const: samsung,samcop-sleeve
+
+      nvram-gpios:
+        maxItems: 1
+        description: >-
+          Enable for the jacket's ID-EEPROM/NVRAM supply rail (OPT_NVRAM),
+          a bare SoC GPIO powered ahead of the main rail so the sleeve's ID
+          EEPROM can be read before anything decides what the sleeve is.
+
+      opt-on-gpios:
+        maxItems: 1
+        description: >-
+          Enable for the jacket's main supply rail, a SAMCOP GPA bit. Optional:
+          requesting it makes the pin an output, and on the HP iPAQ h5550 a
+          driven pin leaves the jacket's CompactFlash slot undriven, so that
+          board leaves it out and the pin keeps its reset-time mode.
+
+      opt-reset-gpios:
+        maxItems: 1
+        description: >-
+          Whole-jacket reset, a SAMCOP GPA bit.
+
+      opt-int-gpios:
+        maxItems: 1
+        description: >-
+          The connector's sleeve-device interrupt (OPT_INT) -- the line a
+          sleeve asserts to get the host's attention, e.g. the receive
+          interrupt of the GPS UART inside a Navman GPS/CF jacket. A bare
+          SoC GPIO, physically distinct from the connector's two PCMCIA
+          card-interrupt lines. Optional; not every board routes it.
+
+      cs-gpios:
+        maxItems: 1
+        description: >-
+          Chip select of the jacket's ID EEPROM on the serial port. It is a
+          property of this node, not of the port node, because the SPI
+          controller registered for the port has this node as its firmware
+          node.
+
+      samsung,sleeve-port:
+        $ref: /schemas/types.yaml#/definitions/phandle
+        description: >-
+          The SoC synchronous serial port (SSP) the connector's ID EEPROM
+          is wired to. The EEPROM is not described as a child of the port
+          because which jacket is plugged in, and so the identity of its
+          EEPROM, is not known until it has been read.
+
+    required:
+      - compatible
+      - nvram-gpios
+      - opt-reset-gpios
+      - cs-gpios
+      - samsung,sleeve-port
+    additionalProperties: false
+
+  buttons:
+    type: object
+    $ref: /schemas/input/gpio-keys.yaml#
+    description: >-
+      Twelve of the board's thirteen buttons (the other, the power button,
+      is a SoC GPIO). Each button is wired to a SAMCOP interrupt source
+      rather than to a GPIO: its key node carries "interrupts" against this
+      node's own interrupt controller and no "gpios".
+
+patternProperties:
+  '^([a-z0-9]+-)*(ac|charger)$':
+    type: object
+    $ref: /schemas/power/supply/gpio-charger.yaml#
+    description:
+      Mains charger, an AC-present sense line on a SAMCOP GPA bit and, in
+      the board's charging circuit, a charge-enable line on a SoC GPIO.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - interrupt-controller
+  - '#interrupt-cells'
+  - gpio-controller
+  - '#gpio-cells'
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/input/input.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+    #include <dt-bindings/leds/common.h>
+
+    samcop: companion-chip@14000000 {
+        compatible = "samsung,samcop";
+        reg = <0x14000000 0x00100000>;
+
+        interrupt-parent = <&gpio>;
+        interrupts = <10 IRQ_TYPE_EDGE_FALLING>;
+
+        interrupt-controller;
+        #interrupt-cells = <2>;
+
+        gpio-controller;
+        #gpio-cells = <2>;
+
+        h5000-ac {
+            compatible = "gpio-charger";
+            charger-type = "mains";
+            gpios = <&samcop 13 GPIO_ACTIVE_HIGH>;
+            charge-enable-gpios = <&gpio 65 GPIO_ACTIVE_HIGH>;
+        };
+
+        adc: adc {
+            compatible = "samsung,samcop-adc";
+            #io-channel-cells = <1>;
+            light-sensor-supply = <&light_sensor_power>;
+        };
+
+        touchscreen {
+            compatible = "resistive-adc-touch";
+            io-channels = <&adc 0>, <&adc 1>, <&adc 2>, <&adc 3>;
+            io-channel-names = "x", "y", "z1", "z2";
+            touchscreen-x-plate-ohms = <400>;
+            touchscreen-size-x = <1024>;
+            touchscreen-size-y = <1024>;
+        };
+
+        led-controller {
+            compatible = "samsung,samcop-leds";
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            led@2 {
+                reg = <2>;
+                color = <LED_COLOR_ID_RED>;
+                function = LED_FUNCTION_HEARTBEAT;
+                linux,default-trigger = "heartbeat";
+            };
+        };
+
+        onewire {
+            compatible = "samsung,samcop-onewire", "dallas,ds1wm";
+            dallas,bus-shift = <2>;
+            dallas,reset-recover-delay-ms = <1>;
+        };
+
+        ohci {
+            compatible = "samsung,samcop-ohci";
+        };
+
+        fsi {
+            compatible = "samsung,samcop-fsi";
+        };
+
+        sleeve {
+            compatible = "samsung,samcop-sleeve";
+            nvram-gpios = <&gpio 64 GPIO_ACTIVE_HIGH>;
+            opt-reset-gpios = <&samcop 18 GPIO_ACTIVE_HIGH>;
+            opt-int-gpios = <&gpio 2 GPIO_ACTIVE_HIGH>;
+            cs-gpios = <&gpio 24 GPIO_ACTIVE_LOW>;
+            samsung,sleeve-port = <&ssp1>;
+        };
+
+        buttons {
+            compatible = "gpio-keys";
+
+            key-record {
+                label = "Record";
+                linux,code = <KEY_RECORD>;
+                interrupts = <4 IRQ_TYPE_EDGE_FALLING>;
+            };
+
+            key-volume-up {
+                label = "Volume Up";
+                linux,code = <KEY_VOLUMEUP>;
+                interrupts = <31 IRQ_TYPE_EDGE_BOTH>;
+            };
+
+            key-joypad-left {
+                label = "Joypad Left";
+                linux,code = <KEY_LEFT>;
+                interrupts = <26 IRQ_TYPE_EDGE_BOTH>;
+            };
+        };
+    };
