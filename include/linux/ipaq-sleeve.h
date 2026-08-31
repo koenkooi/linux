@@ -174,19 +174,44 @@ int ipaq_sleeve_driver_register(struct ipaq_sleeve_driver *drv);
 void ipaq_sleeve_driver_unregister(struct ipaq_sleeve_driver *drv);
 
 /*
- * Abstract sleeve power/reset lines, addressed by the bus core through a
- * registered backend's ops->control_egpio()/read_egpio()/egpio_irq(). The
- * bus core drives these four itself: the NVRAM power on insert and eject,
- * and all four when a backend registers and unregisters.
+ * Abstract sleeve power, reset and status lines, addressed by the bus core
+ * and by slot consumers through a registered backend's
+ * ops->control_egpio()/read_egpio()/egpio_irq().
+ *
+ * The first four are driven by the bus core itself: the NVRAM power on
+ * insert and eject, and all four when a backend registers and
+ * unregisters.
+ *
+ * The last four are read-only and used by consumers: the two card-detect
+ * and two card-interrupt/ready lines of the PCMCIA or CompactFlash
+ * sockets of a jacket. A socket driver reads their level with
+ * read_egpio() and gets the matching Linux interrupt number from
+ * egpio_irq(). On the h5xxx these lines are bits of a SAMCOP register
+ * rather than board GPIOs and no gpio_chip reaches them, so a socket
+ * driver cannot take them as GPIO descriptors and has to go through this
+ * vtable.
+ *
+ * read_egpio() returns the raw register bit as the backend reads it, not a
+ * logical value: a non-zero return for CD0_N means the line is high, that
+ * is, no card, and the consumer does the inversion. The IRQ0 and IRQ1
+ * identifiers carry no _N suffix although the register bits behind them
+ * are active low; consumers use them without inversion for the ready
+ * state.
  *
  * The numeric values are opaque line identifiers private to this bus; each
  * backend's ops implementation maps them onto its own registers or GPIOs.
+ * A backend may switch() on them, so new identifiers must be appended to
+ * avoid rewiring hardware.
  */
 enum ipaq_sleeve_egpio {
 	IPAQ_EGPIO_OPT_ON,
 	IPAQ_EGPIO_OPT_NVRAM_ON,
 	IPAQ_EGPIO_OPT_RESET,
 	IPAQ_EGPIO_CARD_RESET,
+	IPAQ_EGPIO_PCMCIA_CD0_N,
+	IPAQ_EGPIO_PCMCIA_CD1_N,
+	IPAQ_EGPIO_PCMCIA_IRQ0,
+	IPAQ_EGPIO_PCMCIA_IRQ1,
 };
 
 void ipaq_sleeve_write_egpio(int nr, int state);
