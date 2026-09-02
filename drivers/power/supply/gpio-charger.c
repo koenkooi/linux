@@ -311,7 +311,8 @@ static int gpio_charger_probe(struct platform_device *pdev)
 
 	charge_status = devm_gpiod_get_optional(dev, "charge-status", GPIOD_IN);
 	if (IS_ERR(charge_status))
-		return PTR_ERR(charge_status);
+		return dev_err_probe(dev, PTR_ERR(charge_status),
+				     "error getting charge-status GPIO\n");
 	if (charge_status) {
 		gpio_charger->charge_status = charge_status;
 		gpio_charger_properties[num_props] = POWER_SUPPLY_PROP_STATUS;
@@ -331,7 +332,7 @@ static int gpio_charger_probe(struct platform_device *pdev)
 
 	ret = init_charge_current_limit(dev, gpio_charger);
 	if (ret < 0)
-		return ret;
+		return dev_err_probe(dev, ret, "init_charge_current_limit failed\n");
 	if (gpio_charger->current_limit_map) {
 		gpio_charger_properties[num_props] =
 			POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX;
