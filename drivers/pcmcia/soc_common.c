@@ -174,9 +174,9 @@ int soc_pcmcia_request_gpiods(struct soc_pcmcia_socket *skt)
 
 		desc = devm_gpiod_get(dev, skt->stat[i].name, GPIOD_IN);
 		if (IS_ERR(desc)) {
-			dev_err(dev, "Failed to get GPIO for %s: %ld\n",
-				skt->stat[i].name, PTR_ERR(desc));
-			return PTR_ERR(desc);
+			return dev_err_probe(dev, PTR_ERR(desc),
+					     "Failed to get GPIO for %s\n",
+					     skt->stat[i].name);
 		}
 
 		skt->stat[i].desc = desc;
