@@ -697,7 +697,7 @@ static struct snd_soc_dai_driver uda1380_dai[] = {
 { /* playback only - dual interface */
 	.name = "uda1380-hifi-playback",
 	.playback = {
-		.stream_name = "Playback",
+		.stream_name = "HiFi-Playback",
 		.channels_min = 1,
 		.channels_max = 2,
 		.rates = UDA1380_RATES,
@@ -708,7 +708,7 @@ static struct snd_soc_dai_driver uda1380_dai[] = {
 { /* capture only - dual interface*/
 	.name = "uda1380-hifi-capture",
 	.capture = {
-		.stream_name = "Capture",
+		.stream_name = "HiFi-Capture",
 		.channels_min = 1,
 		.channels_max = 2,
 		.rates = UDA1380_RATES,
