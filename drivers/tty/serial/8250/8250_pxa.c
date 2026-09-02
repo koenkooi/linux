@@ -132,6 +132,25 @@ static int serial_pxa_probe(struct platform_device *pdev)
 
 	uart.port.iotype = UPIO_MEM32;
 	uart.port.regshift = 2;
+	/*
+	 * 64 bytes is the real PXA FIFO depth, and it is set here because
+	 * PORT_XSCALE's shared uart_config[] entry claims 32. That entry also
+	 * has no rxtrig_bytes[] table, so fcr_get_rxtrig_bytes() and
+	 * bytes_to_fcr_rxtrig() return -EOPNOTSUPP and the per-port
+	 * /sys/class/tty/ttySn/rx_trig_bytes knob does not work on these
+	 * ports. The trigger level is whatever the .fcr of PORT_XSCALE
+	 * hardcodes, UART_FCR_R_TRIG_10, which on PXA means 16 of the 64
+	 * bytes.
+	 *
+	 * Adding {1, 8, 16, 32} (the PXA thresholds, UART_FCR_PXAR1/8/16/32)
+	 * would make the knob work, but would not buy much: a lower trigger
+	 * means more interrupts for the same data, and the failure these
+	 * ports actually have is a long interrupts-off window elsewhere in
+	 * the kernel, such as a synchronous console write on another UART.
+	 * No trigger level helps then, because no interrupt is serviced
+	 * regardless. What protects the port in that window is UART_CAP_AFE
+	 * above, which deasserts RTS in hardware without CPU involvement.
+	 */
 	uart.port.fifosize = 64;
 	uart.tx_loadsz = 32;
 	uart.dl_write = serial_pxa_dl_write;
