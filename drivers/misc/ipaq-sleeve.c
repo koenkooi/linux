@@ -197,6 +197,20 @@ int ipaq_sleeve_read_egpio(int nr)
 }
 EXPORT_SYMBOL_GPL(ipaq_sleeve_read_egpio);
 
+/*
+ * Optional: a backend without an edge-reconfigurable card-detect source
+ * does not provide the callback, and doing nothing is correct for it.
+ */
+int ipaq_sleeve_rearm_cd_edge(int nr, bool card_present)
+{
+	if (WARN_ON(!sleeve_ops))
+		return -ENODEV;
+	if (!sleeve_ops->rearm_cd_edge)
+		return 0;
+	return sleeve_ops->rearm_cd_edge(sleeve_dev, nr, card_present);
+}
+EXPORT_SYMBOL_GPL(ipaq_sleeve_rearm_cd_edge);
+
 int ipaq_sleeve_egpio_irq(int nr)
 {
 	if (WARN_ON(!sleeve_ops))
