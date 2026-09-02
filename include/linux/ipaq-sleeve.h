@@ -284,10 +284,20 @@ struct ipaq_sleeve_ops {
 	int (*egpio_irq)(void *dev, int egpio);
 	int (*read_battery)(void *dev, unsigned char *chem,
 			    unsigned char *percent, unsigned char *flag);
+	/*
+	 * Optional, NULL for backends with no edge-reconfigurable
+	 * card-detect source. Reprogram the edge detection of a
+	 * CD0_N/CD1_N-class card-detect source to the opposite of the
+	 * card's just-observed presence, so that the next physical event
+	 * (an eject after an insert, or the reverse) still raises an
+	 * interrupt.
+	 */
+	int (*rearm_cd_edge)(void *dev, int egpio, bool card_present);
 };
 
 int ipaq_sleeve_register(struct ipaq_sleeve_ops *ops, void *dev);
 int ipaq_sleeve_unregister(void);
 irqreturn_t ipaq_sleeve_presence_interrupt(int irq, void *dev_id);
+int ipaq_sleeve_rearm_cd_edge(int nr, bool card_present);
 
 #endif /* _LINUX_IPAQ_SLEEVE_H */
