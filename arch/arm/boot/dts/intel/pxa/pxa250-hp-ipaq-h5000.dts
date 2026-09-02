@@ -32,6 +32,8 @@
 
 /dts-v1/;
 
+#include <dt-bindings/interrupt-controller/irq.h>
+
 #include "pxa25x.dtsi"
 
 / {
@@ -84,6 +86,27 @@
 				reg = <0x00040000 0x01fc0000>;
 			};
 		};
+	};
+
+	/*
+	 * SAMCOP companion ASIC on nCS_5 (PXA_CS5_PHYS). The window is the
+	 * chip's own 1 MiB register space. Its single upstream interrupt,
+	 * ASIC_INT_N, is PXA GPIO10, active low, caught on the falling edge.
+	 * The chip is both the interrupt controller and the GPIO controller
+	 * for the peripherals behind it.
+	 */
+	samcop: companion-chip@14000000 {
+		compatible = "samsung,samcop";
+		reg = <0x14000000 0x00100000>;
+
+		interrupt-parent = <&gpio>;
+		interrupts = <10 IRQ_TYPE_EDGE_FALLING>;
+
+		interrupt-controller;
+		#interrupt-cells = <2>;
+
+		gpio-controller;
+		#gpio-cells = <2>;
 	};
 };
 
