@@ -170,7 +170,7 @@ static unsigned long h5000_pin_config[] __initdata = {
 
 	/* Power, charging, sensors, motor and audio-adjacent control lines */
 	MFP_CFG_OUT(GPIO58, AF0, DRIVE_LOW),	/* H5000_GPIO_IRDA_SD */
-	MFP_CFG_OUT(GPIO59, AF0, DRIVE_LOW),	/* not connected */
+	MFP_CFG_OUT(GPIO59, AF0, DRIVE_LOW),	/* USB charge source switch */
 	MFP_CFG_OUT(GPIO60, AF0, DRIVE_LOW),	/* H5000_GPIO_POWER_SD_N */
 	MFP_CFG_OUT(GPIO61, AF0, DRIVE_HIGH),	/* H5000_GPIO_POWER_RS232_N, hogged low below */
 	MFP_CFG_OUT(GPIO62, AF0, DRIVE_HIGH),	/* H5000_GPIO_POWER_ACCEL_N */

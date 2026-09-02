@@ -200,6 +200,36 @@
 		};
 
 		/*
+		 * SAMCOP GPA15 reads high whenever the DC adapter is connected
+		 * and low on battery. GPA13 is not an adapter sense: it is high
+		 * only while the charger is charging. In an h5550 cradle with
+		 * the adapter connected the whole time, GPA_DAT read 0xdfff
+		 * (GPA15 high, GPA13 low) with the battery full and idle at
+		 * 4.18 V, 0xffff (both high) while it charged at +30 to +60 mA,
+		 * and 0x5fff (both low) with the adapter unplugged. GPA14 is
+		 * the USB VBUS sense and belongs to the USB connector node.
+		 *
+		 * charge-enable-gpios is the SC801 enable line (GPIO65), high
+		 * to charge: the factory BattMgr.dll makes it an output, sets
+		 * it with GPSR2 and clears it with GPCR2 on over-temperature.
+		 * gpio-charger asserts it when it probes and its
+		 * charge_behaviour attribute switches it.
+		 *
+		 * charge-status-gpios is what tells the gauge below that a
+		 * charge has ended rather than merely paused: GPA13 fell as
+		 * the charge current went from 26 mA to about 0 at 4.187-4.20 V.
+		 * GPA13 has no interrupt, so the gauge samples it on its 60 s
+		 * poll.
+		 */
+		h5000_ac: h5000-ac {
+			compatible = "gpio-charger";
+			charger-type = "mains";
+			gpios = <&samcop 15 GPIO_ACTIVE_HIGH>;
+			charge-status-gpios = <&samcop 13 GPIO_ACTIVE_HIGH>;
+			charge-enable-gpios = <&gpio 65 GPIO_ACTIVE_HIGH>;
+		};
+
+		/*
 		 * The cell is an index into the channel table of the ADC
 		 * driver: x=0, y=1, z1=2, z2=3, light=4, ain1=5, ain2=6. The
 		 * light channel is the ambient light sensor on AIN0, powered by
@@ -292,6 +322,13 @@
 			 */
 			battery {
 				compatible = "maxim,ds2760";
+				/*
+				 * h5000-ac first: the gauge takes charge status
+				 * from the first supplier that reports one, and
+				 * GPA13 covers USB charging too.
+				 */
+				power-supplies = <&h5000_ac>, <&h5000_usb>;
+				monitored-battery = <&battery_cell>;
 			};
 		};
 
@@ -626,6 +663,39 @@
 			gpios = <&gpio 0 GPIO_ACTIVE_LOW>;
 			wakeup-source;
 		};
+	};
+
+	/*
+	 * GPIO59 connects USB VBUS to the charger. On an h5550 on USB alone,
+	 * driving it high made GPA13 go high and the battery current improve
+	 * from -369 mA to -268 mA. WinCE drives it high only while VBUS is
+	 * present and the adapter is not, which priority-charger gives.
+	 * GPIO77 is H5000_GPIO_USB_CHG_RATE. WinCE drives it high only with
+	 * a 500 mA configuration accepted and the adapter absent. The
+	 * currents are the USB budget the descriptor claims, not measured
+	 * charger currents. GPIO68/73 select the adapter rate and stay low.
+	 */
+	h5000_usb: h5000-usb {
+		compatible = "usb-vbus-charger";
+		enable-gpios = <&gpio 59 GPIO_ACTIVE_HIGH>;
+		priority-charger = <&h5000_ac>;
+		charge-current-limit-gpios = <&gpio 77 GPIO_ACTIVE_HIGH>;
+		charge-current-limit-mapping = <500000 0x1>, <100000 0x0>;
+		charge-current-limit-default-microamp = <100000>;
+	};
+
+	/*
+	 * Only what the DS2760 driver needs to tell a finished charge from a
+	 * charger that stopped early. The pack is removable, so this states
+	 * the limit the charger was seen to hold rather than a property of one
+	 * cell: it terminated at 4.187-4.20 V, measured on a replacement
+	 * 800 mAh cell. The capacity stays in the gauge's EEPROM, where it
+	 * follows the pack.
+	 */
+	battery_cell: battery {
+		compatible = "simple-battery";
+		device-chemistry = "lithium-ion";
+		voltage-max-design-microvolt = <4200000>;
 	};
 
 	/*
