@@ -62,6 +62,7 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/pm.h>
 #include <linux/property.h>
 #include <linux/regulator/consumer.h>
 
@@ -82,6 +83,7 @@
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_gem_shmem_helper.h>
 #include <drm/drm_managed.h>
+#include <drm/drm_modeset_helper.h>
 #include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
@@ -1277,12 +1279,50 @@ static void mq11xx_remove(struct platform_device *pdev)
 	/* mq11xx_power_down_action() runs via devm after .remove() returns. */
 }
 
+/*
+ * System sleep is a light suspend and resume: the MediaQ stays powered
+ * across sleep and keeps its registers, so only the panel facing gating has
+ * to be redone. Suspend gates the FP clock and GC scanout and drops the
+ * panel enable, and resume does the opposite. The forced atomic disable
+ * and enable of the DRM helpers run the DPMS off and on paths of this
+ * driver, mq11xx_output_disable() and mq11xx_output_enable(), so no
+ * additional register sequence is needed. The settle times after
+ * suspending and resuming are those of the vendor display driver.
+ */
+static int mq11xx_pm_suspend(struct device *dev)
+{
+	struct mq11xx_device *mq = dev_get_drvdata(dev);
+	int ret;
+
+	ret = drm_mode_config_helper_suspend(&mq->drm);
+	if (ret)
+		return ret;
+
+	msleep(58);
+
+	return 0;
+}
+
+static int mq11xx_pm_resume(struct device *dev)
+{
+	struct mq11xx_device *mq = dev_get_drvdata(dev);
+
+	drm_mode_config_helper_resume(&mq->drm);
+
+	msleep(90);
+
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(mq11xx_pm_ops, mq11xx_pm_suspend, mq11xx_pm_resume);
+
 static struct platform_driver mq11xx_platform_driver = {
 	.probe	= mq11xx_probe,
 	.remove	= mq11xx_remove,
 	.driver	= {
 		.name = DRIVER_NAME,
 		.of_match_table = mq11xx_of_match,
+		.pm = pm_sleep_ptr(&mq11xx_pm_ops),
 	},
 };
 module_platform_driver(mq11xx_platform_driver);
