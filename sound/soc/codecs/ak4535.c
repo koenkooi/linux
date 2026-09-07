@@ -435,9 +435,16 @@ static const struct i2c_device_id ak4535_i2c_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, ak4535_i2c_id);
 
+static const struct of_device_id ak4535_of_match[] = {
+	{ .compatible = "asahi-kasei,ak4535", },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, ak4535_of_match);
+
 static struct i2c_driver ak4535_i2c_driver = {
 	.driver = {
 		.name = "ak4535",
+		.of_match_table = ak4535_of_match,
 	},
 	.probe = ak4535_i2c_probe,
 	.id_table = ak4535_i2c_id,
