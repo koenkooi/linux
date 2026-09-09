@@ -13,28 +13,10 @@
 #include <linux/sizes.h>
 
 #include <linux/pxa2xx_ssp.h>
+#include <linux/spi/pxa2xx_spi.h>
 
 struct device;
 struct gpio_desc;
-
-/*
- * The platform data for SSP controller devices
- * (resides in device.platform_data).
- */
-struct pxa2xx_spi_controller {
-	u8 num_chipselect;
-	u8 enable_dma;
-	u8 dma_burst_size;
-	bool is_target;
-
-	/* DMA engine specific config */
-	dma_filter_fn dma_filter;
-	void *tx_param;
-	void *rx_param;
-
-	/* For non-PXA arches */
-	struct ssp_device ssp;
-};
 
 struct spi_controller;
 struct spi_device;
@@ -131,10 +113,6 @@ extern void pxa2xx_spi_dma_start(struct driver_data *drv_data);
 extern void pxa2xx_spi_dma_stop(struct driver_data *drv_data);
 extern int pxa2xx_spi_dma_setup(struct driver_data *drv_data);
 extern void pxa2xx_spi_dma_release(struct driver_data *drv_data);
-
-int pxa2xx_spi_probe(struct device *dev, struct ssp_device *ssp,
-		     struct pxa2xx_spi_controller *platform_info);
-void pxa2xx_spi_remove(struct device *dev);
 
 extern const struct dev_pm_ops pxa2xx_spi_pm_ops;
 
