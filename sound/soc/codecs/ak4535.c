@@ -229,7 +229,8 @@ static const struct snd_soc_dapm_route ak4535_audio_map[] = {
 	/* speaker */
 	{"SPP", NULL, "Speaker Enable"},
 	{"SPN", NULL, "Speaker Enable"},
-	{"Speaker Enable", "Switch", "Spk Amp"},
+	/* "Speaker Enable" is a plain PGA, it has no "Switch" control */
+	{"Speaker Enable", NULL, "Spk Amp"},
 	{"Spk Amp", NULL, "MIN"},
 
 	/* mono 2 */
@@ -237,12 +238,12 @@ static const struct snd_soc_dapm_route ak4535_audio_map[] = {
 	{"Mono 2 Enable", "Switch", "Stereo Mixer"},
 
 	/* Aux In */
-	{"Aux In", NULL, "AUX"},
+	{"AUX In", NULL, "AUX"},
 
 	/* ADC */
 	{"ADC", NULL, "Input Mixer"},
 	{"Input Mixer", "Mic Capture Switch", "Mic"},
-	{"Input Mixer", "Aux Capture Switch", "Aux In"},
+	{"Input Mixer", "Aux Capture Switch", "AUX In"},
 };
 
 static int ak4535_set_dai_sysclk(struct snd_soc_dai *codec_dai,
