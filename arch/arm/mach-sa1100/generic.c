@@ -16,6 +16,7 @@
 #include <linux/pm.h>
 #include <linux/cpufreq.h>
 #include <linux/ioport.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/reboot.h>
 #include <linux/regulator/fixed.h>
@@ -301,6 +302,21 @@ static int __init sa1100_init(void)
 	register_platform_power_off(sa1100_power_off);
 
 	regulator_has_full_constraints();
+
+	/*
+	 * A devicetree-booted machine describes its on-chip devices in the
+	 * tree, and of_platform_populate() creates each of them with a real
+	 * of_node. Registering these legacy copies as well hands the serial
+	 * and RTC drivers two platform_devices for one register window --
+	 * the same port on the same static sa1100_ports[] slot, first with
+	 * no of_node and then with one -- and whichever probes second fails
+	 * with -EBUSY or -EINVAL after the first has claimed the hardware,
+	 * leaving the port bound to the device that carries none of the
+	 * board's supply or modem-control properties. Same split as
+	 * mach-pxa's pxa25x_init()/pxa27x_init().
+	 */
+	if (of_have_populated_dt())
+		return 0;
 
 	platform_device_register_simple("sa1100_wdt", -1, &wdt_res, 1);
 
