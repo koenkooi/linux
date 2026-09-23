@@ -127,6 +127,14 @@
 			clocks = <&clks CLK_ASSP>;
 			status = "disabled";
 		};
+
+		pxa25x_udc: usb@40600000 {
+			compatible = "marvell,pxa250-udc";
+			reg = <0x40600000 0x10000>;
+			interrupts = <11>;
+			clocks = <&clks CLK_USB>;
+			status = "disabled";
+		};
 	};
 
 	timer@40a00000 {
