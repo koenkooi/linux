@@ -1049,6 +1049,8 @@ patternProperties:
     description: Measurement Specialties
   "^mecer,.*":
     description: Mustek Limited
+  "^mediaq,.*":
+    description: MediaQ, Inc.
   "^mediatek,.*":
     description: MediaTek Inc.
   "^medion,.*":
