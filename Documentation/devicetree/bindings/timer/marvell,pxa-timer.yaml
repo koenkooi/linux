@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/timer/marvell,pxa-timer.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Marvell PXA and Intel SA-1100 operating system timer
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description:
+  The operating system timer block of the Intel SA-1100 and SA-1110 and of
+  the Intel/Marvell PXA2xx and PXA3xx SoCs, which share one register
+  layout. It has a free-running 32-bit counter and four match registers.
+  The block is also the SoC watchdog. Once the watchdog enable bit (OWER.WME)
+  is set, a match on register 3 resets the SoC, and the bit cannot be
+  cleared again until that reset. The watchdog has no node of its own.
+
+properties:
+  compatible:
+    oneOf:
+      - const: marvell,pxa-timer
+      - items:
+          - const: intel,sa1110-timer
+          - const: intel,sa1100-timer
+          - const: marvell,pxa-timer
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+    description: Match interrupt of operating system timer 0.
+
+  clocks:
+    maxItems: 1
+    description: Clock that counts the timer.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+
+additionalProperties: false
+
+examples:
+  - |
+    timer@40a00000 {
+        compatible = "marvell,pxa-timer";
+        reg = <0x40a00000 0x20>;
+        interrupts = <26>;
+        clocks = <&clktimer>;
+    };
+
+  - |
+    timer@90000000 {
+        compatible = "intel,sa1110-timer", "intel,sa1100-timer",
+                     "marvell,pxa-timer";
+        reg = <0x90000000 0x20>;
+        interrupts = <26>;
+        clocks = <&clk3686400>;
+    };
