@@ -148,6 +148,12 @@ properties:
       - pattern: "^mmc[0-9]+$"
         # LED is triggered by WLAN activity
       - pattern: "^phy[0-9]+tx$"
+        # LED follows the state of a power supply. The trigger name is the
+        # supply name followed by one of the suffixes below, so it cannot be
+        # enumerated: "<supply>-charging-or-full", "<supply>-charging",
+        # "<supply>-full", "<supply>-charging-blink-full-solid",
+        # "<supply>-charging-orange-full-green" and "<supply>-online"
+      - pattern: "^.+-(charging(-or-full|-blink-full-solid|-orange-full-green)?|full|online)$"
 
   led-pattern:
     description: |
