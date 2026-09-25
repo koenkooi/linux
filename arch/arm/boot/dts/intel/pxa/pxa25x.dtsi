@@ -62,9 +62,9 @@
 			marvell,intc-nr-irqs = <32>;
 		};
 
-		pinctrl: pinctrl@40e00000 {
-			reg = <0x40e00054 0x20 0x40e0000c 0xc 0x40e0010c 4
-			       0x40f00020 0x10>;
+		pinctrl: pinctrl@40e00054 {
+			reg = <0x40e00054 0x20>, <0x40e0000c 0xc>, <0x40e0010c 4>,
+			      <0x40f00020 0x10>;
 			compatible = "marvell,pxa25x-pinctrl";
 		};
 
