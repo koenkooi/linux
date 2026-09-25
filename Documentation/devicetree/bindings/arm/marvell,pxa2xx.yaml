@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/arm/marvell,pxa2xx.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Marvell PXA25x and PXA27x based boards
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: |
+  Handheld boards built around the XScale-based PXA25x and PXA27x
+  application processors. The board compatible names the board design and
+  is followed by the compatible of the SoC family the board is built
+  around.
+
+  The PXA25x compatible, "marvell,pxa250", is the family compatible for
+  every board with a PXA25x part, whether the fitted part is a PXA250 or
+  its PXA255 revision.
+
+  Each HP iPAQ board compatible covers the models built on one board
+  design, which differ in fitted parts such as memory, flash, the SoC
+  revision and the radios: hp,ipaq-h2200 covers the h2200, h2210, h2212
+  and h2215; hp,ipaq-h3900 the h3950, h3955, h3970 and h3975.
+
+properties:
+  $nodename:
+    const: "/"
+  compatible:
+    oneOf:
+      - description: Boards built around the PXA250 or its PXA255 revision
+        items:
+          - enum:
+              - hp,ipaq-h2200
+              - hp,ipaq-h3900
+          - const: marvell,pxa250
+
+additionalProperties: true
