@@ -1,0 +1,122 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/marvell,pxa270-qci.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Marvell PXA27x Quick Capture Interface
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description:
+  The Quick Capture Interface of the PXA27x SoC receives video data from a
+  camera sensor over a parallel bus and stores the Y, U and V planes through
+  three DMA channels. It can supply the sensor master clock (MCLK), derived
+  from its input clock.
+
+properties:
+  compatible:
+    const: marvell,pxa270-qci
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+    description:
+      Input clock of the interface, from which MCLK is derived.
+
+  clock-names:
+    const: ciclk
+
+  clock-frequency:
+    description:
+      Frequency of MCLK in Hz. The interface drives MCLK at the highest
+      frequency not above this value that it can derive from its input clock
+      by an even integer division, and never above a quarter of the input
+      clock frequency. When absent, the interface does not drive MCLK.
+
+  dmas:
+    items:
+      - description: Y plane channel
+      - description: U plane channel
+      - description: V plane channel
+
+  dma-names:
+    items:
+      - const: CI_Y
+      - const: CI_U
+      - const: CI_V
+
+  port:
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    unevaluatedProperties: false
+    description:
+      Parallel video bus connected to the sensor.
+
+    properties:
+      endpoint:
+        $ref: /schemas/media/video-interfaces.yaml#
+        additionalProperties: false
+
+        properties:
+          bus-type:
+            const: 5
+
+          bus-width:
+            enum: [4, 5, 8, 9, 10]
+
+          hsync-active: true
+          vsync-active: true
+
+          pclk-sample:
+            enum: [0, 1]
+
+          slave-mode: true
+          remote-endpoint: true
+
+        required:
+          - bus-width
+          - remote-endpoint
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - dmas
+  - dma-names
+  - port
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/pxa-clock.h>
+
+    imaging@50000000 {
+        compatible = "marvell,pxa270-qci";
+        reg = <0x50000000 0x1000>;
+        interrupts = <33>;
+        dmas = <&pdma 68 0>,   /* Y channel */
+               <&pdma 69 0>,   /* U channel */
+               <&pdma 70 0>;   /* V channel */
+        dma-names = "CI_Y", "CI_U", "CI_V";
+        clocks = <&clks CLK_CAMERA>;
+        clock-names = "ciclk";
+        clock-frequency = <5000000>;
+
+        port {
+            qci_ep: endpoint {
+                remote-endpoint = <&mt9m111_ep>;
+                bus-width = <8>;
+                hsync-active = <0>;
+                vsync-active = <0>;
+                pclk-sample = <1>;
+            };
+        };
+    };
