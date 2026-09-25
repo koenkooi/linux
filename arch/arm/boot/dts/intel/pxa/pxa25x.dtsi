@@ -88,10 +88,6 @@
 			clocks = <&clks CLK_PWM1>;
 		};
 
-		rtc@40900000 {
-			clocks = <&clks CLK_OSC32k768>;
-		};
-
 		/*
 		 * PXA25x has three distinct SSP-family blocks rather than
 		 * three instances of one type: the primary SSP is present on
