@@ -166,7 +166,7 @@
 		#size-cells = <1>;
 		ranges;
 
-		clks: pxa2xx_clks@41300004 {
+		clks: clock-controller {
 			compatible = "marvell,pxa270-clocks";
 			#clock-cells = <1>;
 			status = "okay";
