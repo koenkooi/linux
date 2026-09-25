@@ -1,0 +1,277 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/pinctrl/marvell,pxa2xx-pinctrl.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Marvell PXA25x and PXA27x pin controller
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >
+  Pin multiplexing and sleep state control of the general purpose I/O pads of
+  the Marvell (formerly Intel) PXA25x and PXA27x application processors.
+
+  Every pad is a GPIO that can be handed over to up to three alternate
+  peripheral functions. A two-bit field of the GPIO alternate function
+  registers (GAFR) selects the function, one bit of the GPIO pin direction
+  registers (GPDR) selects the direction, and one bit of the power manager's
+  GPIO sleep state registers (PGSR) holds the level an output pad is driven to
+  while the SoC is in sleep mode. The GAFR and GPDR registers lie inside the
+  register block of the GPIO controller and are shared with it.
+
+  The pads are named after their GPIO number, "P" followed by the number. The
+  PXA25x controller manages P0 to P84, the PXA27x controller manages P0, P1
+  and P9 to P120. Each pad is a group of its own, named like the pad.
+
+properties:
+  compatible:
+    enum:
+      - marvell,pxa25x-pinctrl
+      - marvell,pxa27x-pinctrl
+
+  reg:
+    items:
+      - description:
+          GPIO alternate function registers GAFR0_L to GAFR3_U, of which the
+          PXA25x implements GAFR0_L to GAFR2_U
+      - description: GPIO pin direction registers GPDR0 to GPDR2
+      - description:
+          GPIO pin direction register GPDR3, which holds the direction bits of
+          the pads above P95; unused on the PXA25x
+      - description:
+          Power manager GPIO sleep state registers PGSR0 to PGSR3, of which
+          the PXA25x implements PGSR0 to PGSR2
+
+patternProperties:
+  "-pins$":
+    description:
+      Pin configuration selected by a consumer through its pinctrl-N
+      property. It is either a single node that lists the pads and what to
+      do with them, or a node without a configuration of its own that groups
+      several such nodes; the pads of every node directly below it are
+      configured together.
+    oneOf:
+      - $ref: "#/$defs/pins-node"
+
+      - type: object
+        description:
+          Groups the pin configuration nodes that belong to one state.
+        patternProperties:
+          "-pins$":
+            $ref: "#/$defs/pins-node"
+        additionalProperties: false
+
+$defs:
+  pins-node:
+    type: object
+    description:
+      Pin configuration of a set of pads.
+    allOf:
+      - $ref: pincfg-node.yaml#
+      - $ref: pinmux-node.yaml#
+    additionalProperties: false
+
+    properties:
+      groups:
+        description:
+          Names of the pads to configure, "P<n>" for GPIO n.
+        minItems: 1
+        maxItems: 114
+
+      function:
+        description:
+          Function to select on the pads. Either gpio_in or gpio_out for a
+          plain GPIO with the given direction, or the alternate function of
+          the pads, named after the signal in the SoC manual's alternate
+          function table. Where two units share a signal name the name carries
+          the unit as a prefix (AC97_SYNC, I2S_SYNC), and where one pad offers
+          the same signal both as an input and as an output the name carries
+          an _IN or _OUT suffix (I2S_BITCLK_IN, I2S_BITCLK_OUT). A pad only
+          accepts its own alternate functions.
+
+      low-power-enable:
+        description:
+          Drive the pads high while the SoC is in sleep mode, if they are
+          outputs.
+
+      low-power-disable:
+        description:
+          Drive the pads low while the SoC is in sleep mode, if they are
+          outputs.
+
+    required:
+      - groups
+
+    anyOf:
+      - required:
+          - function
+      - required:
+          - low-power-enable
+      - required:
+          - low-power-disable
+
+  pxa25x-pins:
+    properties:
+      groups:
+        maxItems: 85
+        items:
+          pattern: "^P([0-9]|[1-7][0-9]|8[0-4])$"
+
+      function:
+        enum: [gpio_in, gpio_out, 3_6_MHz, 32_kHz, 48_MHz, AC97_BITCLK,
+               AC97_SDATA_IN_0, AC97_SDATA_IN_1, AC97_SDATA_OUT, AC97_SYNC,
+               BTCTS, BTRTS, BTRXD, BTTXD, CTS, DCD, "DREQ[0]", "DREQ[1]", DSR,
+               DTR, EXTCLK, FFRXD, FFTXD, GP_RST, HWCTS, HWRTS, HWRXD, HWTXD,
+               I2S_BITCLK_IN, I2S_BITCLK_OUT, I2S_SDATA_IN, I2S_SDATA_OUT,
+               I2S_SYNC, I2S_SYSCLK, ICP_RXD, ICP_TXD, LCD_ACBIAS, LCD_FCLK,
+               LCD_LCLK, LCD_PCLK, LDD<0>, LDD<1>, LDD<2>, LDD<3>, LDD<4>,
+               LDD<5>, LDD<6>, LDD<7>, LDD<8>, LDD<9>, LDD<10>, LDD<11>,
+               LDD<12>, LDD<13>, LDD<14>, LDD<15>, MBGNT, MBREQ, MMCC1, MMCCLK,
+               MMCCS0, MMCCS1, nCS<2>, nCS<3>, nCS<4>, "nCS[5]", nCS_1,
+               nIOIS16, "nPCE[1]", "nPCE[2]", nPIOR, nPIOW, nPOE, nPREG,
+               nPSKTSEL, nPWAIT, nPWE, NSSPRXD, NSSPSCLK_IN, NSSPSCLK_OUT,
+               NSSPSFRM_IN, NSSPSFRM_OUT, NSSPTXD, PWM0, PWM1, RDY, RI, RTCCLK,
+               RTS, RXD, SCLK, SFRM, TXD]
+
+  pxa27x-pins:
+    properties:
+      groups:
+        items:
+          pattern: "^P([01]|9|[1-9][0-9]|1[01][0-9]|120)$"
+
+      function:
+        enum: [gpio_in, gpio_out, 48_MHz, AC97_BITCLK, AC97_RESET_n,
+               AC97_SDATA_IN_0, AC97_SDATA_IN_1, AC97_SDATA_OUT, AC97_SYNC,
+               AC97_SYSCLK, BB_IB_CLK, BB_IB_DAT<0>, BB_IB_DAT<1>,
+               BB_IB_DAT<2>, BB_IB_DAT<3>, BB_IB_STB, BB_IB_WAIT, BB_OB_CLK,
+               BB_OB_DAT<0>, BB_OB_DAT<1>, BB_OB_DAT<2>, BB_OB_DAT<3>,
+               BB_OB_STB, BB_OB_WAIT, BTCTS, BTRTS, BTRXD, BTTXD, CHOUT<0>,
+               CHOUT<1>, CIF_DD<0>, CIF_DD<1>, CIF_DD<2>, CIF_DD<3>,
+               CIF_DD<4>, CIF_DD<5>, CIF_DD<6>, CIF_DD<7>, CIF_DD<8>,
+               CIF_DD<9>, CIF_FV_IN, CIF_FV_OUT, CIF_LV_IN, CIF_LV_OUT,
+               CIF_MCLK, CIF_PCLK, CLK_EXT, DREQ<0>, DREQ<1>, DREQ<2>,
+               DVAL<0>, DVAL<1>, EXT_SYNC<0>, EXT_SYNC<1>, FFCTS, FFDCD,
+               FFDSR, FFDTR, FFRI, FFRTS, FFRXD, FFTXD, HZ_CLK, I2S_BITCLK_IN,
+               I2S_BITCLK_OUT, I2S_SDATA_IN, I2S_SDATA_OUT, I2S_SYNC,
+               I2S_SYSCLK, ICP_RXD, ICP_TXD, KP_DKIN<0>, KP_DKIN<1>,
+               KP_DKIN<2>, KP_DKIN<3>, KP_DKIN<4>, KP_DKIN<5>, KP_DKIN<6>,
+               KP_DKIN<7>, KP_MKIN<0>, KP_MKIN<1>, KP_MKIN<2>, KP_MKIN<3>,
+               KP_MKIN<4>, KP_MKIN<5>, KP_MKIN<6>, KP_MKIN<7>, KP_MKOUT<0>,
+               KP_MKOUT<1>, KP_MKOUT<2>, KP_MKOUT<3>, KP_MKOUT<4>,
+               KP_MKOUT<5>, KP_MKOUT<6>, KP_MKOUT<7>, L_BIAS, L_CS, L_FCLK_RD,
+               L_LCLK_A0, L_PCLK_WR, L_VSYNC, LDD<0>_IN, LDD<0>_OUT,
+               LDD<1>_IN, LDD<1>_OUT, LDD<2>_IN, LDD<2>_OUT, LDD<3>_IN,
+               LDD<3>_OUT, LDD<4>_IN, LDD<4>_OUT, LDD<5>_IN, LDD<5>_OUT,
+               LDD<6>_IN, LDD<6>_OUT, LDD<7>_IN, LDD<7>_OUT, LDD<8>_IN,
+               LDD<8>_OUT, LDD<9>_IN, LDD<9>_OUT, LDD<10>_IN, LDD<10>_OUT,
+               LDD<11>_IN, LDD<11>_OUT, LDD<12>_IN, LDD<12>_OUT, LDD<13>_IN,
+               LDD<13>_OUT, LDD<14>_IN, LDD<14>_OUT, LDD<15>_IN, LDD<15>_OUT,
+               LDD<16>_IN, LDD<16>_OUT, LDD<17>_IN, LDD<17>_OUT, MBGNT, MBREQ,
+               MMCLK, MMCMD_IN, MMCMD_OUT, MMDAT<0>_IN, MMDAT<0>_OUT,
+               MMDAT<1>_IN, MMDAT<1>_OUT, MMDAT<2>_IN, MMDAT<2>_OUT,
+               MMDAT<3>_IN, MMDAT<3>_OUT, MSBS, MSSCLK, MSSDIO_IN, MSSDIO_OUT,
+               nCS<1>, nCS<2>, nCS<3>, nCS<4>, nCS<5>, nIOS16, nMSINS,
+               nPCE<1>, nPCE<2>, nPIOR, nPIOW, nPOE, nPREG, nPWAIT, nPWE,
+               nSDCS<2>, nSDCS<3>, nURST, nUVS1, nUVS2, PSKTSEL, PWM_OUT<0>,
+               PWM_OUT<1>, PWM_OUT<2>, PWM_OUT<3>, RDY, SCL_IN, SCL_OUT,
+               SDA_IN, SDA_OUT, SSPCLK3_IN, SSPCLK3_OUT, SSPEXTCLK,
+               SSPEXTCLK2, SSPRXD, SSPRXD2, SSPRXD3, SSPSCLK2_IN,
+               SSPSCLK2_OUT, SSPSCLK3, SSPSCLK3_IN, SSPSCLK3_OUT, SSPSCLK_IN,
+               SSPSCLK_OUT, SSPSCLKEN, SSPSCLKEN2, SSPSFRM2, SSPSFRM2_IN,
+               SSPSFRM2_OUT, SSPSFRM3, SSPSFRM3_IN, SSPSFRM3_OUT, SSPSFRM_IN,
+               SSPSFRM_OUT, SSPSYSCLK, SSPSYSCLK2, SSPSYSCLK3, SSPTXD,
+               SSPTXD2, SSPTXD3, STD_RXD, STD_TXD, UCLK, UDET, UEN, USB_P2_1,
+               USB_P2_2, USB_P2_3, USB_P2_4, USB_P2_5, USB_P2_6, USB_P2_7,
+               USB_P2_8, USB_P3_1, USB_P3_2, USB_P3_3, USB_P3_4, USB_P3_5,
+               USB_P3_6, USBHPEN<1>, USBHPEN<2>, USBHPWR<1>, USBHPWR<2>, UVS0]
+
+required:
+  - compatible
+  - reg
+
+allOf:
+  - $ref: pinctrl.yaml#
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: marvell,pxa25x-pinctrl
+    then:
+      patternProperties:
+        "-pins$":
+          $ref: "#/$defs/pxa25x-pins"
+          patternProperties:
+            "-pins$":
+              $ref: "#/$defs/pxa25x-pins"
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: marvell,pxa27x-pinctrl
+    then:
+      patternProperties:
+        "-pins$":
+          $ref: "#/$defs/pxa27x-pins"
+          patternProperties:
+            "-pins$":
+              $ref: "#/$defs/pxa27x-pins"
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    pinctrl@40e00054 {
+        compatible = "marvell,pxa25x-pinctrl";
+        reg = <0x40e00054 0x20>, <0x40e0000c 0xc>, <0x40e0010c 0x4>,
+              <0x40f00020 0x10>;
+
+        backlight-pwm-pins {
+            groups = "P16";
+            function = "PWM0";
+            low-power-disable;
+        };
+
+        backlight-enable-pins {
+            groups = "P17";
+            function = "gpio_out";
+            low-power-disable;
+        };
+
+        lcd-pins {
+            lcd0-pins {
+                groups = "P58";
+                function = "LDD<0>";
+            };
+
+            lcd1-pins {
+                groups = "P59";
+                function = "LDD<1>";
+                low-power-disable;
+            };
+
+            lcd-power-pins {
+                groups = "P60", "P61";
+                function = "gpio_out";
+                low-power-enable;
+            };
+        };
+    };
+
+  - |
+    pinctrl@40e00054 {
+        compatible = "marvell,pxa27x-pinctrl";
+        reg = <0x40e00054 0x20>, <0x40e0000c 0xc>, <0x40e0010c 0x4>,
+              <0x40f00020 0x10>;
+
+        backlight-pwm-pins {
+            groups = "P17";
+            function = "PWM_OUT<1>";
+            low-power-disable;
+        };
+    };
+
+...
