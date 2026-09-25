@@ -1,0 +1,95 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/regulator/maxim,max1586.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Maxim MAX1586 Power Management IC
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description:
+  The MAX1586 is a power management IC with I2C programmable voltage outputs.
+  Output V3 is selectable in 25 mV steps from 0.7 V to 1.475 V, before the
+  gain of its external feedback resistors is applied. Output V6 is selectable
+  between off, 1.8 V, 2.5 V and 3.0 V. The selected voltages cannot be read
+  back.
+
+properties:
+  compatible:
+    const: maxim,max1586
+
+  reg:
+    maxItems: 1
+
+  v3-gain:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 1000000
+    description:
+      Gain of the V3 output in millionths, set by the external feedback
+      resistors R24 and R25 as 1 + R24 / R25 + R24 / 185.5 kOhm. A value of
+      1000000 is a gain of 1.
+
+  regulators:
+    type: object
+    description:
+      Container of the regulator output nodes. An output node is identified
+      either by its node name, Output_V3 or Output_V6, or by the
+      regulator-compatible property.
+
+    patternProperties:
+      "^Output_V[36]$":
+        type: object
+        $ref: /schemas/regulator/regulator.yaml#
+        unevaluatedProperties: false
+
+      "^[a-z][a-z0-9_-]*$":
+        type: object
+        $ref: /schemas/regulator/regulator.yaml#
+        unevaluatedProperties: false
+
+        properties:
+          regulator-compatible:
+            $ref: /schemas/types.yaml#/definitions/string
+            enum: [Output_V3, Output_V6]
+            deprecated: true
+            description:
+              Output described by the node, Output_V3 for the V3 output and
+              Output_V6 for the V6 output.
+
+        required:
+          - regulator-compatible
+
+    additionalProperties: false
+
+required:
+  - compatible
+  - reg
+  - v3-gain
+  - regulators
+
+additionalProperties: false
+
+examples:
+  - |
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        regulator@14 {
+            compatible = "maxim,max1586";
+            reg = <0x14>;
+            v3-gain = <1051098>;
+
+            regulators {
+                vcc_core: v3 {
+                    regulator-name = "vcc_core";
+                    regulator-compatible = "Output_V3";
+                    regulator-min-microvolt = <900000>;
+                    regulator-max-microvolt = <1705000>;
+                    regulator-always-on;
+                };
+            };
+        };
+    };
