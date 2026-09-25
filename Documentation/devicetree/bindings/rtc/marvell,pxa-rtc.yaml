@@ -24,17 +24,25 @@ properties:
       - description: 1 Hz
       - description: Alarm
 
+  clocks:
+    maxItems: 1
+    description: 32.768 kHz oscillator that clocks the counter.
+
 required:
   - compatible
   - reg
   - interrupts
+  - clocks
 
 unevaluatedProperties: false
 
 examples:
   - |
+    #include <dt-bindings/clock/pxa-clock.h>
+
     rtc@40900000 {
         compatible = "marvell,pxa-rtc";
         reg = <0x40900000 0x3c>;
         interrupts = <30>, <31>;
+        clocks = <&clks CLK_OSC32k768>;
     };
