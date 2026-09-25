@@ -147,7 +147,6 @@
 			clocks = <&clks CLK_CAMERA>;
 			clock-names = "ciclk";
 			clock-frequency = <5000000>;
-			clock-output-names = "qci_mclk";
 
 			status = "disabled";
 		};
