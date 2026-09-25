@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/mmc/marvell,pxa-mmc.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Marvell PXA MMC/SD/SDIO controller
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description:
+  MultiMediaCard, SD and SDIO host controller integrated into the Marvell
+  (formerly Intel) PXA25x, PXA27x and PXA3xx application processors. The
+  PXA25x controller only implements a one-bit data bus, the PXA27x and
+  PXA3xx controllers add four-bit transfers and SDIO interrupts. The PXA3xx
+  processors provide up to three instances. Data is moved by the
+  peripheral DMA controller, using one receive and one transmit request
+  line per instance.
+
+allOf:
+  - $ref: mmc-controller.yaml#
+
+properties:
+  compatible:
+    const: marvell,pxa-mmc
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+
+  dmas:
+    maxItems: 2
+
+  dma-names:
+    items:
+      - const: rx
+      - const: tx
+
+  pxa-mmc,detect-delay-ms:
+    description:
+      Delay between a card detect event and the rescan of the slot for a
+      card. It applies only to the card detect interrupt that platform data
+      registers; a card detect GPIO described with cd-gpios has its own
+      debounce.
+    deprecated: true
+    default: 0
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - dmas
+  - dma-names
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/pxa-clock.h>
+
+    mmc@41100000 {
+        compatible = "marvell,pxa-mmc";
+        reg = <0x41100000 0x1000>;
+        interrupts = <23>;
+        clocks = <&clks CLK_MMC1>;
+        dmas = <&pdma 21 3>,
+               <&pdma 22 3>;
+        dma-names = "rx", "tx";
+        vmmc-supply = <&reg_vcc_sdio>;
+        mmc-pwrseq = <&mmc0_pwrseq>;
+        non-removable;
+        bus-width = <4>;
+    };
