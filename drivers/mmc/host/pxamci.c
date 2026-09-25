@@ -667,7 +667,6 @@ static int pxamci_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	mmc->caps = 0;
 	host->cmdat = 0;
 	if (!cpu_is_pxa25x()) {
 		mmc->caps |= MMC_CAP_4_BIT_DATA | MMC_CAP_SDIO_IRQ;
