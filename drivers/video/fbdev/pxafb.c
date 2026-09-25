@@ -2101,7 +2101,7 @@ static int of_get_pxafb_display(struct device *dev, struct device_node *disp,
 		return i;
 	}
 	info->lcd_conn |= LCD_CONN_TYPE(i);
-	info->lcd_conn |= LCD_CONN_WIDTH(bus_width);
+	info->lcd_conn |= (bus_width & 0x1f) << 4;
 
 	timings = of_get_display_timings(disp);
 	if (!timings)
