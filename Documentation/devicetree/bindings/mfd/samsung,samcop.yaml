@@ -71,6 +71,12 @@ properties:
       pins; banks B-E are limited to the 16 pins addressable by their single
       configuration register. Cell 2 is a standard GPIO_* flags value.
 
+  mmc:
+    $ref: /schemas/mmc/samsung,samcop-sdi.yaml#
+    description:
+      SAMCOP's SD/MMC host. Card detect, write protect and slot power are
+      board wiring, described by the child's own properties.
+
   adc:
     type: object
     description:
@@ -284,6 +290,13 @@ examples:
 
         gpio-controller;
         #gpio-cells = <2>;
+
+        mmc {
+            compatible = "samsung,samcop-sdi";
+            cd-gpios = <&samcop 16 GPIO_ACTIVE_LOW>;
+            wp-gpios = <&gpio 74 GPIO_ACTIVE_HIGH>;
+            vmmc-supply = <&sd_vmmc>;
+        };
 
         h5000-ac {
             compatible = "gpio-charger";

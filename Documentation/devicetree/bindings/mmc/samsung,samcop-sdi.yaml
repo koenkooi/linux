@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/mmc/samsung,samcop-sdi.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung SAMCOP SD/MMC host
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  The SD/MMC host (SDI) block of the Samsung SAMCOP companion ASIC
+  (Documentation/devicetree/bindings/mfd/samsung,samcop.yaml). It is a
+  4-bit host with a single card slot. The block has no register
+  window or interrupt properties of its own: the parent hands it its
+  register sub-range, its completion interrupt and its card-detect wakeup
+  interrupt, and its clock gate is internal to the parent.
+
+  Of the common MMC host properties the driver uses only cd-gpios,
+  wp-gpios and vmmc-supply; the host always runs with four data lines.
+
+  Card detect, write protect and slot power are board wiring. Card detect
+  is a level read from a GPIO, and the parent's card-detect wakeup
+  interrupt reports its edges; write protect is a plain GPIO; slot power is
+  a supply regulator.
+
+allOf:
+  - $ref: /schemas/mmc/mmc-controller.yaml#
+
+properties:
+  compatible:
+    const: samsung,samcop-sdi
+
+required:
+  - compatible
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    companion-chip {
+        mmc {
+            compatible = "samsung,samcop-sdi";
+            cd-gpios = <&samcop 16 GPIO_ACTIVE_LOW>;
+            wp-gpios = <&gpio 74 GPIO_ACTIVE_HIGH>;
+            vmmc-supply = <&sd_vmmc>;
+        };
+    };
