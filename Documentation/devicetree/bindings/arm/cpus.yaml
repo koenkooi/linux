@@ -199,6 +199,7 @@ properties:
           - marvell,pj4b
           - marvell,sheeva-v5
           - marvell,sheeva-v7
+          - marvell,xscale
           - nvidia,tegra132-denver
           - nvidia,tegra186-denver
           - nvidia,tegra194-carmel
