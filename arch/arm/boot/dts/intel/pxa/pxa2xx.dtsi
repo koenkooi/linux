@@ -9,18 +9,18 @@
 
 #define PMGROUP(pin) #pin
 #define PMMUX(func, pin, af)			\
-	mux- ## func {				\
+	func-pins {				\
 		groups = PMGROUP(P ## pin);	\
 		function = #af;			\
 	}
 #define PMMUX_LPM_LOW(func, pin, af)		\
-	mux- ## func {				\
+	func-pins {				\
 		groups = PMGROUP(P ## pin);	\
 		function = #af;			\
 		low-power-disable;		\
 	}
 #define PMMUX_LPM_HIGH(func, pin, af)		\
-	mux- ## func {				\
+	func-pins {				\
 		groups = PMGROUP(P ## pin);	\
 		function = #af;			\
 		low-power-enable;		\
