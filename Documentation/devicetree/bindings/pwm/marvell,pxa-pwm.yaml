@@ -62,6 +62,9 @@ properties:
               - spacemit,k1-pwm
               - spacemit,k3-pwm
           - const: marvell,pxa910-pwm
+      - items:
+          - const: marvell,pxa270-pwm
+          - const: marvell,pxa250-pwm
 
   reg:
     # Length should be 0x10
@@ -103,4 +106,14 @@ examples:
       reg = <0x40b00000 0x10>;
       #pwm-cells = <1>;
       clocks = <&clks CLK_PWM0>;
+    };
+
+  - |
+    #include <dt-bindings/clock/pxa-clock.h>
+
+    pwm@40c00010 {
+        compatible = "marvell,pxa270-pwm", "marvell,pxa250-pwm";
+        reg = <0x40c00010 0x10>;
+        #pwm-cells = <1>;
+        clocks = <&clks CLK_PWM1>;
     };
