@@ -732,14 +732,22 @@ static const struct pmu_probe_info xscale_pmu_probe_table[] = {
 	{ /* sentinel value */ }
 };
 
+static const struct of_device_id xscale_pmu_of_device_ids[] = {
+	{.compatible = "marvell,xscale1-pmu",	.data = xscale1pmu_init},
+	{.compatible = "marvell,xscale2-pmu",	.data = xscale2pmu_init},
+	{ /* sentinel value */ }
+};
+
 static int xscale_pmu_device_probe(struct platform_device *pdev)
 {
-	return arm_pmu_device_probe(pdev, NULL, xscale_pmu_probe_table);
+	return arm_pmu_device_probe(pdev, xscale_pmu_of_device_ids,
+				    xscale_pmu_probe_table);
 }
 
 static struct platform_driver xscale_pmu_driver = {
 	.driver		= {
-		.name	= "xscale-pmu",
+		.name		= "xscale-pmu",
+		.of_match_table	= xscale_pmu_of_device_ids,
 	},
 	.probe		= xscale_pmu_device_probe,
 };
