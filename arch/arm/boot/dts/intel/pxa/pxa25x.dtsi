@@ -133,6 +133,11 @@
 		};
 	};
 
+	pmu {
+		compatible = "marvell,xscale1-pmu";
+		interrupts = <12>;
+	};
+
 	timer@40a00000 {
 		compatible = "marvell,pxa-timer";
 		reg = <0x40a00000 0x20>;
