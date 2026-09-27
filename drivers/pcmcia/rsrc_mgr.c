@@ -42,18 +42,62 @@ struct resource *pcmcia_make_resource(resource_size_t start,
 	return res;
 }
 
+/*
+ * A statically mapped socket decodes its whole I/O space through one
+ * fixed mapping, so every range a card asks for is accounted to one
+ * window covering that space. Populating s->io[] is what lets
+ * pcmcia_enable_device() and the pcmcia_fixup_*() helpers reach the
+ * socket's ->set_io_map(); release_io_space() frees the window once
+ * InUse drops back to zero. It is never inserted into a resource tree:
+ * the socket driver already owns the range, and io_offset is not an
+ * ioport_resource address on every static-map controller.
+ */
 static int static_find_io(struct pcmcia_socket *s, unsigned int attr,
-			unsigned int *base, unsigned int num,
-			unsigned int align, struct resource **parent)
+			  unsigned int *base, unsigned int num,
+			  unsigned int align, struct resource **parent)
 {
+	unsigned int end;
+	int i;
+
 	if (!s->io_offset)
 		return -EINVAL;
 	*base = s->io_offset | (*base & 0x0fff);
 	*parent = NULL;
+	end = *base + num - 1;
 
-	return 0;
+	for (i = 0; i < MAX_IO_WIN; i++) {
+		struct resource *res = s->io[i].res;
+
+		if (!res || res->start > *base || res->end < *base)
+			continue;
+
+		/* release_io_space() only matches a window covering the range */
+		if (end > res->end)
+			res->end = end;
+		s->io[i].InUse += num;
+		return 0;
+	}
+
+	for (i = 0; i < MAX_IO_WIN; i++) {
+		struct resource *res;
+
+		if (s->io[i].res)
+			continue;
+
+		res = pcmcia_make_resource(s->io_offset,
+					   max(end - s->io_offset + 1, 0x1000U),
+					   IORESOURCE_IO | (attr & IORESOURCE_BITS),
+					   dev_name(&s->dev));
+		if (!res)
+			return -ENOMEM;
+
+		s->io[i].res = res;
+		s->io[i].InUse = num;
+		return 0;
+	}
+
+	return -EINVAL;
 }
-
 
 struct pccard_resource_ops pccard_static_ops = {
 	.validate_mem = NULL,

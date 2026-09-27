@@ -76,7 +76,9 @@ static void release_io_space(struct pcmcia_socket *s, struct resource *res)
 			res->flags = IORESOURCE_IO;
 			/* Free the window if no one else is using it */
 			if (s->io[i].InUse == 0) {
-				release_resource(s->io[i].res);
+				/* a statically mapped socket's window has no parent */
+				if (s->io[i].res->parent)
+					release_resource(s->io[i].res);
 				kfree(s->io[i].res);
 				s->io[i].res = NULL;
 			}
