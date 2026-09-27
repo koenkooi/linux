@@ -77,6 +77,8 @@ properties:
           - arm,rainier-pmu
           - brcm,vulcan-pmu
           - cavium,thunder-pmu
+          - marvell,xscale1-pmu
+          - marvell,xscale2-pmu
           - nvidia,denver-pmu
           - nvidia,carmel-pmu
           - qcom,krait-pmu
