@@ -11990,6 +11990,7 @@ HP IPAQ H2200 AND SAMSUNG HAMCOP SUPPORT
 M:	Koen Kooi <koen@dominion.thruhere.net>
 L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
 S:	Maintained
+F:	Documentation/devicetree/bindings/mfd/samsung,hamcop.yaml
 F:	Documentation/devicetree/bindings/mmc/samsung,hamcop-sdi.yaml
 F:	arch/arm/boot/dts/intel/pxa/pxa250-hp-ipaq-h2200.dts
 F:	arch/arm/mach-pxa/h2200*

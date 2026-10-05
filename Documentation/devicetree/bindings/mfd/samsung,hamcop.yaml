@@ -1,0 +1,242 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/mfd/samsung,hamcop.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung HAMCOP companion ASIC
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >
+  HAMCOP is a Samsung-designed "SAMCOP"-class companion ASIC found on the
+  HP iPAQ h2200 (h2210/h2212/h2215), hanging off a static-memory chip
+  select as a 16-bit VLIO-mode MMIO device with a single upstream GPIO
+  interrupt line. It bundles a NAND flash controller, an SD/MMC host
+  (SDI), an ADC + resistive touchscreen front-end, a DS1WM-compatible
+  1-Wire master, a 5-channel LED blink controller, a 32-line GPIO block
+  (offsets 0-15 double as 16 of the chip's own interrupt sources), and
+  16 KiB of on-chip SRAM.
+
+  This binding covers the chip core only (register access, IRQ demux,
+  gpio-controller, clocks); the sub-blocks are described as child nodes.
+
+  The on-chip SRAM sits at chip offset 0, below the register window, and
+  is the second "reg" entry rather than part of the first: the CPU resets
+  into it, so it holds the board's boot code and is owned by the board's
+  suspend/reboot handling rather than by the chip's register-level
+  drivers.
+
+properties:
+  compatible:
+    const: samsung,hamcop
+
+  reg:
+    items:
+      - description:
+          Register window, from chip offset 0x4000 (immediately past the
+          on-chip SRAM) through the end of the chip's 1 MiB address window.
+      - description:
+          The 16 KiB on-chip SRAM at chip offset 0.
+
+  interrupts:
+    maxItems: 1
+    description:
+      The chip's single upstream interrupt line (ASIC_INT_N), active-low
+      falling-edge, chained through this node's own interrupt-controller
+      domain.
+
+  interrupt-controller: true
+
+  '#interrupt-cells':
+    const: 2
+    description:
+      Cell 1 is the hwirq number -- 0-15 are the GPIO A/B bank pins
+      (identity-mapped with the gpio-controller's own offset numbering
+      below, so a consumer's GPIO and interrupt specifiers for the same
+      physical line always agree), 16-25 are ten fixed-function block
+      interrupts (DMA, TICK, ALARM, ONEWIRE, SDHC, ADCTS, ADC, WDT,
+      KEYPAD, NFIF, in that order). Cell 2 is a standard IRQ_TYPE_* flag;
+      hwirq 0-15 accept any of level-low/high or rising/falling/both
+      edge (the hardware's own GPAINT/GPBINT trigger-type registers),
+      hwirq 16-25 have no such register and accept only IRQ_TYPE_NONE.
+
+  gpio-controller: true
+
+  '#gpio-cells':
+    const: 2
+    description:
+      32 lines across four 8-pin banks (A-D). Only banks A/B (offsets
+      0-15) are also hwirqs in this node's own interrupt-controller
+      domain above; C/D (offsets 16-31) are plain GPIO with no
+      interrupt capability.
+
+  nand-controller:
+    type: object
+    description:
+      HAMCOP's NAND flash controller. It has no interrupt resource; the
+      ready/busy line is polled.
+    properties:
+      compatible:
+        const: samsung,hamcop-nand
+    required:
+      - compatible
+    additionalProperties: false
+
+  mmc:
+    $ref: /schemas/mmc/samsung,hamcop-sdi.yaml
+    description:
+      HAMCOP's SDI (SD/MMC) host. Card detect is a board GPIO and the slot
+      power a board supply, not HAMCOP registers.
+
+  led-controller:
+    type: object
+    description:
+      HAMCOP's 5-channel LED blink controller. Each channel the board wires
+      is a child node whose reg is the channel number.
+    properties:
+      compatible:
+        const: samsung,hamcop-leds
+
+      "#address-cells":
+        const: 1
+
+      "#size-cells":
+        const: 0
+
+    patternProperties:
+      "^led@[0-4]$":
+        type: object
+        $ref: /schemas/leds/common.yaml#
+        unevaluatedProperties: false
+        properties:
+          reg:
+            description: LED channel number.
+            maximum: 4
+        required:
+          - reg
+
+    required:
+      - compatible
+      - "#address-cells"
+      - "#size-cells"
+    additionalProperties: false
+
+  adc:
+    type: object
+    description:
+      HAMCOP's shared ADC/touchscreen front-end.
+    properties:
+      compatible:
+        const: samsung,hamcop-adc
+      "#io-channel-cells":
+        const: 1
+        description:
+          Index into the driver's channel array, x=0, y=1, z1=2, z2=3,
+          ain0=4, ain1=5, ain2=6. The driver installs no fwnode_xlate, so
+          IIO's generic single-cell translation applies.
+    required:
+      - compatible
+    additionalProperties: false
+
+  touchscreen:
+    type: object
+    $ref: /schemas/input/touchscreen/resistive-adc-touch.yaml#
+    description:
+      The resistive touchscreen panel wired to the four touch channels of
+      the ADC block above. It is a separate consumer node because it is
+      board wiring, and because the phandle reference makes the consumer
+      defer its probe until the ADC driver has registered, whatever the
+      module load order.
+    unevaluatedProperties: false
+
+  onewire:
+    type: object
+    $ref: /schemas/w1/dallas,ds1wm.yaml#
+    unevaluatedProperties: false
+    description:
+      HAMCOP's DS1WM-compatible 1-Wire master. The same core is embedded in
+      several companion ASICs, so its properties are described once, in the
+      binding referenced above, rather than per ASIC.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - interrupt-controller
+  - '#interrupt-cells'
+  - gpio-controller
+  - '#gpio-cells'
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+    #include <dt-bindings/leds/common.h>
+
+    companion-chip@4000 {
+        compatible = "samsung,hamcop";
+        reg = <0x00004000 0x000fc000>,
+              <0x00000000 0x00004000>;
+
+        interrupt-parent = <&gpio>;
+        interrupts = <5 IRQ_TYPE_EDGE_FALLING>;
+
+        interrupt-controller;
+        #interrupt-cells = <2>;
+
+        gpio-controller;
+        #gpio-cells = <2>;
+
+        nand-controller {
+            compatible = "samsung,hamcop-nand";
+        };
+
+        mmc {
+            compatible = "samsung,hamcop-sdi";
+        };
+
+        led-controller {
+            compatible = "samsung,hamcop-leds";
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            led@0 {
+                reg = <0>;
+                color = <LED_COLOR_ID_AMBER>;
+                function = LED_FUNCTION_POWER;
+                linux,default-trigger = "default-on";
+            };
+
+            led@2 {
+                reg = <2>;
+                color = <LED_COLOR_ID_BLUE>;
+                function = LED_FUNCTION_BLUETOOTH;
+            };
+        };
+
+        adc: adc {
+            compatible = "samsung,hamcop-adc";
+            #io-channel-cells = <1>;
+        };
+
+        touchscreen {
+            compatible = "resistive-adc-touch";
+            io-channels = <&adc 0>, <&adc 1>, <&adc 2>, <&adc 3>;
+            io-channel-names = "x", "y", "z1", "z2";
+            touchscreen-x-plate-ohms = <400>;
+        };
+
+        onewire {
+            compatible = "samsung,hamcop-onewire", "dallas,ds1wm";
+            dallas,bus-shift = <2>;
+            dallas,reset-recover-delay-ms = <1>;
+
+            battery {
+                compatible = "maxim,ds2760";
+            };
+        };
+    };
