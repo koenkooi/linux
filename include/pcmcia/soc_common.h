@@ -41,6 +41,14 @@ struct soc_pcmcia_socket {
 	socket_state_t		cs_state;
 
 	unsigned short		spd_io[MAX_IO_WIN];
+	/*
+	 * Set for a window whose I/O access time was asked for by a device
+	 * that negotiated it, as opposed to Card Services' "speed 0 means
+	 * use the default" fill. A socket driver imposing a minimum cycle
+	 * time on cards that never negotiate must not apply it on top of a
+	 * negotiated figure.
+	 */
+	bool			spd_io_negotiated[MAX_IO_WIN];
 	unsigned short		spd_mem[MAX_WIN];
 	unsigned short		spd_attr[MAX_WIN];
 
@@ -77,6 +85,24 @@ struct soc_pcmcia_socket {
 	struct list_head	node;
 	void *driver_data;
 };
+
+/*
+ * soc_common_pcmcia_get_timing() collapses the per-window I/O access times
+ * into a single scalar with a slowest-wins max(), so a socket driver's
+ * minimum cycle time has to be decided on the same footing: as soon as any
+ * active window carries a negotiated figure, that scalar is the negotiated
+ * answer and must be programmed as-is.
+ */
+static inline bool soc_pcmcia_io_negotiated(struct soc_pcmcia_socket *skt)
+{
+	int i;
+
+	for (i = 0; i < MAX_IO_WIN; i++)
+		if (skt->spd_io_negotiated[i])
+			return true;
+
+	return false;
+}
 
 
 struct pcmcia_low_level {
