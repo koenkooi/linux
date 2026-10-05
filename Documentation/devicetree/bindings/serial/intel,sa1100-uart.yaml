@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/serial/intel,sa1100-uart.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Intel SA-1100/SA-1110 UART
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  One of the on-chip UARTs of the SA-1100/SA-1110 (Ser1, Ser2 and Ser3).
+  Ser1 is absent on a board that uses its pins as plain GPIO.
+
+allOf:
+  - $ref: serial.yaml#
+
+properties:
+  compatible:
+    items:
+      - const: intel,sa1110-uart
+      - const: intel,sa1100-uart
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  vcc-supply:
+    description: >-
+      Regulator powering the external RS232 line driver of this port, on a
+      board where it is software-switchable.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    serial@80050000 {
+        compatible = "intel,sa1110-uart", "intel,sa1100-uart";
+        reg = <0x80050000 0x24>;
+        interrupts = <17>;
+        vcc-supply = <&rs232_vcc>;
+        dcd-gpios = <&gpio 23 GPIO_ACTIVE_LOW>;
+        cts-gpios = <&gpio 25 GPIO_ACTIVE_LOW>;
+        rts-gpios = <&gpio 26 GPIO_ACTIVE_LOW>;
+    };
+
+...
