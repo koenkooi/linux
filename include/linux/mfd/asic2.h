@@ -177,7 +177,11 @@
  * Clock enable: one flat 18-bit register, one CCF gate per bit exposed by
  * drivers/mfd/asic2.c. EX0 feeds the chip's interrupt controller and is
  * forced on at probe instead of being a consumer-facing gate. Bits without
- * a consumer (AUDIO_1-4, SLOW_UART_1) are defined for documentation only.
+ * a consumer (SLOW_UART_1) are defined for documentation only.
+ *
+ * UART_0 must stay off whenever SLOW_UART_0 is on: the vendor bring-up
+ * clears it in the same read-modify-write that sets SLOW_UART_0, and nothing
+ * enables the ASIC2_GATE_UART_0 gate for that reason.
  *
  * SD_MASK is a 3-bit selector field, not four independent gates, and the
  * SD/MMC host card clock of the h39xx is sourced through it. The h3900
@@ -190,12 +194,23 @@
 #define ASIC2_CLOCK_ENABLE		0x0000
 
 #define ASIC2_CLOCK_AUDIO_MASK		GENMASK(3, 0)
+/*
+ * Four one-hot bit values, not a 2-bit code: enabling two taps at once is
+ * the bug a numeric encoding invites. The rates are derived from the EX1
+ * (24.576 MHz) and EX2 (33.8688 MHz) crystals and fixed in silicon, with no
+ * divider register to model: AUDIO_1 is EX1/6, AUDIO_2 is EX1/2, AUDIO_3 is
+ * nominally EX2/6 and AUDIO_4 is EX2/3.
+ */
+#define ASIC2_CLOCK_AUDIO_1		BIT(0)	/* 4.096 MHz (EX1) */
+#define ASIC2_CLOCK_AUDIO_2		BIT(1)	/* 12.288 MHz (EX1) */
+#define ASIC2_CLOCK_AUDIO_3		BIT(2)	/* 5.6245 MHz (EX2) */
+#define ASIC2_CLOCK_AUDIO_4		BIT(3)	/* 11.2896 MHz (EX2) */
 #define ASIC2_CLOCK_ADC			BIT(4)	/* CX4 -- 1.024 MHz to the ADC */
 #define ASIC2_CLOCK_SPI			BIT(5)	/* CX5 -- 4.096 MHz to SPI */
 #define ASIC2_CLOCK_OWM			BIT(6)	/* CX6 -- 4.096 MHz to the 1-Wire master */
 #define ASIC2_CLOCK_PWM			BIT(7)	/* CX7 -- 2.048 MHz, both PWM blocks */
 #define ASIC2_CLOCK_UART_1		BIT(8)	/* CX8 -- 24.576 MHz to UART1 */
-#define ASIC2_CLOCK_UART_0		BIT(9)	/* CX9 -- 24.576 MHz to UART0 */
+#define ASIC2_CLOCK_UART_0		BIT(9)	/* CX9 -- 24.576 MHz to UART0, keep off */
 #define ASIC2_CLOCK_SD_MASK		GENMASK(12, 10)
 #define ASIC2_CLOCK_SD_1		(1 << 10)	/* 16.934 MHz to SD */
 #define ASIC2_CLOCK_SD_2		(2 << 10)	/* 24.576 MHz to SD, h39xx */
@@ -203,7 +218,7 @@
 #define ASIC2_CLOCK_SD_4		(4 << 10)	/* 49.152 MHz to SD */
 #define ASIC2_CLOCK_EX0			BIT(13)	/* 32.768 kHz, forced on, not a gate */
 #define ASIC2_CLOCK_EX1			BIT(14)	/* 24.576 MHz: ADC/SPI/OWM/PWM/UART/SD */
-#define ASIC2_CLOCK_EX2			BIT(15)	/* 33.869 MHz, unused */
+#define ASIC2_CLOCK_EX2			BIT(15)	/* 33.869 MHz: audio */
 #define ASIC2_CLOCK_SLOW_UART_0		BIT(16)	/* reference select of UART0 */
 #define ASIC2_CLOCK_SLOW_UART_1		BIT(17)	/* no consumer known */
 

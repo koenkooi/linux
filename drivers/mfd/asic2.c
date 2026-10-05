@@ -73,6 +73,7 @@
  */
 
 #include <linux/bitops.h>
+#include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/clkdev.h>
 #include <linux/device.h>
@@ -85,11 +86,13 @@
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
 #include <linux/kernel.h>
+#include <linux/math.h>
 #include <linux/mfd/asic2.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/ds1wm.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/overflow.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/pm_wakeirq.h>
@@ -177,6 +180,27 @@ struct asic2_clk_gate {
 	 * asic2_clk_gate_recalc_rate().
 	 */
 	unsigned long rate;
+};
+
+/*
+ * The audio clock tap selector, a clk_hw of its own and not one more entry
+ * of gates[]: it needs a four way tap switch with a defined order, not the
+ * single bit gate ops that every entry of that array shares. It is declared
+ * here only because struct asic2 embeds one.
+ */
+struct asic2_audio_clk {
+	struct clk_hw hw;
+	struct asic2 *asic;
+	/* ASIC2_CLOCK_AUDIO_1..4, or 0 before the first prepare or set_rate */
+	u32 cur_bit;
+
+	/*
+	 * Consumer handles on the EX1 and EX2 gates, acquired once at
+	 * registration. Tap switches go through clk_prepare_enable() on these
+	 * and never call the gate ops directly, see asic2_audio_clk_set_rate().
+	 */
+	struct clk *ex1_clk;
+	struct clk *ex2_clk;
 };
 
 /*
@@ -277,6 +301,12 @@ struct asic2 {
 	bool vpp_on;
 
 	struct asic2_clk_gate gates[ASIC2_NR_CLK_GATES];
+
+	/*
+	 * The audio clock tap selector, not part of gates[]: it needs a
+	 * four way tap switch, not the uniform single bit gate ops.
+	 */
+	struct asic2_audio_clk audio_clk;
 
 	/* Handed to the "asic2-adc" cell as platform_data -- see
 	 * asic2_touch_gpios_register()'s own comment.
@@ -1362,6 +1392,252 @@ static int asic2_clocks_register(struct asic2 *asic)
 	return 0;
 }
 
+/*
+ * Audio clock selector: the low four bits of the clock enable register,
+ * which feed the UDA1341TS audio path of h38xx. They are four fixed one-hot
+ * taps (see ASIC2_CLOCK_AUDIO_1 to 4 for the rates and the EX1 or EX2
+ * crystal each is derived from), and one clk_hw selects among them instead
+ * of four separate gates, because nothing wants two taps live at once and
+ * four independent gates would let a consumer enable two.
+ *
+ * It is not wired through asic2_clk_defs[] and the convention of each
+ * consumer acquiring EX1 as a second named clock, because which crystal
+ * this clock needs depends on the current tap, and a tap switch has to
+ * acquire the new crystal before it releases the old one. That sequence is
+ * done here with consumer handles on the EX1 and EX2 gates. "Parented on"
+ * is therefore a dependency this code honours, not a parent_hws link.
+ *
+ * Those handles, and not asic2_clk_gate_enable() and _disable() directly,
+ * are what every tap switch goes through. EX1 and EX2 are each one clk_core
+ * shared with other consumers (the SD gate is parented on EX1, as is the
+ * OWM gate behind ds1wm and the battery gauge, and the
+ * ADC, SPI, PWM and UART0 cells hold EX1 through the "ex1" alias), all
+ * tracked by the enable count of that clk_core. Calling the gate ops
+ * directly would write the shared physical bit without touching that count:
+ * switching from an EX1 tap to an EX2 tap would clear the EX1 bit under the
+ * SD host and every other holder, and their later clk_disable() would find
+ * the bit already clear. Going through the clk_core makes the tap switch
+ * one more counted holder, and the bit clears only when nobody needs it.
+ */
+#define to_asic2_audio_clk(_hw) container_of(_hw, struct asic2_audio_clk, hw)
+
+struct asic2_audio_tap {
+	unsigned long rate;
+	u32 bit;
+	/* The crystal of this tap, ASIC2_GATE_EX1 or ASIC2_GATE_EX2 */
+	unsigned int ex_gate;
+};
+
+static const struct asic2_audio_tap asic2_audio_taps[] = {
+	{ 4096000UL,	ASIC2_CLOCK_AUDIO_1,	ASIC2_GATE_EX1 },
+	{ 12288000UL,	ASIC2_CLOCK_AUDIO_2,	ASIC2_GATE_EX1 },
+	{ 5624500UL,	ASIC2_CLOCK_AUDIO_3,	ASIC2_GATE_EX2 },
+	{ 11289600UL,	ASIC2_CLOCK_AUDIO_4,	ASIC2_GATE_EX2 },
+};
+
+static const struct asic2_audio_tap *asic2_audio_tap_by_bit(u32 bit)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(asic2_audio_taps); i++)
+		if (asic2_audio_taps[i].bit == bit)
+			return &asic2_audio_taps[i];
+
+	return NULL;
+}
+
+static const struct asic2_audio_tap *asic2_audio_tap_nearest(unsigned long rate)
+{
+	const struct asic2_audio_tap *best = &asic2_audio_taps[0];
+	unsigned long best_diff = abs_diff(rate, best->rate);
+	unsigned int i;
+
+	for (i = 1; i < ARRAY_SIZE(asic2_audio_taps); i++) {
+		unsigned long diff = abs_diff(rate, asic2_audio_taps[i].rate);
+
+		if (diff < best_diff) {
+			best_diff = diff;
+			best = &asic2_audio_taps[i];
+		}
+	}
+
+	return best;
+}
+
+static struct clk *asic2_audio_ex_clk(struct asic2_audio_clk *aud,
+				      unsigned int ex_gate)
+{
+	return ex_gate == ASIC2_GATE_EX1 ? aud->ex1_clk : aud->ex2_clk;
+}
+
+/*
+ * Switch tap, and crystal if needed, or do nothing when the rate already
+ * rounds to the current tap. The new crystal is acquired before the old one
+ * is released, so that the SSP and the codec are never unclocked in the
+ * middle of the switch.
+ */
+static int asic2_audio_clk_set_rate(struct clk_hw *hw, unsigned long rate,
+				    unsigned long parent_rate)
+{
+	struct asic2_audio_clk *aud = to_asic2_audio_clk(hw);
+	struct asic2 *asic = aud->asic;
+	const struct asic2_audio_tap *new_tap = asic2_audio_tap_nearest(rate);
+	const struct asic2_audio_tap *old_tap = asic2_audio_tap_by_bit(aud->cur_bit);
+	int ret;
+
+	if (old_tap == new_tap)
+		return 0;
+
+	if (!old_tap || old_tap->ex_gate != new_tap->ex_gate) {
+		ret = clk_prepare_enable(asic2_audio_ex_clk(aud, new_tap->ex_gate));
+		if (ret)
+			return ret;
+	}
+
+	/*
+	 * The clock enable register is shared with the SD, EX0, EX1, EX2, ADC,
+	 * PWM, SPI and OWM gates, so only the audio field is modified, with
+	 * asic2_rmw() holding the lock.
+	 */
+	asic2_rmw(asic, ASIC2_CLOCK_BASE + ASIC2_CLOCK_ENABLE,
+		  ASIC2_CLOCK_AUDIO_MASK, new_tap->bit);
+
+	if (old_tap && old_tap->ex_gate != new_tap->ex_gate)
+		clk_disable_unprepare(asic2_audio_ex_clk(aud, old_tap->ex_gate));
+
+	aud->cur_bit = new_tap->bit;
+
+	return 0;
+}
+
+static int asic2_audio_clk_determine_rate(struct clk_hw *hw,
+					  struct clk_rate_request *req)
+{
+	req->rate = asic2_audio_tap_nearest(req->rate)->rate;
+
+	return 0;
+}
+
+static unsigned long asic2_audio_clk_recalc_rate(struct clk_hw *hw,
+						 unsigned long parent_rate)
+{
+	struct asic2_audio_clk *aud = to_asic2_audio_clk(hw);
+	const struct asic2_audio_tap *tap = asic2_audio_tap_by_bit(aud->cur_bit);
+
+	return tap ? tap->rate : 0;
+}
+
+/*
+ * Acquiring the crystal of a tap is .prepare() work and not .enable() work:
+ * clk_prepare_enable() on the crystal takes the prepare_lock mutex and can
+ * sleep. A clk_hw that supplies only .enable and .disable tells the core
+ * that its enable path is safe to call with interrupts disabled, so the
+ * acquisition must not be there. There is no atomic-only step left once the
+ * crystal is held, so .enable and .disable are not provided at all: the
+ * enable count is tracked by the core whether or not these ops exist.
+ */
+static int asic2_audio_clk_prepare(struct clk_hw *hw)
+{
+	struct asic2_audio_clk *aud = to_asic2_audio_clk(hw);
+	const struct asic2_audio_tap *tap;
+
+	/*
+	 * First prepare, no tap chosen yet. A consumer calls clk_set_rate()
+	 * before the first real use, so this default is never audible. It is
+	 * picked only so that .is_enabled and .recalc_rate have a defined
+	 * answer in the window before that call.
+	 */
+	if (!aud->cur_bit)
+		return asic2_audio_clk_set_rate(hw, asic2_audio_taps[0].rate, 0);
+
+	/*
+	 * Prepare after unprepare: unprepare leaves the audio field set and
+	 * only releases the crystal, so the crystal is all that is needed.
+	 */
+	tap = asic2_audio_tap_by_bit(aud->cur_bit);
+	return clk_prepare_enable(asic2_audio_ex_clk(aud, tap->ex_gate));
+}
+
+/*
+ * Idle releases the crystal but leaves the audio field set,
+ * which is what the vendor software does, so it is not cleared here.
+ */
+static void asic2_audio_clk_unprepare(struct clk_hw *hw)
+{
+	struct asic2_audio_clk *aud = to_asic2_audio_clk(hw);
+	const struct asic2_audio_tap *tap = asic2_audio_tap_by_bit(aud->cur_bit);
+
+	if (tap)
+		clk_disable_unprepare(asic2_audio_ex_clk(aud, tap->ex_gate));
+}
+
+static int asic2_audio_clk_is_enabled(struct clk_hw *hw)
+{
+	struct asic2_audio_clk *aud = to_asic2_audio_clk(hw);
+
+	return (asic2_read(aud->asic, ASIC2_CLOCK_BASE + ASIC2_CLOCK_ENABLE) &
+		ASIC2_CLOCK_AUDIO_MASK) != 0;
+}
+
+static const struct clk_ops asic2_audio_clk_ops = {
+	.prepare	= asic2_audio_clk_prepare,
+	.unprepare	= asic2_audio_clk_unprepare,
+	.is_enabled	= asic2_audio_clk_is_enabled,
+	.recalc_rate	= asic2_audio_clk_recalc_rate,
+	.determine_rate	= asic2_audio_clk_determine_rate,
+	.set_rate	= asic2_audio_clk_set_rate,
+};
+
+/*
+ * Register the selector as a single clock, index 0, through a clock
+ * provider. It is optional: a board without an audio consumer never looks
+ * the phandle up, so registering it on h39xx too is harmless.
+ */
+static int asic2_audio_clk_register(struct asic2 *asic)
+{
+	struct clk_hw_onecell_data *onecell;
+	struct clk_init_data init = {
+		.name = "asic2-audio",
+		.ops = &asic2_audio_clk_ops,
+	};
+	int ret;
+
+	if (!asic->dev->of_node)
+		return 0;
+
+	onecell = devm_kzalloc(asic->dev, struct_size(onecell, hws, 1), GFP_KERNEL);
+	if (!onecell)
+		return -ENOMEM;
+
+	asic->audio_clk.asic = asic;
+	asic->audio_clk.hw.init = &init;
+
+	ret = devm_clk_hw_register(asic->dev, &asic->audio_clk.hw);
+	if (ret)
+		return ret;
+
+	/*
+	 * asic2_clocks_register() has already registered both crystal gates,
+	 * so there is a live clk_core to take a handle on.
+	 */
+	asic->audio_clk.ex1_clk = devm_clk_hw_get_clk(asic->dev,
+						      &asic->gates[ASIC2_GATE_EX1].hw,
+						      "audio-ex1");
+	if (IS_ERR(asic->audio_clk.ex1_clk))
+		return PTR_ERR(asic->audio_clk.ex1_clk);
+
+	asic->audio_clk.ex2_clk = devm_clk_hw_get_clk(asic->dev,
+						      &asic->gates[ASIC2_GATE_EX2].hw,
+						      "audio-ex2");
+	if (IS_ERR(asic->audio_clk.ex2_clk))
+		return PTR_ERR(asic->audio_clk.ex2_clk);
+
+	onecell->num = 1;
+	onecell->hws[0] = &asic->audio_clk.hw;
+
+	return devm_of_clk_add_hw_provider(asic->dev, of_clk_hw_onecell_get, onecell);
+}
+
 static const struct ds1wm_driver_data asic2_ds1wm_pdata = {
 	.bus_shift		= 2,
 	/*
@@ -1875,6 +2151,11 @@ static int asic2_probe(struct platform_device *pdev)
 	ret = asic2_clocks_register(asic);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to register clocks\n");
+
+	ret = asic2_audio_clk_register(asic);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to register audio clock selector\n");
 
 	/*
 	 * Per-probe pointer, not a compile-time initializer -- see
