@@ -116,6 +116,18 @@
 	};
 
 	/*
+	 * VBUS sensing for the USB gadget is ASIC2 GPIO bit 10 (USB_DETECT_N),
+	 * active low. The gpio-usb-b-connector compatible makes the gpio-vbus
+	 * USB PHY driver bind; the UDC finds that PHY by type, so no phandle
+	 * is needed. The board has no software D+ pull-up, so the host sees
+	 * an attach whenever VBUS is present.
+	 */
+	connector {
+		compatible = "gpio-usb-b-connector", "usb-b-connector";
+		vbus-gpios = <&asic2 10 GPIO_ACTIVE_LOW>;
+	};
+
+	/*
 	 * Ser3 is the only UART of this board that is a tty and its console;
 	 * Ser1 is used for plain GPIO (see &ppc below) and Ser2 is IrDA only.
 	 * The modem control lines are active low because the RS232
@@ -632,4 +644,8 @@
 			};
 		};
 	};
+};
+
+&udc {
+	status = "okay";
 };
