@@ -72,6 +72,7 @@ config DRM_MQ11XX
 	select DRM_CLIENT_SELECTION
 	select DRM_KMS_HELPER
 	select DRM_GEM_SHMEM_HELPER
+	imply PWM
 	help
 	  DRM driver for the MediaQ 11xx family of external display
 	  controllers (1100/1132/1178) used as the sole display path on
@@ -79,6 +80,10 @@ config DRM_MQ11XX
 	  controller is unwired on both. Fixed-resolution RGB565 panel,
 	  memory-mapped off a PXA static memory bank, board-specific
 	  geometry and register table selected by the devicetree compatible.
+
+	  The h5xxx backlight is controlled by the internal PWM of the
+	  chip, which the driver exports as a PWM chip when PWM support
+	  is enabled.
 
 	  If M is selected the module will be called mq11xx.
 
