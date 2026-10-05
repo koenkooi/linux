@@ -1864,11 +1864,15 @@ stall:
 	udc_set_reg(dev, USIR0, USIR0_IR0);
 }
 
+/* Cap on the requests handle_ep() completes in a single interrupt. */
+#define PXA25X_HANDLE_EP_MAX_LOOPS	1024
+
 static void handle_ep(struct pxa25x_ep *ep)
 {
 	struct pxa25x_request	*req;
 	int			is_in = ep->bEndpointAddress & USB_DIR_IN;
 	int			completed;
+	unsigned int		loops = 0;
 	u32			udccs, tmp;
 
 	do {
@@ -1908,7 +1912,19 @@ static void handle_ep(struct pxa25x_ep *ep)
 				pio_irq_disable(ep);
 		}
 		ep->pio_irqs++;
-	} while (completed);
+	} while (completed && ++loops < PXA25X_HANDLE_EP_MAX_LOOPS);
+
+	/*
+	 * done() runs the gadget's completion callback inline, and u_serial
+	 * and u_ether re-queue from inside it, so this loop can refill the
+	 * queue it is draining. The FIFO is only double buffered, so a real
+	 * burst is a few passes. Bail out instead of spinning in hard-IRQ
+	 * context.
+	 */
+	if (unlikely(loops >= PXA25X_HANDLE_EP_MAX_LOOPS))
+		pr_err_ratelimited("%s: %u completions in one irq, bailing out (udccs %02x, queue %s)\n",
+				    ep->ep.name, loops, udc_ep_get_UDCCS(ep),
+				    list_empty(&ep->queue) ? "empty" : "non-empty");
 }
 
 /*
