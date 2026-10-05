@@ -13797,6 +13797,7 @@ F:	io_uring/loop.*
 IPAQ EXPANSION PACK (SLEEVE) BUS DRIVERS
 M:	Koen Kooi <koen@dominion.thruhere.net>
 S:	Maintained
+F:	drivers/misc/asic2-sleeve.c
 F:	drivers/misc/ipaq-sleeve.c
 F:	include/linux/ipaq-sleeve.h
 
