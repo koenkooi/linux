@@ -73,7 +73,10 @@ config MMC_HAMCOP
 	  the same board). This is the real SD card slot on this hardware
 	  -- the PXA25x SoC's own MMC controller is unwired.
 
-	  PIO only; say Y or M if you have an h2200.
+	  Large transfers are bounced through the on-chip SRAM by the
+	  controller's DMA engine, and the rest use PIO. The DMA path is
+	  experimental: it has not been confirmed to complete a transfer on
+	  hardware yet. Say Y or M if you have an h2200.
 
 	  If unsure, say N.
 
