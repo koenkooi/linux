@@ -12,9 +12,12 @@
  * What output frequency a given TimeBase divider selector produces is not
  * documented (bits 0-3 are only "clock-divider select 0-8"). The driver
  * therefore does not derive an arbitrary period from the PWM clock rate.
- * It always programs the configuration the boot loader uses for the
- * frontlight (divider 7, period 10 counts) and scales only the duty
- * register in proportion to the requested duty_cycle/period ratio. That
+ * It always programs one fixed divider and period pair and scales only the
+ * duty register in proportion to the requested duty_cycle/period ratio.
+ * The pair is board supplied through the "htc,pwm-divider" and
+ * "htc,pwm-period" properties and defaults to what the boot loader uses
+ * for the h39xx frontlight (divider 7, period 10 counts). h38xx uses
+ * divider 8 with a period of 64. That
  * suffices for a pwm-backlight consumer, where brightness is a relative
  * duty ratio, but the period_ns the hardware really produces is not known.
  *
@@ -27,8 +30,10 @@
 #include <linux/err.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/pwm.h>
 
 #define ASIC2_PWM_NR_CHANNELS		2
@@ -42,22 +47,26 @@
 #define ASIC2_PWM_TIME_BASE_ENABLE	BIT(4)
 #define ASIC2_PWM_TIME_BASE_CLEAR	BIT(5)
 
-/* The fixed configuration the boot loader uses, see the header comment */
-#define ASIC2_PWM_REAL_DIVIDER		7
-#define ASIC2_PWM_REAL_PERIOD		10
+/* The configuration the boot loader uses on h39xx, see the header comment */
+#define ASIC2_PWM_DEFAULT_DIVIDER	7
+#define ASIC2_PWM_DEFAULT_PERIOD	10
 
 /*
  * The vendor driver never programmed a duty below 21 of its period of 64
  * (about 33%). That floor is kept as a ratio and rounded up to the next
- * count of this driver's coarser period: 3/10 is below it, 4/10 is not.
+ * count of the configured period: at a period of 10, 3/10 is below it and
+ * 4/10 is not, and at a period of 64 it is exactly 21.
  * pwm-backlight only enables the channel for a nonzero brightness, so a duty
  * under the floor is a dim request and not a request for off.
  */
-#define ASIC2_PWM_REAL_DUTY_FLOOR	4
+#define ASIC2_PWM_DUTY_FLOOR_NUM	21
+#define ASIC2_PWM_DUTY_FLOOR_DEN	64
 
 struct asic2_pwm {
 	struct device *dev;
 	void __iomem *regs;
+	u32 divider;
+	u32 period;
 };
 
 static inline void asic2_pwm_write(struct asic2_pwm *pc, unsigned int ch,
@@ -71,7 +80,7 @@ static int asic2_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 {
 	struct asic2_pwm *pc = pwmchip_get_drvdata(chip);
 	unsigned int ch = pwm->hwpwm;
-	u32 duty;
+	u32 duty, duty_floor;
 
 	if (state->polarity != PWM_POLARITY_NORMAL)
 		return -EINVAL;
@@ -85,21 +94,23 @@ static int asic2_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	 * Fixed period, proportional duty (see the header comment).
 	 * mul_u64_u64_div_u64() avoids overflow on 64-bit inputs.
 	 */
-	duty = mul_u64_u64_div_u64(ASIC2_PWM_REAL_PERIOD, state->duty_cycle,
+	duty = mul_u64_u64_div_u64(pc->period, state->duty_cycle,
 				   state->period);
-	if (duty > ASIC2_PWM_REAL_PERIOD)
-		duty = ASIC2_PWM_REAL_PERIOD;
+	if (duty > pc->period)
+		duty = pc->period;
 
-	if (duty < ASIC2_PWM_REAL_DUTY_FLOOR)
-		duty = ASIC2_PWM_REAL_DUTY_FLOOR;
+	duty_floor = DIV_ROUND_UP(pc->period * ASIC2_PWM_DUTY_FLOOR_NUM,
+				  ASIC2_PWM_DUTY_FLOOR_DEN);
+	if (duty < duty_floor)
+		duty = duty_floor;
 
 	/* Same order as the boot loader: disable, program period and duty, enable */
 	asic2_pwm_write(pc, ch, ASIC2_PWM_TIME_BASE, 0);
-	asic2_pwm_write(pc, ch, ASIC2_PWM_PERIOD_TIME, ASIC2_PWM_REAL_PERIOD);
+	asic2_pwm_write(pc, ch, ASIC2_PWM_PERIOD_TIME, pc->period);
 	asic2_pwm_write(pc, ch, ASIC2_PWM_DUTY_TIME, duty);
 	asic2_pwm_write(pc, ch, ASIC2_PWM_TIME_BASE,
 			ASIC2_PWM_TIME_BASE_ENABLE |
-			(ASIC2_PWM_REAL_DIVIDER & ASIC2_PWM_TIME_BASE_DIVIDER));
+			(pc->divider & ASIC2_PWM_TIME_BASE_DIVIDER));
 
 	return 0;
 }
@@ -144,14 +155,30 @@ static int asic2_pwm_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to get EX1 clock\n");
 
+	/*
+	 * The fallback stays in place when a property, or the device node
+	 * itself, is absent.
+	 */
+	pc->divider = ASIC2_PWM_DEFAULT_DIVIDER;
+	pc->period = ASIC2_PWM_DEFAULT_PERIOD;
+	device_property_read_u32(dev, "htc,pwm-divider", &pc->divider);
+	device_property_read_u32(dev, "htc,pwm-period", &pc->period);
+
 	chip->ops = &asic2_pwm_ops;
 
 	return devm_pwmchip_add(dev, chip);
 }
 
+static const struct of_device_id asic2_pwm_of_match[] = {
+	{ .compatible = "htc,asic2-pwm" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, asic2_pwm_of_match);
+
 static struct platform_driver asic2_pwm_driver = {
 	.driver = {
 		.name = "asic2-pwm",
+		.of_match_table = asic2_pwm_of_match,
 	},
 	.probe	= asic2_pwm_probe,
 };
