@@ -265,6 +265,56 @@
 		brightness-levels = <0 21 27 33 39 45 51 58 64>;
 		default-brightness-level = <4>;
 	};
+
+	/*
+	 * The UDA1341TS audio codec, controlled over L3 bit-banged on three
+	 * plain SA-1110 core GPIOs: GPIO14 DATA, 15 MODE, 16 CLOCK. They are
+	 * not part of any companion-chip window and carry no competing
+	 * alternate function, so plain "&gpio" phandles suffice.
+	 */
+	uda1341: codec {
+		compatible = "nxp,uda1341ts";
+
+		l3-data-gpios  = <&gpio 14 GPIO_ACTIVE_HIGH>;
+		l3-mode-gpios  = <&gpio 15 GPIO_ACTIVE_HIGH>;
+		l3-clock-gpios = <&gpio 16 GPIO_ACTIVE_HIGH>;
+
+		#sound-dai-cells = <0>;
+	};
+
+	/*
+	 * The machine driver tying the SSP CPU DAI and the codec together.
+	 * It alone owns and synchronizes the three rate-dependent settings
+	 * (ASIC2 clock tap, SSP SerClkDiv, codec STATUS0 SC field) so that
+	 * the 32*fs bit-clock invariant of the hardware never drifts, along
+	 * with the speaker/headphone routing and the jack-detect debounce.
+	 *
+	 * spk-gpios, ear-gpios and aud-pwr-gpios are bits 12, 13 and 14 of
+	 * ASIC1 (SPK_ON, EAR_ON_N, AUD_PWR_ON), all GPIO_ACTIVE_HIGH so that
+	 * the "set/clear the bit" logic of the driver matches the routing
+	 * truth table literally; the _N in EAR_ON_N is part of the signal
+	 * name, not a polarity property. jack-gpios is bit 7 of ASIC2 GPIO2
+	 * (EAR_IN_N), genuinely active low.
+	 */
+	sound {
+		compatible = "hp,ipaq-h3800-audio";
+
+		clocks = <&asic2 ASIC2_CLK_AUDIO>;
+		clock-names = "audio";
+
+		spk-gpios = <&asic1 12 GPIO_ACTIVE_HIGH>;
+		ear-gpios = <&asic1 13 GPIO_ACTIVE_HIGH>;
+		aud-pwr-gpios = <&asic1 14 GPIO_ACTIVE_HIGH>;
+		jack-gpios = <&asic2 7 GPIO_ACTIVE_LOW>;
+
+		cpu {
+			sound-dai = <&ssp>;
+		};
+
+		codec {
+			sound-dai = <&uda1341>;
+		};
+	};
 };
 
 /*
@@ -311,6 +361,11 @@
 	lcd_data_pins: lcd-data-pins {
 		pins = "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9";
 		function = "LDD";
+	};
+
+	ssp_clk_pins: ssp-clk-pins {
+		pins = "P19";
+		function = "SSP_CLK";
 	};
 };
 
@@ -687,6 +742,12 @@
 			};
 		};
 	};
+};
+
+&ssp {
+	pinctrl-names = "default";
+	pinctrl-0 = <&ssp_clk_pins>;
+	status = "okay";
 };
 
 &udc {
