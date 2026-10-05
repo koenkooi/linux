@@ -88,9 +88,11 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm.h>
 #include <linux/property.h>
 #include <linux/reboot.h>
 #include <linux/spinlock.h>
+#include <linux/syscore_ops.h>
 
 /*
  * PllControl value "from wince via haret" (the old out-of-tree h2200.c) and
@@ -174,6 +176,12 @@ struct hamcop {
 
 	struct hamcop_gclk gclk;
 	struct hamcop_clk_gate gates[HAMCOP_NR_CLK_GATES];
+
+	/* Suspend/resume save area and its syscore registration. */
+	struct syscore syscore;
+	u16 saved_clockcontrol;
+	u16 saved_intmsk0;
+	u16 saved_intmsk1;
 
 	/* Sources the storm backstop masked, INTMSK0's half in bits 0-15. The
 	 * drain path reads it without the lock and filters it out of INTPND.
@@ -353,6 +361,17 @@ static struct irq_chip hamcop_irq_chip = {
 	.irq_unmask	= hamcop_irq_unmask,
 	.irq_set_type	= hamcop_irq_set_type,
 	.irq_set_wake	= hamcop_irq_set_wake,
+	/*
+	 * HAMCOP has no wake-configuration register: every unmasked source
+	 * pulls ASIC_INT_N, so a pen-down, an SDI completion or a DS1WM
+	 * timeout would wake the board just as readily as a source that was
+	 * armed for wakeup. IRQCHIP_MASK_ON_SUSPEND makes genirq mask exactly
+	 * the non-wake sources in INTMSK at suspend_device_irqs() time and
+	 * leave the one flagged for wakeup alone -- what a blanket
+	 * INTMSK=0xffff write cannot do, since that would mask the wake
+	 * source too.
+	 */
+	.flags		= IRQCHIP_MASK_ON_SUSPEND,
 };
 
 static int hamcop_irq_domain_map(struct irq_domain *d, unsigned int virq,
@@ -1064,6 +1083,135 @@ static int hamcop_restart_prepare(struct sys_off_data *data)
 }
 
 /* ---------------------------------------------------------------------
+ * Suspend/resume.
+ *
+ * Save CPM_ClockControl and both INTMSK halves on the way down; on the way
+ * up put the chip back in VLIO bus mode first, then restore ClockControl,
+ * then the two INTMSK halves.
+ *
+ * The restore is a syscore op rather than a dev_pm_ops stage because
+ * nothing keeps HAMCOP interrupts away until a driver stage runs. GPIO5
+ * carries a chained handler, and suspend_device_irq() skips chained
+ * descriptors outright, so the parent IRQ is never disabled across the
+ * sleep: a latched wake edge is dispatched as soon as interrupts are
+ * enabled at the tail of suspend_enter(), long before any device's
+ * .resume. The HAMCOP hwirqs themselves are re-enabled by
+ * resume_device_irqs() at the end of dpm_resume_noirq(), which is also
+ * earlier than any .resume. Either path would enter hamcop_irq_handler()
+ * with the chip still in the power-on IFMODE_SRAM boot mode, where the IC
+ * offsets that handler reads, and the INTMSK/SRCPND/INTPND writes its storm
+ * guard can emit, alias the SRAM window holding the resume code. A syscore
+ * resume runs with interrupts still off and after the board's low-level resume
+ * path has restored the memory controller timings (MSC0-2) that the CS0
+ * VLIO accesses depend on.
+ *
+ * No source is force-masked on the way down. hamcop_irq_chip carries
+ * IRQCHIP_MASK_ON_SUSPEND so genirq masks each non-wake source individually
+ * and leaves the wakeup-flagged one asserting ASIC_INT_N; a blanket INTMSK
+ * write would mask the wake source as well, as it shares ASIC_INT_N with
+ * every other HAMCOP source.
+ *
+ * CPM_ClockSleep, CPM_PllControl and GPIO_CLKOUTCON, which probe programs
+ * at cold boot, are not restored, nor are the GPIO and interrupt trigger
+ * type registers. This has not been checked against a real resume and is
+ * an assumption to revisit once one completes.
+ */
+static int hamcop_syscore_suspend(void *data)
+{
+	struct hamcop *hamcop = data;
+
+	hamcop->saved_clockcontrol = hamcop_read(hamcop, HAMCOP_CPM_CLOCKCONTROL);
+
+	/*
+	 * Syscore runs last, so this snapshot already has the non-wake
+	 * sources masked by IRQCHIP_MASK_ON_SUSPEND. That is intended: it
+	 * keeps the chip quiet from hamcop_syscore_resume() until
+	 * resume_device_irqs() unmasks each source again through
+	 * hamcop_irq_unmask(), rather than restoring a pre-suspend mask that
+	 * would let every source assert before genirq is ready for them.
+	 */
+	hamcop->saved_intmsk0 = hamcop_read(hamcop, HAMCOP_IC_INTMSK0);
+	hamcop->saved_intmsk1 = hamcop_read(hamcop, HAMCOP_IC_INTMSK1);
+
+	return 0;
+}
+
+static void hamcop_syscore_resume(void *data)
+{
+	struct hamcop *hamcop = data;
+
+	/*
+	 * VLIO first and unconditionally: every other register below is
+	 * behind that mapping, as in hamcop_probe().
+	 */
+	hamcop_write(hamcop, HAMCOP_CIF_IFMODE, HAMCOP_CIF_IFMODE_VLIO);
+
+	/*
+	 * If the chip came back at its reset defaults, the watchdog is live
+	 * again and resets the CPU, see hamcop_probe(). Disabling it a second
+	 * time costs nothing.
+	 */
+	hamcop_write(hamcop, HAMCOP_WT_WTCON, 0x0000);
+	hamcop_write(hamcop, HAMCOP_CPM_CLOCKCONTROL, hamcop->saved_clockcontrol);
+	hamcop_write(hamcop, HAMCOP_IC_INTMSK0, hamcop->saved_intmsk0);
+	hamcop_write(hamcop, HAMCOP_IC_INTMSK1, hamcop->saved_intmsk1);
+}
+
+static const struct syscore_ops hamcop_syscore_ops = {
+	.suspend = hamcop_syscore_suspend,
+	.resume  = hamcop_syscore_resume,
+};
+
+/*
+ * PXA GPIO interrupts are edge-only and ASIC_INT_N stays asserted for as
+ * long as any HAMCOP source is pending. If the edge that woke the core is
+ * not delivered to hamcop_irq_handler(), no further edge can occur on that
+ * line and every HAMCOP source is lost permanently and silently.
+ *
+ * Whether the wake edge survives into GEDR for the GPIO demux to dispatch
+ * is not guaranteed: gpio-pxa clears GEDR at syscore-suspend time and does
+ * not write it on resume, so delivery rests on the SoC latching the wake
+ * edge itself. Draining INTPND once here closes that gap for the cost of
+ * two register reads when the edge did arrive, because the handler has then
+ * already acked INTPND to zero and this loop does nothing.
+ *
+ * INTPND is re-read in an outer loop with the same HAMCOP_MAX_IRQ_LOOPS
+ * bound as hamcop_irq_handler(): a source asserting after one read would
+ * otherwise be missed, as nothing can wake the handler a second time to
+ * catch it. generic_handle_domain_irq_safe() is the process-context form,
+ * and handle_edge_irq() tolerates the chained handler racing it on the same
+ * hwirq.
+ */
+static int hamcop_resume(struct device *dev)
+{
+	struct hamcop *hamcop = dev_get_drvdata(dev);
+	unsigned int loops;
+	u32 pending;
+
+	for (loops = 0; loops < HAMCOP_MAX_IRQ_LOOPS; loops++) {
+		pending = hamcop_read(hamcop, HAMCOP_IC_INTPND0) |
+			  (u32)hamcop_read(hamcop, HAMCOP_IC_INTPND1) << 16;
+		if (!pending)
+			break;
+
+		while (pending) {
+			unsigned int hwirq = fls(pending) - 1;
+
+			generic_handle_domain_irq_safe(hamcop->domain, hwirq);
+			pending &= ~BIT(hwirq);
+		}
+	}
+
+	if (unlikely(loops == HAMCOP_MAX_IRQ_LOOPS))
+		dev_err_ratelimited(hamcop->dev,
+				    "interrupt storm during resume drain\n");
+
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(hamcop_pm_ops, NULL, hamcop_resume);
+
+/* ---------------------------------------------------------------------
  * Probe/lifecycle
  * ---------------------------------------------------------------------
  */
@@ -1198,9 +1346,30 @@ static int hamcop_probe(struct platform_device *pdev)
 	if (ret)
 		dev_warn(dev, "failed to register restart handler: %d\n", ret);
 
+	/*
+	 * Last, so no error path above can leave a syscore pointing at a
+	 * hamcop devm has already freed.
+	 */
+	hamcop->syscore.ops = &hamcop_syscore_ops;
+	hamcop->syscore.data = hamcop;
+	register_syscore(&hamcop->syscore);
+
 	dev_info(dev, "HAMCOP companion ASIC ready, chained on IRQ %d\n", irq);
 
 	return 0;
+}
+
+static void hamcop_remove(struct platform_device *pdev)
+{
+	struct hamcop *hamcop = platform_get_drvdata(pdev);
+
+	/* Everything else (gpio_chip, clocks, mfd cells, the irq_domain
+	 * itself, the register mapping, and the chained handler via
+	 * hamcop_irq_teardown()) is devm-managed; the syscore registration is
+	 * the one piece that isn't, and it must be torn down before devm
+	 * unwinds hamcop->regs out from under it.
+	 */
+	unregister_syscore(&hamcop->syscore);
 }
 
 /*
@@ -1240,8 +1409,10 @@ static struct platform_driver hamcop_driver = {
 	.driver = {
 		.name = "hamcop",
 		.of_match_table = hamcop_of_match,
+		.pm = pm_sleep_ptr(&hamcop_pm_ops),
 	},
 	.probe	= hamcop_probe,
+	.remove	= hamcop_remove,
 };
 module_platform_driver(hamcop_driver);
 
