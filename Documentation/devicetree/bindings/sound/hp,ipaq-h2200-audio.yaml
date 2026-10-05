@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/hp,ipaq-h2200-audio.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HP iPAQ h2200 audio machine
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description:
+  ASoC machine (card) driver for the HP iPAQ h2200 (h2210/h2212/h2215),
+  binding the SoC's I2S controller to an onboard Philips/NXP UDA1380
+  codec, plus four board GPIOs for speaker, microphone and jack detect
+  handling.
+
+  The speaker amplifier enable and the TDA mode pin are driven as a
+  complementary raw pin pair from one DAPM event, and the microphone bias
+  has no codec-side widget, so a simple-audio-card node cannot describe
+  this board.
+
+properties:
+  compatible:
+    const: hp,ipaq-h2200-audio
+
+  cpu-dai:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the PXA I2S controller node. It is also the card's
+      platform component, since the I2S driver registers a combined CPU
+      DAI and PCM platform.
+
+  audio-codec:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the UDA1380 codec node.
+
+  speaker-gpios:
+    maxItems: 1
+    description:
+      Onboard mono speaker amplifier enable, active-high.
+
+  tda-mode-gpios:
+    maxItems: 1
+    description:
+      Driven as a complementary pair with speaker-gpios, never
+      independently. The raw pins are speaker=1, tda-mode=0 to unmute and
+      speaker=0, tda-mode=1 to mute, so this is declared active-low to
+      let the driver write the same logical value to both.
+
+  mic-gpios:
+    maxItems: 1
+    description:
+      External microphone bias enable, active-low. The bias is external
+      to the codec on this board.
+
+  ear-in-gpios:
+    maxItems: 1
+    description:
+      Headphone jack detect, active-high (high means a plug is
+      inserted). It is a pin of the HAMCOP companion chip rather than a
+      SoC GPIO.
+
+required:
+  - compatible
+  - cpu-dai
+  - audio-codec
+  - speaker-gpios
+  - tda-mode-gpios
+  - mic-gpios
+  - ear-in-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    sound {
+        compatible = "hp,ipaq-h2200-audio";
+
+        cpu-dai = <&i2s>;
+        audio-codec = <&uda1380>;
+
+        speaker-gpios  = <&gpio 69 GPIO_ACTIVE_HIGH>;
+        tda-mode-gpios = <&gpio 65 GPIO_ACTIVE_LOW>;
+        mic-gpios      = <&gpio 66 GPIO_ACTIVE_LOW>;
+        ear-in-gpios   = <&hamcop 15 GPIO_ACTIVE_HIGH>;
+    };
