@@ -2982,6 +2982,7 @@ M:	Koen Kooi <koen@dominion.thruhere.net>
 L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
 S:	Maintained
 F:	Documentation/devicetree/bindings/arm/intel,sa1100.yaml
+F:	arch/arm/mach-sa1100/h3800.c
 
 ARM/HP JORNADA 7XX MACHINE SUPPORT
 M:	Kristoffer Ericson <kristoffer.ericson@gmail.com>
