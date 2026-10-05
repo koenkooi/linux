@@ -1,0 +1,112 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/panel/hp,ipaq-h3800-panel.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HP iPAQ h38xx 320x240 TFT panel
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: |
+  The 320x240 16bpp reflective TFT fitted to the HP iPAQ h38xx series,
+  driven over the SA-1110 application processor's parallel RGB (DPI)
+  output. The part number of the glass is not known, so the compatible
+  names the machine the panel is fitted to rather than the panel's
+  manufacturer and part.
+
+  The panel is powered by five separately gated supply rails plus the
+  frontlight power rail, brought up and taken down in a fixed order with a
+  delay after each step. The power-up order is lcd-on, vgl, vgh, lcd-5v,
+  then, once the controller scans out, lcd-pci and fl-pwr. The power-down
+  order is fl-pwr, lcd-pci, lcd-5v, vgl, vgh and lcd-on.
+
+  The rails are described as GPIOs rather than as regulator supplies: they
+  are raw outputs of a companion chip with no consumer other than this
+  panel, including the frontlight rail (see fl-pwr-gpios), and the panel
+  owns their order. A regulator-fixed node drives its enable line to a
+  fixed level when the regulator probes, so rails that the boot loader
+  left on would be dropped one at a time in probe order rather than in
+  the panel's power-down order, and the delays between the steps belong
+  to the panel's sequence, not to any one rail.
+
+allOf:
+  - $ref: panel-common.yaml#
+
+properties:
+  compatible:
+    const: hp,ipaq-h3800-panel
+
+  lcd-on-gpios:
+    maxItems: 1
+    description:
+      Master panel enable, active high. First on, last off.
+
+  lcd-pci-gpios:
+    maxItems: 1
+    description:
+      Panel control input enable, active high. Fifth on (after the
+      controller has started and one frame has elapsed), second off.
+
+  lcd-5v-gpios:
+    maxItems: 1
+    description:
+      +5 V supply enable, active high. Fourth on, third off.
+
+  vgh-gpios:
+    maxItems: 1
+    description:
+      Positive high (gate-on) supply enable, active high. Third on,
+      fifth off.
+
+  vgl-gpios:
+    maxItems: 1
+    description:
+      Negative high (gate-off) supply enable, active high. Second on,
+      fourth off.
+
+  fl-pwr-gpios:
+    maxItems: 1
+    description:
+      Frontlight power enable, active high. Sixth on, first off. Driven by
+      the panel rather than by the enable-gpios of a "backlight" node, so
+      that the pin keeps exactly one owner.
+
+  port: true
+
+required:
+  - compatible
+  - lcd-on-gpios
+  - lcd-pci-gpios
+  - lcd-5v-gpios
+  - vgh-gpios
+  - vgl-gpios
+  - fl-pwr-gpios
+  - port
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    panel {
+        compatible = "hp,ipaq-h3800-panel";
+
+        lcd-5v-gpios  = <&asic1 5 GPIO_ACTIVE_HIGH>;
+        lcd-on-gpios  = <&asic1 6 GPIO_ACTIVE_HIGH>;
+        lcd-pci-gpios = <&asic1 7 GPIO_ACTIVE_HIGH>;
+        vgh-gpios     = <&asic1 8 GPIO_ACTIVE_HIGH>;
+        vgl-gpios     = <&asic1 9 GPIO_ACTIVE_HIGH>;
+        fl-pwr-gpios  = <&asic1 10 GPIO_ACTIVE_HIGH>;
+
+        rotation = <90>;
+        backlight = <&backlight>;
+
+        port {
+            panel_in: endpoint {
+                remote-endpoint = <&lcdc_out>;
+            };
+        };
+    };
