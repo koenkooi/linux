@@ -14,6 +14,7 @@ obj-$(CONFIG_USB_SNP_CORE)	+= snps_udc_core.o
 obj-$(CONFIG_USB_AMD5536UDC)	+= amd5536udc_pci.o
 obj-$(CONFIG_USB_PXA25X)	+= pxa25x_udc.o
 obj-$(CONFIG_USB_PXA27X)	+= pxa27x_udc.o
+obj-$(CONFIG_USB_SA1100)	+= sa1100_udc.o
 obj-$(CONFIG_USB_GOKU)		+= goku_udc.o
 obj-$(CONFIG_USB_OMAP)		+= omap_udc.o
 obj-$(CONFIG_USB_AT91)		+= at91_udc.o
