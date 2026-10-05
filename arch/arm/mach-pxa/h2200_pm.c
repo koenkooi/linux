@@ -46,16 +46,25 @@
  *    .shutdown() hook; the equivalent today is a
  *    SYS_OFF_MODE_RESTART_PREPARE sys-off handler.
  *  - get_hamcop_bootloader(), the old cross-module export used by
- *    samcop_sdi to save/restore SRAM around its own DMA-into-SRAM
- *    bounce-buffer trick, is gone -- dmabounce is deleted from mainline,
- *    so nothing needs to fight this driver for the SRAM window anymore.
- *    A future HAMCOP MFD SDI driver must simply not DMA into this SRAM.
+ *    samcop_sdi to save and restore the SRAM around its own DMA-into-SRAM
+ *    bounce buffer, is gone. The need it served is not: HAMCOP's DMA
+ *    engine cannot reach anything but this SRAM, so a DMA capable SDI
+ *    driver has to stage through it. The driver publishes the SRAM as a
+ *    genalloc pool (h2200_sram_pool(), linux/platform_data/h2200-sram.h)
+ *    that consumers suballocate from, so several DMA users can coexist.
+ *
+ *    Letting others scribble on the window is safe because nothing here
+ *    reads it after probe: the bootloader is captured into a RAM copy
+ *    once, and every later access is a write back into SRAM, from
+ *    .prepare() and from the restart handler. Both run after devices
+ *    are suspended or stopped, so a DMA user is quiesced by then. It
+ *    would not be safe to keep a live DMA engine running across suspend.
  *
  * The SRAM window reaches this driver as the "hamcop-sram" sub-device of
  * the HAMCOP MFD (drivers/mfd/hamcop.c), from the second "reg" entry of
  * the chip's devicetree node. The MFD passes it on without mapping it, and
  * adds it before its other sub-devices, so this driver has captured the
- * bootloader before any of them probes.
+ * bootloader and published the pool before hamcop-sdi probes.
  *
  * Deliberately out of scope here: the HAMCOP MFD chip's own
  * suspend/resume (INTMSK mask/restore, CIF/clock reinit order) is a
@@ -67,11 +76,13 @@
 #include <linux/completion.h>
 #include <linux/device.h>
 #include <linux/firmware.h>
+#include <linux/genalloc.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/minmax.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/platform_data/h2200-sram.h>
 #include <linux/reboot.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
@@ -80,6 +91,17 @@
 #include "pm.h"
 #include "smemc.h"
 
+/*
+ * 16 KiB, and it cannot be more: the vendor register map puts the CIF
+ * block at chip offset 0x4000, directly above the SRAM, so a 32 KiB SRAM
+ * would overlap its IFMODE and BOOTMODE registers. SAMCOP, which does
+ * have 32 KiB, spaces its blocks 64 KiB apart and leaves room for it.
+ *
+ * Do not probe above this window to check the size. There is no memory to
+ * find there, and a write lands on IFMODE, the register selecting SRAM
+ * boot mode versus VLIO bus mode, which would wedge the chip's bus. The
+ * same applies to poking /dev/mem above 16 KiB.
+ */
 #define H2200_SRAM_SIZE		SZ_16K
 
 /*
@@ -114,6 +136,7 @@
 struct h2200_pm {
 	struct device *dev;
 	void __iomem *sram;
+	struct gen_pool *sram_pool;
 	u32 *bootloader;
 	u32 thunk_orig[3];
 	bool bootloader_valid;
@@ -293,8 +316,61 @@ static int h2200_pm_restart(struct sys_off_data *data)
 	return NOTIFY_DONE;
 }
 
+/*
+ * Publish the SRAM window as a genalloc pool for HAMCOP's DMA-capable
+ * function drivers (see include/linux/platform_data/h2200-sram.h).
+ *
+ * gen_pool_dma_alloc() hands back both a CPU pointer and a "DMA
+ * address". The latter is genuinely just the bus address of an MMIO
+ * aperture -- there is no IOMMU, no cache to worry about and nothing to
+ * map, so the physical address of the window is the right value and no
+ * dma_map_*()/dma_sync_*() is involved anywhere. meson-gx-mmc.c's
+ * dram_access_quirk path does exactly the same thing with its
+ * controller-internal SRAM.
+ *
+ * The pointer this hands out is an ioremap() cookie, so consumers must
+ * use memcpy_toio()/memcpy_fromio() rather than plain memcpy().
+ *
+ * Granularity is one SD/MMC block, which is the only thing anyone
+ * allocates here and keeps the bitmap trivially small (32 chunks).
+ */
+#define H2200_SRAM_POOL_ORDER	9	/* 512 bytes */
+
+static int h2200_pm_add_sram_pool(struct h2200_pm *hpm, struct resource *res)
+{
+	struct gen_pool *pool;
+	int ret;
+
+	pool = devm_gen_pool_create(hpm->dev, H2200_SRAM_POOL_ORDER,
+				    NUMA_NO_NODE, "hamcop-sram");
+	if (IS_ERR(pool))
+		return PTR_ERR(pool);
+
+	ret = gen_pool_add_virt(pool, (unsigned long)hpm->sram, res->start,
+				H2200_SRAM_SIZE, NUMA_NO_NODE);
+	if (ret)
+		return ret;
+
+	hpm->sram_pool = pool;
+
+	return 0;
+}
+
+/*
+ * Deliberately not gen_pool_get()-based: that looks up pools by owning
+ * device, and the owner here is "hamcop-sram", which is a sibling of the
+ * HAMCOP MFD cells that need the SRAM, not an ancestor they could find it
+ * through. A plain accessor is the smallest thing that bridges that.
+ */
+struct gen_pool *h2200_sram_pool(void)
+{
+	return h2200_pm ? h2200_pm->sram_pool : NULL;
+}
+EXPORT_SYMBOL_GPL(h2200_sram_pool);
+
 static int h2200_pm_probe(struct platform_device *pdev)
 {
+	struct resource *res;
 	struct h2200_pm *hpm;
 	int ret;
 
@@ -325,7 +401,7 @@ static int h2200_pm_probe(struct platform_device *pdev)
 	hpm->dev = &pdev->dev;
 	init_completion(&hpm->fw_done);
 
-	hpm->sram = devm_platform_ioremap_resource(pdev, 0);
+	hpm->sram = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(hpm->sram))
 		return PTR_ERR(hpm->sram);
 
@@ -350,6 +426,19 @@ static int h2200_pm_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, hpm);
+
+	/*
+	 * Only after the bootloader has been captured out of SRAM -- the
+	 * pool's whole point is to let other drivers overwrite the window.
+	 * A failure here is not fatal: it just means no HAMCOP DMA, and
+	 * suspend/resume, which is this driver's actual job, is unaffected.
+	 */
+	ret = h2200_pm_add_sram_pool(hpm, res);
+	if (ret)
+		dev_warn(&pdev->dev,
+			 "failed to create SRAM pool, HAMCOP DMA unavailable: %d\n",
+			 ret);
+
 	h2200_pm = hpm;
 
 	ret = devm_register_sys_off_handler(&pdev->dev,

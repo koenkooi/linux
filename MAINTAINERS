@@ -12004,6 +12004,7 @@ F:	drivers/mmc/host/hamcop-sdi.c
 F:	drivers/mtd/nand/raw/hamcop_nand.c
 F:	drivers/pcmcia/pxa2xx_h2200.c
 F:	include/linux/mfd/hamcop.h
+F:	include/linux/platform_data/h2200-sram.h
 F:	sound/soc/pxa/h2200.c
 
 HP IPAQ SERIAL KEYBOARD DRIVER
