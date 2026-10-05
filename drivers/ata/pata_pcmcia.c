@@ -221,6 +221,95 @@ static struct ata_port_operations pcmcia_8bit_port_ops = {
 };
 
 
+/*
+ * CompactFlash and PC Card ATA duplicate the low taskfile registers in the
+ * 0x08-0x0f half of a contiguous 16-byte I/O window: 0x0d is Error/Features
+ * and 0x0e is Alt Status/Device Control. This driver has always reached the
+ * control register through that half.
+ */
+#define PCMCIA_REG_ERR_DUP	0x0d
+
+/*
+ * A card that has completed its power-on diagnostic reports the result in
+ * Error, and ATA defines exactly three codes for it: 0x01 (device 0 passed),
+ * 0x81 (device 0 passed, device 1 failed) and 0x00 (device 0 failed).
+ * ata_sff_dev_classify() discards a device whose Error register holds
+ * anything else.
+ */
+static bool pcmcia_is_diag_code(u8 err)
+{
+	return err == 0x00 || err == 0x01 || err == 0x81;
+}
+
+/**
+ *	pcmcia_fixup_error_reg	-	route around an undecodable Error register
+ *	@pdev: PCMCIA device, for logging
+ *	@ap: port whose ioaddr ata_sff_std_ports() has just filled in
+ *
+ *	Command-block offset 1 is the only taskfile register sharing a 16-bit
+ *	word with another: offset 0 is Data. A socket that sizes an access
+ *	from the card's nIOIS16 rather than from the width the host asked for
+ *	therefore services an 8-bit read of offset 1 out of the data path, and
+ *	Error returns a stable byte that is neither the register's contents
+ *	nor noise. Every other command-block register shares a word with
+ *	nothing and reads correctly, which is what makes this so easy to
+ *	misread as a failing drive.
+ *
+ *	The cost is the whole port. ata_sff_dev_classify() turns any Error
+ *	byte outside {0x00, 0x01, 0x81} into ATA_DEV_NONE, so device 0 is
+ *	discarded and the link comes up with a phantom slave and no master.
+ *	Writes are affected identically -- Features is the same address, so
+ *	SET FEATURES would land in the data path.
+ *
+ *	Where offset 1 cannot hold a diagnostic code and the duplicate can,
+ *	use the duplicate: the same register, reached through the half of the
+ *	window that demonstrably decodes. A socket whose offset 1 works reads
+ *	a valid code there and keeps it, so this costs such a socket nothing.
+ *
+ *	Observed on the HP iPAQ h39xx expansion jacket, where offset 1 reads
+ *	0xd4 with a SanDisk SDP and 0x7b with a ConnectPlus while offset 0x0d
+ *	reads 0x01 with both.
+ */
+static void pcmcia_fixup_error_reg(struct pcmcia_device *pdev,
+				   struct ata_port *ap)
+{
+	void __iomem *dup = ap->ioaddr.cmd_addr + PCMCIA_REG_ERR_DUP;
+	u8 prim, edup;
+
+	/*
+	 * Both copies belong to whichever device is selected, so select
+	 * device 0 rather than trusting the power-on default. This is
+	 * ata_sff_dev_select() open-coded: ->inherits is not resolved
+	 * until ata_host_activate(), so ap->ops is not callable yet.
+	 */
+	iowrite8(ATA_DEVICE_OBS, ap->ioaddr.device_addr);
+	ioread8(ap->ioaddr.altstatus_addr);
+	ndelay(400);
+
+	prim = ioread8(ap->ioaddr.error_addr);
+	edup = ioread8(dup);
+
+	if (pcmcia_is_diag_code(prim)) {
+		dev_dbg(&pdev->dev, "Error %02x at offset 1, %02x at 0x%02x\n",
+			prim, edup, PCMCIA_REG_ERR_DUP);
+		return;
+	}
+
+	if (!pcmcia_is_diag_code(edup)) {
+		dev_warn(&pdev->dev,
+			 "Error reads %02x at offset 1 and %02x at 0x%02x, neither a diagnostic code\n",
+			 prim, edup, PCMCIA_REG_ERR_DUP);
+		return;
+	}
+
+	dev_info(&pdev->dev,
+		 "Error undecodable at offset 1 (%02x), using the duplicate at 0x%02x (%02x)\n",
+		 prim, PCMCIA_REG_ERR_DUP, edup);
+
+	ap->ioaddr.error_addr = dup;
+	ap->ioaddr.feature_addr = dup;
+}
+
 static int pcmcia_check_one_config(struct pcmcia_device *pdev, void *priv_data)
 {
 	int *is_kme = priv_data;
@@ -259,6 +348,8 @@ static int pcmcia_init_one(struct pcmcia_device *pdev)
 	int is_kme = 0, ret = -ENOMEM, p;
 	unsigned long io_base, ctl_base;
 	void __iomem *io_addr, *ctl_addr;
+	unsigned int cmd_len;
+	bool dup_block;
 	int n_ports = 1;
 	struct ata_port_operations *ops = &pcmcia_port_ops;
 
@@ -278,10 +369,30 @@ static int pcmcia_init_one(struct pcmcia_device *pdev)
 			goto failed; /* No suitable config found */
 	}
 	io_base = pdev->resource[0]->start;
-	if (pdev->resource[1]->end)
+
+	/*
+	 * FIXME: Could be more ports at base + 0x10 but we only deal with
+	 * one right now
+	 */
+	if (resource_size(pdev->resource[0]) >= 0x20)
+		n_ports = 2;
+
+	/*
+	 * A separate control resource means the card took the ATA
+	 * primary/secondary I/O mapping, whose command block is eight bytes
+	 * with nothing duplicated behind it. Otherwise the window is
+	 * contiguous and carries the 0x08-0x0f duplicate half that both the
+	 * control register and pcmcia_fixup_error_reg() reach through.
+	 */
+	if (pdev->resource[1]->end) {
 		ctl_base = pdev->resource[1]->start;
-	else
-		ctl_base = pdev->resource[0]->start + 0x0e;
+		cmd_len = 8;
+		dup_block = false;
+	} else {
+		ctl_base = io_base + 0x0e;
+		cmd_len = 0x10 * n_ports;
+		dup_block = true;
+	}
 
 	if (!pdev->irq)
 		goto failed;
@@ -292,7 +403,7 @@ static int pcmcia_init_one(struct pcmcia_device *pdev)
 
 	/* iomap */
 	ret = -ENOMEM;
-	io_addr = devm_ioport_map(&pdev->dev, io_base, 8);
+	io_addr = devm_ioport_map(&pdev->dev, io_base, cmd_len);
 	ctl_addr = devm_ioport_map(&pdev->dev, ctl_base, 1);
 	if (!io_addr || !ctl_addr)
 		goto failed;
@@ -301,11 +412,6 @@ static int pcmcia_init_one(struct pcmcia_device *pdev)
 	iowrite8(0x02, ctl_addr);
 	if (is_kme)
 		iowrite8(0x81, ctl_addr + 0x01);
-
-	/* FIXME: Could be more ports at base + 0x10 but we only deal with
-	   one right now */
-	if (resource_size(pdev->resource[0]) >= 0x20)
-		n_ports = 2;
 
 	if (pdev->manf_id == 0x0097 && pdev->card_id == 0x1620)
 		ops = &pcmcia_8bit_port_ops;
@@ -345,6 +451,9 @@ static int pcmcia_init_one(struct pcmcia_device *pdev)
 		ap->ioaddr.altstatus_addr = ctl_addr + 0x10 * p;
 		ap->ioaddr.ctl_addr = ctl_addr + 0x10 * p;
 		ata_sff_std_ports(&ap->ioaddr);
+
+		if (dup_block)
+			pcmcia_fixup_error_reg(pdev, ap);
 
 		ata_port_desc(ap, "cmd 0x%lx ctl 0x%lx", io_base, ctl_base);
 	}
