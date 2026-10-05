@@ -32,15 +32,17 @@
  * features are known to work, is struct mq11xx_chip, chosen from the PCI
  * device ID by mq11xx_identify() independently of the board.
  *
- * Vblank is not supported: there is no drm_vblank_init() and no IRQ
- * handler, and atomic_update copies the damage into VRAM synchronously with
- * no regard for the scanout position (by the CPU, or through a DMA channel
- * while present_dma is set), so a large update can tear. The
- * 256 KiB VRAM holds one 240x320 RGB565 frame (153600 bytes) but not two,
- * so a hardware page flip is not available at this format; tear-free
- * updates need the copy timed against the scanout instead. The interrupt
- * output of the chip reaches GPIO14 on the h2200 and is not connected on
- * the h5xxx.
+ * atomic_update copies the damage into VRAM synchronously with no regard
+ * for the scanout position (by the CPU, or through a DMA channel while
+ * present_dma is set), so a large update can tear. The 256 KiB VRAM holds
+ * one 240x320 RGB565 frame (153600 bytes) but not two, so a hardware page
+ * flip is not available at this format; tear-free updates need the copy
+ * timed against the scanout instead.
+ *
+ * Vblank events come from the end-of-frame interrupt of the chip when the
+ * devicetree describes its interrupt output (the h2200 wires it to GPIO14),
+ * and otherwise from the DRM vblank timer running at the refresh rate of
+ * the mode (the h5xxx leaves the output unconnected).
  *
  * The init sequence (supply power-up, endianness quirk, oscillator enable,
  * CC-module power-up, register table load with verify-and-retry, then
@@ -68,6 +70,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/dmaengine.h>
 #include <linux/gpio/consumer.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/math64.h>
@@ -103,6 +106,8 @@
 #include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
+#include <drm/drm_vblank.h>
+#include <drm/drm_vblank_helper.h>
 
 #define DRIVER_NAME "mq11xx"
 #define DRIVER_DESC "MediaQ 11xx family display driver"
@@ -211,7 +216,9 @@ MODULE_PARM_DESC(engine, "Clear video memory and draw solid damage with the 2D e
 #define MQ11XX_DC_CONFIG_5	(MQ11XX_REG_DC + 0x14)	/* GE/UHC/UDC clocks */
 #define MQ11XX_DC_CONFIG_8	(MQ11XX_REG_DC + 0x20)	/* opaque, per variant */
 #define MQ11XX_MIU_0		(MQ11XX_REG_MIU + 0x00)
-#define MQ11XX_IC_CONTROL	(MQ11XX_REG_IC + 0x00)
+#define MQ11XX_IC_CONTROL	(MQ11XX_REG_IC + 0x00)	/* in00 */
+#define MQ11XX_IC_MASK		(MQ11XX_REG_IC + 0x04)	/* in01, 1 = unmasked */
+#define MQ11XX_IC_STATUS	(MQ11XX_REG_IC + 0x08)	/* in02, write 1 to clear */
 #define MQ11XX_GC_CONTROL	(MQ11XX_REG_GC + 0x00)
 #define MQ11XX_GC_WINDOW_STRIDE	(MQ11XX_REG_GC + 0x38)	/* gc0e, bytes/scanline */
 #define MQ11XX_FP_OUTPUT_CONTROL (MQ11XX_REG_FP + 0x08)
@@ -258,6 +265,17 @@ MODULE_PARM_DESC(engine, "Clear video memory and draw solid damage with the 2D e
 #define MQ11XX_CONFIG_GE_ENABLE	BIT(0)	/* DC.config_5 */
 #define MQ11XX_MIU_ENABLE		BIT(0)	/* MIU.miu_0 */
 #define MQ11XX_GC_CONTROL_ENABLE	BIT(0)	/* GC.control */
+
+/*
+ * in00[0] drives the chip's interrupt output; with in00[1] clear it is
+ * active low. in01/in02 bit 3 is the falling edge of vertical display
+ * enable, i.e. the end of the last displayed line: on an h2200 it
+ * latches at scan line 321 of 341, once per frame. The MQ1188 latches
+ * in02 bits whether or not they are unmasked, but only unmasked bits
+ * drive the output.
+ */
+#define MQ11XX_IC_OUTPUT_ENABLE		BIT(0)	/* in00 */
+#define MQ11XX_IC_VENABLE_FALLING	BIT(3)	/* in01, in02 */
 
 /*
  * MQ11XX_PCI_VENDOR_MEDIAQ is the value every chip in this family reports;
@@ -415,6 +433,11 @@ struct mq11xx_variant {
 	const struct mq11xx_reg *envee_regs;
 	size_t n_envee_regs;
 	/*
+	 * The display timing that .envee_regs programs, used instead of
+	 * .mode when the delta is applied at probe.
+	 */
+	const struct drm_display_mode *envee_mode;
+	/*
 	 * True if the channel 0 duty field of the PWM register is the
 	 * backlight brightness control of the board, so that the variant
 	 * exports a pwm_chip, see mq11xx_pwm_chip_register(). On the h2200
@@ -450,6 +473,22 @@ struct mq11xx_device {
 
 	const struct mq11xx_variant *variant;
 	const struct mq11xx_chip *chip;
+	/* The variant's mode for the panel chosen at probe. */
+	const struct drm_display_mode *mode;
+	/* The last register load applied the variant's .envee_regs. */
+	bool envee_applied;
+
+	/*
+	 * Frame interrupt, or 0 to run vblank from the timer. irq_lock
+	 * covers irq_live (the chip is powered and scanning out, so its
+	 * registers may be touched from atomic context) and irq_wanted
+	 * (DRM has vblank enabled), and orders the interrupt controller
+	 * writes against the handler.
+	 */
+	int irq;
+	spinlock_t irq_lock;	/* irq_live, irq_wanted, in00-in02 */
+	bool irq_live;
+	bool irq_wanted;
 
 	struct drm_plane primary_plane;
 	struct drm_crtc crtc;
@@ -708,14 +747,49 @@ static const struct mq11xx_variant mq11xx_variant_h2200 = {
 /* ------------------------------------------------------------------ */
 /* HP iPAQ h5xxx (MediaQ 1132; see the variant comment below) variant data */
 
-static const struct drm_display_mode mq11xx_mode_h5xxx = {
-	/*
-	 * Portrait, matching the GC08/GC09 window registers below (240 wide,
-	 * 0xef = 239 and 0x13f = 319). The 57 x 77 mm size of the 3.8" QVGA
-	 * TFT is the figure given for the whole h3xxx and h5xxx family, not
-	 * measured on these units.
-	 */
-	DRM_SIMPLE_MODE(240, 320, 57, 77),
+/*
+ * 3.8" QVGA TFT, portrait: h5xxx's UI runs portrait natively, matching
+ * the GC08/GC09 window registers below (240 wide, 0xef=239 / 0x13f=319)
+ * with no rotation. The 57 x 77 mm glass size is the figure given for the
+ * whole h3xxx and h5xxx family, not measured on these units.
+ *
+ * The timings are the ones each panel's register table programs, decoded
+ * with the MQ1132 datasheet's encodings: horizontal total = gc02[10:0] + 2,
+ * vertical total = gc03[9:0] + 1, sync positions from gc04/gc05. The pixel
+ * clock is GRCLK / (FD x SD) from gc00[22:20] and gc00[27:24], with GRCLK
+ * taken as its documented 48 MHz maximum; no h5xxx frame period has been
+ * measured, so the refresh rates (about 60 Hz for both panels) are
+ * predictions. The same assumption applied to the h2200 table predicts 59
+ * Hz where 56.35 Hz is measured.
+ */
+static const struct drm_display_mode mq11xx_mode_h5xxx_sharp = {
+	.type = DRM_MODE_TYPE_DRIVER,
+	.clock = 6000,		/* 48 MHz / (1 x 8) */
+	.hdisplay = 240,
+	.hsync_start = 250,
+	.hsync_end = 273,
+	.htotal = 284,
+	.vdisplay = 320,
+	.vsync_start = 344,
+	.vsync_end = 346,
+	.vtotal = 352,
+	.width_mm = 57,
+	.height_mm = 77,
+};
+
+static const struct drm_display_mode mq11xx_mode_h5xxx_philips = {
+	.type = DRM_MODE_TYPE_DRIVER,
+	.clock = 6400,		/* 48 MHz / (1.5 x 5) */
+	.hdisplay = 240,
+	.hsync_start = 306,
+	.hsync_end = 311,
+	.htotal = 317,
+	.vdisplay = 320,
+	.vsync_start = 336,
+	.vsync_end = 337,
+	.vtotal = 337,
+	.width_mm = 57,
+	.height_mm = 77,
 };
 
 /*
@@ -886,7 +960,7 @@ static const struct mq11xx_variant mq11xx_variant_h5xxx = {
 	 */
 	.expect_device_id = MQ11XX_PCI_DEVICE_1132,
 	.tolerate_device_id = MQ11XX_PCI_DEVICE_1100,
-	.mode = &mq11xx_mode_h5xxx,
+	.mode = &mq11xx_mode_h5xxx_sharp,
 	.init_regs = mq11xx_h5xxx_init_regs,
 	.n_init_regs = ARRAY_SIZE(mq11xx_h5xxx_init_regs),
 	/* The dc01 entry of mq11xx_h5xxx_init_regs[]. The low two bits select
@@ -900,6 +974,7 @@ static const struct mq11xx_variant mq11xx_variant_h5xxx = {
 	.fp_output_control = 0xfffcfcfd,
 	.envee_regs = mq11xx_h5xxx_philips_regs,
 	.n_envee_regs = ARRAY_SIZE(mq11xx_h5xxx_philips_regs),
+	.envee_mode = &mq11xx_mode_h5xxx_philips,
 	/* The only backlight brightness path of the h5xxx */
 	.has_internal_pwm = true,
 };
@@ -976,6 +1051,7 @@ static int mq11xx_apply_envee_delta(struct mq11xx_device *mq)
 	u32 ctl, pin;
 	int ret;
 
+	mq->envee_applied = false;
 	if (!regs)
 		return 0;
 
@@ -997,6 +1073,7 @@ static int mq11xx_apply_envee_delta(struct mq11xx_device *mq)
 			return ret;
 		}
 	}
+	mq->envee_applied = true;
 
 	return 0;
 }
@@ -1117,10 +1194,137 @@ static void mq11xx_power_down_action(void *data)
 }
 
 /*
+ * Program the interrupt controller for the current irq_live/irq_wanted
+ * state. The stale end-of-frame latch is cleared before the output is
+ * enabled, so the first event marks a real frame end; either way the
+ * output then starts high and every frame end is a falling edge, which
+ * is all a PXA GPIO can detect.
+ */
+static void mq11xx_irq_update(struct mq11xx_device *mq)
+{
+	lockdep_assert_held(&mq->irq_lock);
+
+	if (!mq->irq_live)
+		return;
+
+	if (mq->irq_wanted) {
+		writel(MQ11XX_IC_VENABLE_FALLING, mq->regs + MQ11XX_IC_MASK);
+		writel(MQ11XX_IC_VENABLE_FALLING, mq->regs + MQ11XX_IC_STATUS);
+		writel(MQ11XX_IC_OUTPUT_ENABLE, mq->regs + MQ11XX_IC_CONTROL);
+	} else {
+		writel(0, mq->regs + MQ11XX_IC_CONTROL);
+		writel(0, mq->regs + MQ11XX_IC_MASK);
+	}
+}
+
+/*
+ * Tell the interrupt code whether the chip is up. Nothing may touch its
+ * registers from atomic context while it is unpowered: a bus access to
+ * an unpowered chip is never valid on this static-memory bus.
+ */
+static void mq11xx_irq_set_live(struct mq11xx_device *mq, bool live)
+{
+	unsigned long flags;
+
+	if (!mq->irq)
+		return;
+
+	spin_lock_irqsave(&mq->irq_lock, flags);
+	if (live) {
+		mq->irq_live = true;
+		mq11xx_irq_update(mq);
+	} else if (mq->irq_live) {
+		writel(0, mq->regs + MQ11XX_IC_CONTROL);
+		writel(0, mq->regs + MQ11XX_IC_MASK);
+		mq->irq_live = false;
+	}
+	spin_unlock_irqrestore(&mq->irq_lock, flags);
+}
+
+static irqreturn_t mq11xx_irq_handler(int irq, void *arg)
+{
+	struct mq11xx_device *mq = arg;
+	bool frame_end = false;
+
+	spin_lock(&mq->irq_lock);
+	if (mq->irq_live && mq->irq_wanted &&
+	    readl(mq->regs + MQ11XX_IC_STATUS) & MQ11XX_IC_VENABLE_FALLING) {
+		writel(MQ11XX_IC_VENABLE_FALLING, mq->regs + MQ11XX_IC_STATUS);
+		frame_end = true;
+	}
+	spin_unlock(&mq->irq_lock);
+
+	if (!frame_end)
+		return IRQ_NONE;
+
+	drm_crtc_handle_vblank(&mq->crtc);
+
+	return IRQ_HANDLED;
+}
+
+static int mq11xx_crtc_enable_vblank_irq(struct drm_crtc *crtc)
+{
+	struct mq11xx_device *mq = to_mq11xx(crtc->dev);
+	unsigned long flags;
+	int ret = 0;
+
+	spin_lock_irqsave(&mq->irq_lock, flags);
+	if (mq->irq_live) {
+		mq->irq_wanted = true;
+		mq11xx_irq_update(mq);
+	} else {
+		/* Bring-up failed: no frame will ever end. */
+		ret = -EIO;
+	}
+	spin_unlock_irqrestore(&mq->irq_lock, flags);
+
+	return ret;
+}
+
+static void mq11xx_crtc_disable_vblank_irq(struct drm_crtc *crtc)
+{
+	struct mq11xx_device *mq = to_mq11xx(crtc->dev);
+	unsigned long flags;
+
+	spin_lock_irqsave(&mq->irq_lock, flags);
+	mq->irq_wanted = false;
+	mq11xx_irq_update(mq);
+	spin_unlock_irqrestore(&mq->irq_lock, flags);
+}
+
+/*
+ * Use the chip's frame interrupt if the devicetree describes one and the
+ * chip is known to latch its end-of-frame source; otherwise vblank runs
+ * from the timer. Needs the chip identified, so runs after the first
+ * mq11xx_hw_init().
+ */
+static int mq11xx_irq_init(struct mq11xx_device *mq, struct platform_device *pdev)
+{
+	int irq;
+
+	irq = platform_get_irq_optional(pdev, 0);
+	if (irq == -ENXIO)
+		return 0;
+	if (irq < 0)
+		return dev_err_probe(&pdev->dev, irq, "failed to get interrupt\n");
+
+	if (!(mq->chip->caps & MQ11XX_CAP_FRAME_LATCH)) {
+		drm_info(&mq->drm, "%s: frame interrupt not known to work, using the vblank timer\n",
+			 mq->chip->name);
+		return 0;
+	}
+
+	mq->irq = irq;
+
+	return 0;
+}
+
+/*
  * One-time chip bring-up: endianness quirk, oscillator enable (100 ms; 30 ms
  * is not enough), CC-module power (10 ms), the DC.config_8 value, MIU
- * enable, interrupt controller mask, the PCI-header identity read, then the
- * full register table load. Scanout stays off until the first atomic_enable
+ * enable, interrupt output off (until mq11xx_output_enable() hands the chip
+ * to the vblank code), the PCI-header identity read, then the full register
+ * table load. Scanout stays off until the first atomic_enable
  * (see mq11xx_output_enable()).
  *
  * Only called from mq11xx_hw_init(), which powers the chip up first and
@@ -1159,7 +1363,7 @@ static int mq11xx_chip_init(struct mq11xx_device *mq)
 	val = readl(mq->regs + MQ11XX_MIU_0);
 	writel(val | MQ11XX_MIU_ENABLE, mq->regs + MQ11XX_MIU_0);
 
-	/* Interrupt controller stays fully masked: no vblank support. */
+	/* Output off until mq11xx_irq_update() asks for frame interrupts. */
 	writel(0, mq->regs + MQ11XX_IC_CONTROL);
 
 	mq11xx_identify(mq);
@@ -1175,7 +1379,7 @@ static int mq11xx_chip_init(struct mq11xx_device *mq)
 	 * Overwrite it after the table has loaded so it always wins.
 	 */
 	ret = mq11xx_write_verify(mq, MQ11XX_GC_WINDOW_STRIDE,
-				  mq->variant->mode->hdisplay * 2);
+				  mq->mode->hdisplay * 2);
 	if (ret) {
 		drm_err(&mq->drm, "window_stride fixup did not stick\n");
 		return ret;
@@ -1583,6 +1787,8 @@ static void mq11xx_output_enable(struct mq11xx_device *mq)
 	writel(mq->variant->fp_output_control,
 	       mq->regs + MQ11XX_FP_OUTPUT_CONTROL);
 
+	mq11xx_irq_set_live(mq, true);
+
 	mutex_unlock(&mq->hw_lock);
 
 	/*
@@ -1618,6 +1824,8 @@ static void mq11xx_output_disable(struct mq11xx_device *mq)
 
 	if (!mq->powered)
 		goto out_unlock;
+
+	mq11xx_irq_set_live(mq, false);
 
 	/* Blank the panel before tearing down scanout -- see the mirrored
 	 * comment in mq11xx_output_enable() above.
@@ -1869,7 +2077,7 @@ err_terminate:
  */
 static void mq11xx_present_dma_setup(struct mq11xx_device *mq)
 {
-	const struct drm_display_mode *mode = mq->variant->mode;
+	const struct drm_display_mode *mode = mq->mode;
 	struct mq11xx_present_dma *d = &mq->present_dma;
 	unsigned int pitch = mode->hdisplay * 2;
 	size_t size = (size_t)pitch * mode->vdisplay;
@@ -2159,7 +2367,7 @@ static enum drm_mode_status mq11xx_crtc_helper_mode_valid(struct drm_crtc *crtc,
 {
 	struct mq11xx_device *mq = to_mq11xx(crtc->dev);
 
-	return drm_crtc_helper_mode_valid_fixed(crtc, mode, mq->variant->mode);
+	return drm_crtc_helper_mode_valid_fixed(crtc, mode, mq->mode);
 }
 
 static int mq11xx_crtc_helper_atomic_check(struct drm_crtc *crtc, struct drm_atomic_commit *state)
@@ -2177,18 +2385,32 @@ static void mq11xx_crtc_helper_atomic_enable(struct drm_crtc *crtc, struct drm_a
 	struct mq11xx_device *mq = to_mq11xx(crtc->dev);
 	int idx;
 
-	if (!drm_dev_enter(&mq->drm, &idx))
-		return;
+	if (drm_dev_enter(&mq->drm, &idx)) {
+		mq11xx_output_enable(mq);
+		drm_dev_exit(idx);
+	}
 
-	mq11xx_output_enable(mq);
-
-	drm_dev_exit(idx);
+	drm_crtc_vblank_on(crtc);
 }
 
 static void mq11xx_crtc_helper_atomic_disable(struct drm_crtc *crtc,
 					      struct drm_atomic_commit *state)
 {
 	struct mq11xx_device *mq = to_mq11xx(crtc->dev);
+	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
+
+	drm_crtc_vblank_off(crtc);
+
+	/*
+	 * The commit tail skips atomic_flush on an inactive CRTC, so an
+	 * event on the commit that turns it off is completed here.
+	 */
+	if (crtc_state->event && !crtc_state->active) {
+		spin_lock_irq(&crtc->dev->event_lock);
+		drm_crtc_send_vblank_event(crtc, crtc_state->event);
+		spin_unlock_irq(&crtc->dev->event_lock);
+		crtc_state->event = NULL;
+	}
 
 	/*
 	 * Not guarded by drm_dev_enter/exit, same as ili9225.c's own
@@ -2210,17 +2432,29 @@ static void mq11xx_crtc_helper_atomic_disable(struct drm_crtc *crtc,
 static const struct drm_crtc_helper_funcs mq11xx_crtc_helper_funcs = {
 	.mode_valid = mq11xx_crtc_helper_mode_valid,
 	.atomic_check = mq11xx_crtc_helper_atomic_check,
+	.atomic_flush = drm_crtc_vblank_atomic_flush,
 	.atomic_enable = mq11xx_crtc_helper_atomic_enable,
 	.atomic_disable = mq11xx_crtc_helper_atomic_disable,
 };
 
-static const struct drm_crtc_funcs mq11xx_crtc_funcs = {
-	.reset = drm_atomic_helper_crtc_reset,
-	.destroy = drm_crtc_cleanup,
-	.set_config = drm_atomic_helper_set_config,
-	.page_flip = drm_atomic_helper_page_flip,
-	.atomic_duplicate_state = drm_atomic_helper_crtc_duplicate_state,
-	.atomic_destroy_state = drm_atomic_helper_crtc_destroy_state,
+#define MQ11XX_CRTC_FUNCS						\
+	.reset = drm_atomic_helper_crtc_reset,				\
+	.destroy = drm_crtc_cleanup,					\
+	.set_config = drm_atomic_helper_set_config,			\
+	.page_flip = drm_atomic_helper_page_flip,			\
+	.atomic_duplicate_state = drm_atomic_helper_crtc_duplicate_state, \
+	.atomic_destroy_state = drm_atomic_helper_crtc_destroy_state
+
+/* No frame interrupt: vblank events are paced by a timer at the mode's rate. */
+static const struct drm_crtc_funcs mq11xx_crtc_timer_funcs = {
+	MQ11XX_CRTC_FUNCS,
+	DRM_CRTC_VBLANK_TIMER_FUNCS,
+};
+
+static const struct drm_crtc_funcs mq11xx_crtc_irq_funcs = {
+	MQ11XX_CRTC_FUNCS,
+	.enable_vblank = mq11xx_crtc_enable_vblank_irq,
+	.disable_vblank = mq11xx_crtc_disable_vblank_irq,
 };
 
 static const struct drm_encoder_funcs mq11xx_encoder_funcs = {
@@ -2231,7 +2465,7 @@ static int mq11xx_connector_helper_get_modes(struct drm_connector *connector)
 {
 	struct mq11xx_device *mq = to_mq11xx(connector->dev);
 
-	return drm_connector_helper_get_modes_fixed(connector, mq->variant->mode);
+	return drm_connector_helper_get_modes_fixed(connector, mq->mode);
 }
 
 static const struct drm_connector_helper_funcs mq11xx_connector_helper_funcs = {
@@ -2267,7 +2501,9 @@ static int mq11xx_pipe_init(struct mq11xx_device *mq)
 	drm_plane_enable_fb_damage_clips(primary_plane);
 
 	ret = drm_crtc_init_with_planes(dev, crtc, primary_plane, NULL,
-					&mq11xx_crtc_funcs, NULL);
+					mq->irq ? &mq11xx_crtc_irq_funcs :
+						  &mq11xx_crtc_timer_funcs,
+					NULL);
 	if (ret)
 		return ret;
 	drm_crtc_helper_add(crtc, &mq11xx_crtc_helper_funcs);
@@ -2316,10 +2552,10 @@ static int mq11xx_mode_config_init(struct mq11xx_device *mq)
 	if (ret)
 		return ret;
 
-	dev->mode_config.min_width = mq->variant->mode->hdisplay;
-	dev->mode_config.max_width = mq->variant->mode->hdisplay;
-	dev->mode_config.min_height = mq->variant->mode->vdisplay;
-	dev->mode_config.max_height = mq->variant->mode->vdisplay;
+	dev->mode_config.min_width = mq->mode->hdisplay;
+	dev->mode_config.max_width = mq->mode->hdisplay;
+	dev->mode_config.min_height = mq->mode->vdisplay;
+	dev->mode_config.max_height = mq->mode->vdisplay;
 	dev->mode_config.preferred_depth = 16;
 	dev->mode_config.prefer_shadow = 0;
 	dev->mode_config.funcs = &mq11xx_mode_config_funcs;
@@ -2421,6 +2657,8 @@ static int mq11xx_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 	mq->pwm_level = -1;
+	mq->mode = mq->variant->mode;
+	spin_lock_init(&mq->irq_lock);
 
 	/*
 	 * Tie the power-down to devm before the first register write: a
@@ -2443,8 +2681,19 @@ static int mq11xx_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "chip bring-up failed\n");
 
+	/*
+	 * The panel is chosen during the register load; use the mode that
+	 * goes with it.
+	 */
+	if (mq->envee_applied && mq->variant->envee_mode)
+		mq->mode = mq->variant->envee_mode;
+
 	if (mq->variant->has_internal_pwm)
 		mq11xx_pwm_chip_register(mq, dev);
+
+	ret = mq11xx_irq_init(mq, pdev);
+	if (ret)
+		return ret;
 
 	ret = mq11xx_mode_config_init(mq);
 	if (ret)
@@ -2453,6 +2702,19 @@ static int mq11xx_probe(struct platform_device *pdev)
 	ret = mq11xx_pipe_init(mq);
 	if (ret)
 		return ret;
+
+	ret = drm_vblank_init(drm, 1);
+	if (ret)
+		return ret;
+
+	if (mq->irq) {
+		ret = devm_request_irq(dev, mq->irq, mq11xx_irq_handler, 0,
+				       DRIVER_NAME, mq);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to request interrupt\n");
+	}
+	drm_info(drm, "vblank from %s\n",
+		 mq->irq ? "the frame interrupt" : "the vblank timer");
 
 	drm_mode_config_reset(drm);
 
