@@ -3,7 +3,10 @@
  * Device tree for the HP iPAQ h2200 handheld (h2210/h2212/h2215 are the
  * same target).
  *
- * Every pad is configured by the pxa2xx_mfp_config() table in
+ * Only the audio pads -- the I2S link to the UDA1380 and the codec power,
+ * codec reset, speaker amplifier and microphone bias GPIOs -- are muxed
+ * through the pin controller (&pinctrl at the end of this file). Every
+ * other pad is still configured by the pxa2xx_mfp_config() table in
  * arch/arm/mach-pxa/h2200.c, applied from an of_machine_is_compatible()
  * gated initcall because the generic PXA25x DT machine has no per-board
  * hook. HAMCOP and the buttons and joypad it hosts are described below;
@@ -265,10 +268,58 @@
 		device-wakeup-gpios = <&gpio 10 GPIO_ACTIVE_HIGH>;
 		ident-gpios = <&gpio 75 GPIO_ACTIVE_HIGH>;
 	};
+
+	/*
+	 * The raw pins of speaker and tda-mode are a complementary pair
+	 * (speaker=1, tda-mode=0 unmutes), hence the opposite polarities.
+	 * ear-in is bank B pin 7 of HAMCOP, offset 15 on its gpiochip, and
+	 * reads high when a plug is inserted.
+	 */
+	sound {
+		compatible = "hp,ipaq-h2200-audio";
+
+		cpu-dai = <&i2s>;
+		audio-codec = <&uda1380>;
+		pinctrl-0 = <&audio_pins>;
+		pinctrl-names = "default";
+
+		speaker-gpios  = <&gpio 69 GPIO_ACTIVE_HIGH>;
+		tda-mode-gpios = <&gpio 65 GPIO_ACTIVE_LOW>;
+		mic-gpios      = <&gpio 66 GPIO_ACTIVE_LOW>;
+		ear-in-gpios   = <&hamcop 15 GPIO_ACTIVE_HIGH>;
+	};
 };
 
 &ffuart {
 	status = "okay";
+};
+
+&i2s {
+	pinctrl-0 = <&i2s_pins>;
+	pinctrl-names = "default";
+
+	status = "okay";
+};
+
+/*
+ * UDA1380 audio codec on the plain PXA25x I2C controller. The power and
+ * reset pins are active-high: the codec driver powers the chip with
+ * power-gpios and then pulses reset-gpios high and low.
+ */
+&pxai2c1 {
+	status = "okay";
+
+	uda1380: codec@18 {
+		compatible = "nxp,uda1380";
+		reg = <0x18>;
+		pinctrl-0 = <&codec_pins>;
+		pinctrl-names = "default";
+
+		reset-gpios = <&gpio 71 GPIO_ACTIVE_HIGH>;
+		power-gpios = <&gpio 70 GPIO_ACTIVE_HIGH>;
+
+		#sound-dai-cells = <0>;
+	};
 };
 
 /*
@@ -279,4 +330,62 @@
  */
 &hwuart {
 	status = "okay";
+};
+
+/*
+ * Output pads sleep low -- codec unpowered, speaker amplifier off, I2S
+ * clocks stopped -- except MIC_ON_N (GPIO66), which is active-low and so
+ * sleeps high to keep the microphone bias off.
+ */
+&pinctrl {
+	i2s_pins: i2s-pins {
+		i2s-bitclk-pins {
+			groups = "P28";
+			function = "I2S_BITCLK_OUT";
+			low-power-disable;
+		};
+
+		i2s-sdata-in-pins {
+			groups = "P29";
+			function = "I2S_SDATA_IN";
+		};
+
+		i2s-sdata-out-pins {
+			groups = "P30";
+			function = "I2S_SDATA_OUT";
+			low-power-disable;
+		};
+
+		i2s-sync-pins {
+			groups = "P31";
+			function = "I2S_SYNC";
+			low-power-disable;
+		};
+
+		i2s-sysclk-pins {
+			groups = "P32";
+			function = "I2S_SYSCLK";
+			low-power-disable;
+		};
+	};
+
+	codec_pins: codec-pins {
+		groups = "P70", "P71";
+		function = "gpio_out";
+		low-power-disable;
+	};
+
+	audio_pins: audio-pins {
+		audio-amp-pins {
+			groups = "P65", "P69";
+			function = "gpio_out";
+			low-power-disable;
+		};
+
+		audio-mic-pins {
+			groups = "P66";
+			function = "gpio_out";
+			low-power-enable;
+		};
+	};
 };
