@@ -37,7 +37,9 @@
  * present_dma is set), so a large update can tear. The 256 KiB VRAM holds
  * one 240x320 RGB565 frame (153600 bytes) but not two, so a hardware page
  * flip is not available at this format; tear-free updates need the copy
- * timed against the scanout instead.
+ * timed against the scanout instead. Frames that fit twice (C8, or
+ * pixel-doubled) are double-buffered: the damage goes into the frame that
+ * is not on screen, and the scan then flips to it.
  *
  * Vblank events come from the end-of-frame interrupt of the chip when the
  * devicetree describes its interrupt output (the h2200 wires it to GPIO14),
@@ -89,6 +91,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
+#include <linux/lcm.h>
 #include <linux/math64.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
@@ -168,6 +171,10 @@ static bool mq11xx_engine = true;
 module_param_named(engine, mq11xx_engine, bool, 0644);
 MODULE_PARM_DESC(engine, "Clear video memory and draw solid damage with the 2D engine on chips where it is known to work; may be changed at run time (default: on)");
 
+static bool mq11xx_page_flip = true;
+module_param_named(page_flip, mq11xx_page_flip, bool, 0644);
+MODULE_PARM_DESC(page_flip, "Double-buffer frames that fit twice in video memory (C8 or pixel-doubled) and flip between them; may be changed at run time (default: on)");
+
 #define DRIVER_MAJOR 1
 #define DRIVER_MINOR 0
 
@@ -200,13 +207,17 @@ MODULE_PARM_DESC(engine, "Clear video memory and draw solid damage with the 2D e
 #define MQ11XX_GE_COMMAND	0x00	/* ge00, starts the command */
 #define MQ11XX_GE_SIZE		0x04	/* ge01 */
 #define MQ11XX_GE_DEST		0x08	/* ge02 */
+#define MQ11XX_GE_SOURCE	0x0c	/* ge03 */
 #define MQ11XX_GE_DEST_STRIDE	0x28	/* ge0a */
 #define MQ11XX_GE_BASE_ADDR	0x2c	/* ge0b */
 #define MQ11XX_GE_PATTERN_FG	0x48	/* ge12 */
 
 #define MQ11XX_GE_ROP_PATCOPY	0xf0
+#define MQ11XX_GE_ROP_SRCCOPY	0xcc
 #define MQ11XX_GE_TYPE_BITBLT	(2 << 8)
 #define MQ11XX_GE_MONO_PATTERN	BIT(15)
+#define MQ11XX_GE_X_NEGATIVE	BIT(11)	/* walk the copy right to left */
+#define MQ11XX_GE_Y_NEGATIVE	BIT(12)	/* walk the copy bottom to top */
 #define MQ11XX_GE_SOLID_PATTERN	BIT(30)
 
 #define MQ11XX_GE_X		GENMASK(11, 0)	/* ge01, ge02 */
@@ -219,7 +230,9 @@ MODULE_PARM_DESC(engine, "Clear video memory and draw solid damage with the 2D e
  * Video memory layout. The scanout frame starts at offset 0 (GC0C = 0 in
  * every register table). The last KiB holds the hardware cursor image:
  * GC11 addresses it in 1 KiB units, and both boards' WinCE drivers place
- * it there.
+ * it there. Everything from the end of the frame up to the cursor slot is
+ * off-screen. A frame small enough to fit twice gets a second buffer at the
+ * top of it, clear of any full-size frame at offset 0.
  */
 #define MQ11XX_SRAM_FRAME	0x00000
 #define MQ11XX_SRAM_CURSOR	0x3fc00
@@ -343,10 +356,11 @@ struct mq11xx_reg {
 #define MQ11XX_CAP_PALETTE_8BPP	BIT(4)	/* 8 bpp through the palette at 0x800 */
 #define MQ11XX_CAP_CURSOR	BIT(5)	/* 64x64 2 bpp cursor, GC10-GC13 */
 #define MQ11XX_CAP_FRAME_LATCH	BIT(6)	/* IN02 VENABLE-falling frame latch */
+#define MQ11XX_CAP_START_LATCH	BIT(7)	/* GC0C takes effect at the next frame */
 
 static const char * const mq11xx_cap_names[] = {
 	"engine", "rotation", "pixel-doubling", "alt-window",
-	"palette-8bpp", "cursor", "frame-latch",
+	"palette-8bpp", "cursor", "frame-latch", "start-latch",
 };
 
 /*
@@ -415,15 +429,18 @@ static const struct mq11xx_chip mq11xx_chips[] = {
 		 * Measured on an h2200: engine fill and copy (including
 		 * overlapping copies), seven of the eight scanout transforms,
 		 * pixel doubling, 8 bpp through the palette, the cursor fetch
-		 * at 0x3fc00 and the IN02 frame latch. The column scan with
-		 * both axes reversed was never set, and the alternate window
-		 * takes its registers but was never shown to scan out, so
-		 * both stay off.
+		 * at 0x3fc00 and the IN02 frame latch. Five GC0C writes made
+		 * mid-frame each moved the fetch at line 1 of the next frame,
+		 * never within the frame. The column scan with both axes
+		 * reversed was never set, and the alternate window takes its
+		 * registers but was never shown to scan out, so both stay
+		 * off.
 		 */
 		.device_id = MQ11XX_PCI_DEVICE_1188,
 		.name = "MQ1188",
 		.ge_base = MQ1188_GE_BASE,
-		.caps = MQ1132_CAPS & ~MQ11XX_CAP_ALT_WINDOW,
+		.caps = (MQ1132_CAPS & ~MQ11XX_CAP_ALT_WINDOW) |
+			MQ11XX_CAP_START_LATCH,
 		.transforms = MQ11XX_SCAN_ALL &
 			      ~BIT(MQ11XX_SCAN_COLUMNS | MQ11XX_SCAN_Y_DECREMENT |
 				   MQ11XX_SCAN_X_DECREMENT),
@@ -555,6 +572,18 @@ struct mq11xx_present_dma {
 	bool failed;			/* a transfer failed: CPU copies only */
 };
 
+/*
+ * The damage of one commit, as up to MQ11XX_FLIP_RECTS rectangles or, once
+ * there are more, their bounding box.
+ */
+#define MQ11XX_FLIP_RECTS	8
+
+struct mq11xx_flip_damage {
+	unsigned int n;
+	bool merged;		/* r[0] bounds more rectangles than fit */
+	struct drm_rect r[MQ11XX_FLIP_RECTS];
+};
+
 struct mq11xx_device {
 	struct drm_device drm;
 
@@ -599,6 +628,17 @@ struct mq11xx_device {
 	 */
 	unsigned int scan_cpp;
 	bool palette_stale;
+	/*
+	 * Double buffering. scan_base is where the frame on screen is stored:
+	 * 0, or the back buffer slot at the top of the off-screen area.
+	 * flip_valid: the other buffer holds the frame shown before the
+	 * current one, in the current layout, and flip_prev is the damage that
+	 * turned it into the current one. Bring-up leaves 0 and no valid
+	 * buffer; only the commit tail changes them after that.
+	 */
+	size_t scan_base;
+	bool flip_valid;
+	struct mq11xx_flip_damage flip_prev;
 
 	/*
 	 * Chip power follows the CRTC: off while the display is blanked.
@@ -1195,7 +1235,7 @@ static int mq11xx_apply_envee_delta(struct mq11xx_device *mq)
 static void mq11xx_select_chip(struct mq11xx_device *mq, u16 device)
 {
 	const struct mq11xx_chip *chip = &mq11xx_chip_unknown;
-	char caps[96] = "";
+	char caps[128] = "";
 	unsigned int i;
 	int len = 0;
 
@@ -1683,6 +1723,46 @@ static int mq11xx_ge_fill(struct mq11xx_device *mq, const struct drm_rect *r,
 }
 
 /*
+ * Copies the rectangle of @dst's size at (@sx, @sy) to @dst, within the
+ * current surface. Overlap is handled as the WinCE drivers do it: when the
+ * destination lies right of or below the source, the engine walks that
+ * axis backwards, starting from the far edge of both rectangles.
+ */
+static int mq11xx_ge_copy(struct mq11xx_device *mq, const struct drm_rect *dst,
+			  int sx, int sy)
+{
+	unsigned int w = drm_rect_width(dst), h = drm_rect_height(dst);
+	struct drm_rect src = DRM_RECT_INIT(sx, sy, w, h);
+	u32 cmd = MQ11XX_GE_ROP_SRCCOPY | MQ11XX_GE_TYPE_BITBLT;
+	int dx = dst->x1, dy = dst->y1;
+
+	lockdep_assert_held(&mq->ge_lock);
+
+	if (!mq11xx_ge_capable(mq) || !mq->ge_surface_valid)
+		return -ENODEV;
+	if (!mq11xx_ge_rect_valid(dst) || !mq11xx_ge_rect_valid(&src))
+		return -EINVAL;
+
+	if (dx > sx) {
+		cmd |= MQ11XX_GE_X_NEGATIVE;
+		dx += w - 1;
+		sx += w - 1;
+	}
+	if (dy > sy) {
+		cmd |= MQ11XX_GE_Y_NEGATIVE;
+		dy += h - 1;
+		sy += h - 1;
+	}
+
+	mq11xx_ge_write(mq, MQ11XX_GE_SIZE, mq11xx_ge_xy(w, h));
+	mq11xx_ge_write(mq, MQ11XX_GE_DEST, mq11xx_ge_xy(dx, dy));
+	mq11xx_ge_write(mq, MQ11XX_GE_SOURCE, mq11xx_ge_xy(sx, sy));
+	mq11xx_ge_write(mq, MQ11XX_GE_COMMAND, cmd);
+
+	return mq11xx_ge_wait(mq, (size_t)w * h * mq11xx_ge_cpp(mq));
+}
+
+/*
  * Clears video memory with one fill of a 512-byte-pitch surface covering
  * all of it, then spot-checks the result. Whatever the engine did not
  * clear, the CPU does; a clear that reads back wrong also latches the
@@ -1776,15 +1856,15 @@ static bool mq11xx_rect_is_solid8(const void *vaddr, unsigned int pitch,
  * engine fill instead of uploading it: clears, letterbox bars and blank
  * console lines then cost no host bus traffic. The shadow buffer is
  * cached system memory, and the scan stops at the first differing pixel.
- * The engine surface is the frame as the CPU path writes it, unrotated at
- * @vram_pitch whatever the scanout transform. Returns 0 when the engine
- * drew the rectangle.
+ * The engine surface is the frame as the CPU path writes it, @base bytes
+ * into video memory and unrotated at @vram_pitch whatever the scanout
+ * transform. Returns 0 when the engine drew the rectangle.
  */
 static int mq11xx_ge_fill_damage(struct mq11xx_device *mq,
 				 struct drm_framebuffer *fb,
 				 const struct iosys_map *data,
 				 const struct drm_rect *damage,
-				 unsigned int vram_pitch)
+				 unsigned int vram_pitch, size_t base)
 {
 	unsigned int pitch = fb->pitches[0], cpp = fb->format->cpp[0];
 	const void *vaddr;
@@ -1805,7 +1885,7 @@ static int mq11xx_ge_fill_damage(struct mq11xx_device *mq,
 		return -EINVAL;
 
 	mutex_lock(&mq->ge_lock);
-	ret = mq11xx_ge_set_surface(mq, MQ11XX_SRAM_FRAME, vram_pitch, cpp);
+	ret = mq11xx_ge_set_surface(mq, base, vram_pitch, cpp);
 	if (!ret)
 		ret = mq11xx_ge_fill(mq, damage, colour);
 	mutex_unlock(&mq->ge_lock);
@@ -1868,6 +1948,8 @@ static int mq11xx_hw_init(struct mq11xx_device *mq)
 	mq->scan_transform = 0;
 	mq->scan_double = false;
 	mq->scan_cpp = 2;
+	mq->scan_base = MQ11XX_SRAM_FRAME;
+	mq->flip_valid = false;
 	mq->palette_stale = true;
 	mq->powered = true;
 	mq->init_logged = true;
@@ -2211,14 +2293,41 @@ static void mq11xx_wait_blank(struct mq11xx_device *mq)
 }
 
 /*
- * Points the scan at the stored frame for transform @t at @cpp bytes per
- * pixel, doubled when @dbl is set. The window starts at the stored pixel
- * shown top left: the last pixel of a row for an x decrement, the first of
- * the last row for a y decrement. For the column scans that is where an
- * MQ1188's fetch was measured to begin, and where the h5550's WinCE driver
- * starts the one it calls 90 degrees (it starts the other one a byte
- * further on); the start corners that Table 4-7 of the datasheet gives for
- * those two would run the fetch outside the frame.
+ * The window start (GC0C) and stride for the frame stored @base bytes into
+ * video memory, for transform @t at @cpp bytes per pixel, doubled when @dbl
+ * is set. The window starts at the stored pixel shown top left: the last
+ * pixel of a row for an x decrement, the first of the last row for a y
+ * decrement. For the column scans that is where an MQ1188's fetch was
+ * measured to begin, and where the h5550's WinCE driver starts the one it
+ * calls 90 degrees (it starts the other one a byte further on); the start
+ * corners that Table 4-7 of the datasheet gives for those two would run
+ * the fetch outside the frame.
+ */
+static u32 mq11xx_scan_start(struct mq11xx_device *mq, unsigned int t,
+			     unsigned int cpp, bool dbl, size_t base,
+			     u32 *stride)
+{
+	const struct drm_display_mode *mode = mq->mode;
+	bool columns = t & MQ11XX_SCAN_COLUMNS;
+	unsigned int width = (columns ? mode->vdisplay : mode->hdisplay) >> dbl;
+	unsigned int rows = (columns ? mode->hdisplay : mode->vdisplay) >> dbl;
+	unsigned int pitch = mq11xx_scan_pitch(mq, t, cpp, dbl);
+	u32 start = base;
+
+	*stride = pitch;
+	if (t & MQ11XX_SCAN_X_DECREMENT)
+		start += (width - 1) * cpp;
+	if (t & MQ11XX_SCAN_Y_DECREMENT) {
+		start += (rows - 1) * pitch;
+		*stride = -*stride;
+	}
+
+	return start;
+}
+
+/*
+ * Points the scan at the frame stored @base bytes into video memory, for
+ * transform @t at @cpp bytes per pixel, doubled when @dbl is set.
  *
  * Doubling leaves the window registers GC08/GC09 at the display's size:
  * with both GC00[15:14] set, an MQ1188 was measured to fetch 120 pixels
@@ -2231,21 +2340,12 @@ static void mq11xx_wait_blank(struct mq11xx_device *mq)
  * driver does.
  */
 static void mq11xx_scan_program(struct mq11xx_device *mq, unsigned int t,
-				unsigned int cpp, bool dbl)
+				unsigned int cpp, bool dbl, size_t base)
 {
-	const struct drm_display_mode *mode = mq->mode;
 	bool columns = t & MQ11XX_SCAN_COLUMNS;
-	unsigned int width = (columns ? mode->vdisplay : mode->hdisplay) >> dbl;
-	unsigned int rows = (columns ? mode->hdisplay : mode->vdisplay) >> dbl;
-	unsigned int pitch = mq11xx_scan_pitch(mq, t, cpp, dbl);
-	u32 start = MQ11XX_SRAM_FRAME, stride = pitch, control;
+	u32 start, stride, control;
 
-	if (t & MQ11XX_SCAN_X_DECREMENT)
-		start += (width - 1) * cpp;
-	if (t & MQ11XX_SCAN_Y_DECREMENT) {
-		start += (rows - 1) * pitch;
-		stride = -stride;
-	}
+	start = mq11xx_scan_start(mq, t, cpp, dbl, base, &stride);
 
 	control = readl(mq->regs + MQ11XX_GC_CONTROL) &
 		  ~(MQ11XX_GC_CONTROL_COLUMN_SCAN | MQ11XX_GC_CONTROL_X_DECREMENT |
@@ -2269,6 +2369,75 @@ static void mq11xx_scan_program(struct mq11xx_device *mq, unsigned int t,
 	mq->scan_transform = t;
 	mq->scan_cpp = cpp;
 	mq->scan_double = dbl;
+	mq->scan_base = base;
+}
+
+/*
+ * Flips the scan to the frame stored @base bytes into video memory, in the
+ * layout it already has. The commit's vblank event goes out at the next
+ * frame end, after which the old frame must not be read again. An MQ1188
+ * was measured to take a GC0C write into use at the start of the next
+ * frame wherever the beam was, so when the frame interrupt sends the
+ * events the write is made at once: a write before the frame end is in use
+ * by the frame after it, and a later one delays the event by a frame. The
+ * vblank timer is not tied to the scan, and other chips were never
+ * measured, so there the write waits until the beam has left the window.
+ */
+static void mq11xx_scan_flip(struct mq11xx_device *mq, size_t base)
+{
+	u32 start, stride;
+
+	start = mq11xx_scan_start(mq, mq->scan_transform, mq->scan_cpp,
+				  mq->scan_double, base, &stride);
+
+	if (!mq->irq || !(mq->chip->caps & MQ11XX_CAP_START_LATCH))
+		mq11xx_wait_blank(mq);
+
+	writel(start, mq->regs + MQ11XX_GC_WINDOW_START);
+	mq->scan_base = base;
+}
+
+/*
+ * Brings the scan to the frame stored @base bytes into video memory, for
+ * transform @t at @cpp bytes per pixel, doubled when @dbl is set.
+ */
+static void mq11xx_scan_update(struct mq11xx_device *mq, unsigned int t,
+			       unsigned int cpp, bool dbl, size_t base)
+{
+	if (t != mq->scan_transform || cpp != mq->scan_cpp ||
+	    dbl != mq->scan_double)
+		mq11xx_scan_program(mq, t, cpp, dbl, base);
+	else if (base != mq->scan_base)
+		mq11xx_scan_flip(mq, base);
+}
+
+/* The off-screen area ends at the cursor slot, or earlier in a smaller window. */
+static size_t mq11xx_pool_end(struct mq11xx_device *mq)
+{
+	return min_t(resource_size_t, mq->vram_size, MQ11XX_SRAM_CURSOR);
+}
+
+/*
+ * Where the back buffer goes for a frame of @rows rows of @pitch bytes
+ * stored for transform @t, or 0 when the frame is not double-buffered. It
+ * sits at the top of the off-screen area, clear of the cursor slot and of
+ * any full-size frame at offset 0, so the scan can go on showing either
+ * while the back buffer is filled. It starts on a whole row, so that one
+ * engine surface at offset 0 covers both buffers, and on a whole 64-bit
+ * word, as the engine's base address register wants.
+ */
+static size_t mq11xx_flip_slot(struct mq11xx_device *mq, unsigned int t,
+			       unsigned int pitch, unsigned int rows)
+{
+	size_t frame = (size_t)pitch * rows, end = mq11xx_pool_end(mq), slot;
+
+	if (!READ_ONCE(mq11xx_page_flip) || (t & MQ11XX_SCAN_COLUMNS) ||
+	    end < 2 * frame)
+		return 0;
+
+	slot = rounddown(end - frame, lcm(pitch, 8));
+
+	return slot >= frame ? slot : 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2688,7 +2857,7 @@ static int mq11xx_primary_plane_helper_atomic_check(struct drm_plane *plane,
 		return -EINVAL;
 	}
 
-	/* The frame is stored whole at the start of video memory. */
+	/* The frame is stored whole, at offset 0 or in the back buffer. */
 	width >>= dbl;
 	height >>= dbl;
 	if (fb->width != width || fb->height != height) {
@@ -2727,27 +2896,148 @@ static void mq11xx_vram_flush(struct mq11xx_device *mq, size_t offset)
 		readw(mq->vram + ALIGN_DOWN(offset, sizeof(u16)));
 }
 
+/*
+ * Draws @damage of the shadow buffer into the frame stored @base bytes into
+ * video memory at @pitch: an engine fill when it is all one colour,
+ * otherwise a copy by the CPU or, into the frame at offset 0 while
+ * present_dma is set (@dma), by the DMA channel.
+ */
+static void mq11xx_present_rect(struct mq11xx_device *mq,
+				struct drm_framebuffer *fb,
+				const struct iosys_map *data,
+				const struct drm_rect *damage, unsigned int pitch,
+				size_t base, bool dma)
+{
+	struct iosys_map vram_map = IOSYS_MAP_INIT_VADDR_IOMEM(mq->vram);
+	unsigned int vram_pitch[DRM_FORMAT_MAX_PLANES] = { pitch };
+	size_t offset = base + drm_fb_clip_offset(pitch, fb->format, damage);
+	struct iosys_map dst = IOSYS_MAP_INIT_OFFSET(&vram_map, offset);
+
+	if (!mq11xx_ge_fill_damage(mq, fb, data, damage, pitch, base))
+		return;
+
+	/* It copies at the framebuffer's pitch, the unrotated frame's. */
+	if (dma && base == MQ11XX_SRAM_FRAME && fb->pitches[0] == pitch &&
+	    !mq11xx_present_dma_rect(mq, fb, data, damage))
+		return;
+
+	drm_fb_memcpy(&dst, vram_pitch, data, fb, damage);
+	mq11xx_vram_flush(mq, offset + (drm_rect_height(damage) - 1) * pitch);
+}
+
+static void mq11xx_flip_damage_add(struct mq11xx_flip_damage *d,
+				   const struct drm_rect *r)
+{
+	struct drm_rect *b = &d->r[0];
+	unsigned int i;
+
+	if (!d->merged && d->n < MQ11XX_FLIP_RECTS) {
+		d->r[d->n++] = *r;
+		return;
+	}
+
+	if (!d->merged) {
+		for (i = 1; i < d->n; i++) {
+			b->x1 = min(b->x1, d->r[i].x1);
+			b->y1 = min(b->y1, d->r[i].y1);
+			b->x2 = max(b->x2, d->r[i].x2);
+			b->y2 = max(b->y2, d->r[i].y2);
+		}
+		d->n = 1;
+		d->merged = true;
+	}
+
+	b->x1 = min(b->x1, r->x1);
+	b->y1 = min(b->y1, r->y1);
+	b->x2 = max(b->x2, r->x2);
+	b->y2 = max(b->y2, r->y2);
+}
+
+/* Whether one rectangle of @d, which bounds nothing more, contains @r. */
+static bool mq11xx_flip_damage_covers(const struct mq11xx_flip_damage *d,
+				      const struct drm_rect *r)
+{
+	unsigned int i;
+
+	if (d->merged)
+		return false;
+
+	for (i = 0; i < d->n; i++)
+		if (d->r[i].x1 <= r->x1 && d->r[i].y1 <= r->y1 &&
+		    d->r[i].x2 >= r->x2 && d->r[i].y2 >= r->y2)
+			return true;
+
+	return false;
+}
+
+/*
+ * Brings @r of the back buffer at @back up to date with the front buffer
+ * at @front before the new damage is drawn into it. The front buffer holds
+ * the newer frame everywhere, so the engine copies @r from it, which puts
+ * no bytes on the host bus. The copy moves bytes, so it views both buffers
+ * as one 16 bpp surface at the frame's pitch, the depth the MQ1188's
+ * engine was run at, with @r widened to whole 16-bit pixels; copying a
+ * little more of the front buffer is harmless. Without the engine, @r is
+ * uploaded from the shadow buffer instead.
+ */
+static void mq11xx_flip_seed(struct mq11xx_device *mq,
+			     struct drm_framebuffer *fb,
+			     const struct iosys_map *data,
+			     const struct drm_rect *r, unsigned int pitch,
+			     size_t front, size_t back)
+{
+	unsigned int cpp = fb->format->cpp[0];
+	unsigned int x1 = r->x1 * cpp / 2, x2 = DIV_ROUND_UP(r->x2 * cpp, 2);
+	struct drm_rect dst = DRM_RECT_INIT(x1, back / pitch + r->y1, x2 - x1,
+					    drm_rect_height(r));
+	int ret = -ENODEV;
+
+	if (mq11xx_ge_wanted(mq)) {
+		mutex_lock(&mq->ge_lock);
+		ret = mq11xx_ge_set_surface(mq, MQ11XX_SRAM_FRAME, pitch, 2);
+		if (!ret)
+			ret = mq11xx_ge_copy(mq, &dst, x1, front / pitch + r->y1);
+		mutex_unlock(&mq->ge_lock);
+	}
+
+	if (ret)
+		mq11xx_present_rect(mq, fb, data, r, pitch, back, false);
+}
+
+/*
+ * A frame that fits twice in video memory is double-buffered: each commit
+ * draws into the buffer that is not on screen and then flips the scan to
+ * it, so the scan never shows a half-drawn frame. That buffer still holds
+ * the frame before the one on screen, so the previous commit's damage is
+ * first brought over from the front buffer. The first frame of a new
+ * layout, or back at offset 0 after double buffering, is drawn whole into
+ * memory the scan is not reading and only then shown.
+ */
 static void mq11xx_primary_plane_helper_atomic_update(struct drm_plane *plane,
 						      struct drm_atomic_commit *state)
 {
 	struct mq11xx_device *mq = to_mq11xx(plane->dev);
 	struct drm_plane_state *plane_state = drm_atomic_get_new_plane_state(state, plane);
 	struct drm_shadow_plane_state *shadow_plane_state = to_drm_shadow_plane_state(plane_state);
+	const struct iosys_map *data = &shadow_plane_state->data[0];
 	struct drm_framebuffer *fb = plane_state->fb;
 	struct drm_plane_state *old_plane_state = drm_atomic_get_old_plane_state(state, plane);
-	struct iosys_map vram_map = IOSYS_MAP_INIT_VADDR_IOMEM(mq->vram);
-	struct drm_atomic_helper_damage_iter iter;
 	unsigned int t = mq11xx_scan_transform(plane_state->rotation);
-	unsigned int vram_pitch[DRM_FORMAT_MAX_PLANES] = { };
-	struct drm_rect damage;
-	bool dma, dbl;
+	struct mq11xx_flip_damage cur = { };
+	struct drm_atomic_helper_damage_iter iter;
+	struct drm_rect damage, whole_frame;
+	unsigned int pitch, cpp, i;
+	size_t slot, target, front;
+	bool dma, dbl, flip, whole, same;
 	int idx;
 
 	if (!fb)
 		return;
 
+	cpp = fb->format->cpp[0];
 	dbl = mq11xx_plane_doubled(plane_state);
-	vram_pitch[0] = mq11xx_scan_pitch(mq, t, fb->format->cpp[0], dbl);
+	pitch = mq11xx_scan_pitch(mq, t, cpp, dbl);
+	whole_frame = DRM_RECT_INIT(0, 0, fb->width, fb->height);
 
 	if (!drm_dev_enter(&mq->drm, &idx))
 		return;
@@ -2761,13 +3051,13 @@ static void mq11xx_primary_plane_helper_atomic_update(struct drm_plane *plane,
 	if (!mq->powered)
 		goto out_exit;
 
-	/*
-	 * A new transform is scanned from the old picture until the full
-	 * upload that atomic_check asked for replaces it.
-	 */
-	if (t != mq->scan_transform || fb->format->cpp[0] != mq->scan_cpp ||
-	    dbl != mq->scan_double)
-		mq11xx_scan_program(mq, t, fb->format->cpp[0], dbl);
+	slot = mq11xx_flip_slot(mq, t, pitch, fb->height);
+	flip = !!slot;
+	front = mq->scan_base;
+	target = flip && front == MQ11XX_SRAM_FRAME ? slot : MQ11XX_SRAM_FRAME;
+	same = t == mq->scan_transform && cpp == mq->scan_cpp &&
+	       dbl == mq->scan_double;
+	whole = target != front && !(flip && same && mq->flip_valid);
 
 	/*
 	 * Read once: every rectangle of this commit is finished before it
@@ -2775,27 +3065,46 @@ static void mq11xx_primary_plane_helper_atomic_update(struct drm_plane *plane,
 	 */
 	dma = READ_ONCE(mq11xx_present_dma);
 
-	drm_atomic_helper_damage_iter_init(&iter, old_plane_state, plane_state);
-	drm_atomic_for_each_plane_damage(&iter, &damage) {
-		unsigned int offset = drm_fb_clip_offset(vram_pitch[0], fb->format, &damage);
-		struct iosys_map dst = IOSYS_MAP_INIT_OFFSET(&vram_map, offset);
-
-		if (!mq11xx_ge_fill_damage(mq, fb, shadow_plane_state->data,
-					   &damage, vram_pitch[0]))
-			continue;
-
-		/* It copies at the framebuffer's pitch, the unrotated frame's. */
-		if (dma && fb->pitches[0] == vram_pitch[0] &&
-		    !mq11xx_present_dma_rect(mq, fb, shadow_plane_state->data,
-					     &damage))
-			continue;
-
-		drm_fb_memcpy(&dst, vram_pitch, shadow_plane_state->data, fb, &damage);
-		/* RGB565 is the only format, so the last pixel is 2 bytes. */
-		mq11xx_vram_flush(mq, offset +
-				  (drm_rect_height(&damage) - 1) * vram_pitch[0] +
-				  drm_rect_width(&damage) * 2 - 2);
+	if (whole) {
+		cur.n = 1;
+		cur.r[0] = whole_frame;
+	} else {
+		drm_atomic_helper_damage_iter_init(&iter, old_plane_state, plane_state);
+		drm_atomic_for_each_plane_damage(&iter, &damage)
+			mq11xx_flip_damage_add(&cur, &damage);
 	}
+
+	if (target == front) {
+		/*
+		 * A new transform is scanned from the old picture until the
+		 * full upload that atomic_check asked for below replaces it.
+		 */
+		mq11xx_scan_update(mq, t, cpp, dbl, target);
+	} else if (!whole) {
+		/* Nothing changed: the frame on screen stays, and so does the back. */
+		if (!cur.n)
+			goto out_exit;
+
+		for (i = 0; i < mq->flip_prev.n; i++)
+			if (!mq11xx_flip_damage_covers(&cur, &mq->flip_prev.r[i]))
+				mq11xx_flip_seed(mq, fb, data, &mq->flip_prev.r[i],
+						 pitch, front, target);
+	}
+
+	if (whole) {
+		mq11xx_present_rect(mq, fb, data, &whole_frame, pitch, target, dma);
+	} else {
+		drm_atomic_helper_damage_iter_init(&iter, old_plane_state, plane_state);
+		drm_atomic_for_each_plane_damage(&iter, &damage)
+			mq11xx_present_rect(mq, fb, data, &damage, pitch, target, dma);
+	}
+
+	if (target != front)
+		mq11xx_scan_update(mq, t, cpp, dbl, target);
+
+	mq->flip_valid = flip;
+	if (flip)
+		mq->flip_prev = cur;
 
 out_exit:
 	drm_dev_exit(idx);
