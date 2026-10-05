@@ -84,6 +84,41 @@
 			status = "disabled";
 		};
 
+		/*
+		 * SSP1-3, left disabled like the other optional blocks: a board
+		 * enables and gives a role (SPI controller, ASoC or a raw SSP
+		 * consumer) to the instance it wires up.
+		 */
+		ssp1: spi@41000000 {
+			compatible = "mrvl,pxa27x-ssp";
+			reg = <0x41000000 0x40>;
+			interrupts = <24>;
+			clocks = <&clks CLK_SSP1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		ssp2: spi@41700000 {
+			compatible = "mrvl,pxa27x-ssp";
+			reg = <0x41700000 0x40>;
+			interrupts = <16>;
+			clocks = <&clks CLK_SSP2>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		ssp3: spi@41900000 {
+			compatible = "mrvl,pxa27x-ssp";
+			reg = <0x41900000 0x40>;
+			interrupts = <0>;
+			clocks = <&clks CLK_SSP3>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
 		pxa27x_udc: udc@40600000 {
 			compatible = "marvell,pxa270-udc";
 			reg = <0x40600000 0x10000>;
