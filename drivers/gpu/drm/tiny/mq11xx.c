@@ -49,6 +49,11 @@
  * is, and only the order in which the scan walks through it changes, so a
  * rotated picture costs no more bus traffic than an upright one.
  *
+ * Chips with an 8 bpp scanout also take C8 framebuffers, shown through the
+ * chip's 256-entry palette, which is the CRTC's gamma LUT; at 16 bpp the
+ * palette is bypassed. A C8 frame halves the bytes each update puts on the
+ * host bus. RGB565 remains the preferred format and fbdev's.
+ *
  * The init sequence (supply power-up, endianness quirk, oscillator enable,
  * CC-module power-up, register table load with verify-and-retry, then
  * enabling scanout). Two caveats apply:
@@ -95,6 +100,7 @@
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_atomic_state_helper.h>
 #include <drm/drm_blend.h>
+#include <drm/drm_color_mgmt.h>
 #include <drm/drm_connector.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_drv.h>
@@ -273,9 +279,22 @@ MODULE_PARM_DESC(engine, "Clear video memory and draw solid damage with the 2D e
 #define MQ11XX_CONFIG_GE_ENABLE	BIT(0)	/* DC.config_5 */
 #define MQ11XX_MIU_ENABLE		BIT(0)	/* MIU.miu_0 */
 #define MQ11XX_GC_CONTROL_ENABLE	BIT(0)	/* GC.control */
+#define MQ11XX_GC_CONTROL_DEPTH		GENMASK(7, 4)	/* GC.control */
+#define MQ11XX_GC_DEPTH_8BPP		0x3	/* through the palette */
+#define MQ11XX_GC_DEPTH_16BPP		0xc	/* RGB565, palette bypassed */
 #define MQ11XX_GC_CONTROL_X_DECREMENT	BIT(12)	/* GC.control */
 #define MQ11XX_GC_CONTROL_COLUMN_SCAN	BIT(13)	/* GC.control */
 #define MQ11XX_GC_STRIDE		GENMASK(15, 0)	/* gc0e, two's complement */
+/*
+ * Colour palette, one 32-bit word per index. Only the top six bits of
+ * each 8-bit field are stored: an MQ1188 reads 0xffffffff back as
+ * 0x00fcfcfc.
+ */
+#define MQ11XX_PALETTE			0x800
+#define MQ11XX_PALETTE_SIZE		256
+#define MQ11XX_PALETTE_RED		GENMASK(7, 0)
+#define MQ11XX_PALETTE_GREEN		GENMASK(15, 8)
+#define MQ11XX_PALETTE_BLUE		GENMASK(23, 16)
 /*
  * gc1d: the scan line being fetched in bits 9:0. The first line of vertical
  * blanking (320, equal to vdisplay, on a running h2200) is the line the
@@ -354,7 +373,16 @@ struct mq11xx_chip {
 	u16 ge_base;
 	unsigned int caps;
 	u8 transforms;		/* with MQ11XX_CAP_ROTATION */
+	u8 transforms_8bpp;	/* of those, the ones offered at 8 bpp */
+	bool ge_8bpp;		/* the engine draws 8 bpp surfaces */
 };
+
+/*
+ * The datasheet gives the window start rule for 8 bpp row scans in either
+ * X direction, but its 8n + 2 stride rule for column scans only for
+ * 16 bpp, so no chip offers a column scan at 8 bpp.
+ */
+#define MQ11XX_SCAN_ROWS	GENMASK(MQ11XX_SCAN_COLUMNS - 1, 0)
 
 #define MQ1132_CAPS	(MQ11XX_CAP_ENGINE | MQ11XX_CAP_ROTATION |		\
 			 MQ11XX_CAP_PIXEL_DOUBLE | MQ11XX_CAP_ALT_WINDOW |	\
@@ -368,6 +396,8 @@ static const struct mq11xx_chip mq11xx_chips[] = {
 		.ge_base = MQ1132_GE_BASE,
 		.caps = MQ1132_CAPS,
 		.transforms = MQ11XX_SCAN_ALL,
+		.transforms_8bpp = MQ11XX_SCAN_ROWS,
+		.ge_8bpp = true,
 	}, {
 		/* Covered by the same datasheet as the MQ1132. */
 		.device_id = MQ11XX_PCI_DEVICE_1100,
@@ -375,6 +405,8 @@ static const struct mq11xx_chip mq11xx_chips[] = {
 		.ge_base = MQ1132_GE_BASE,
 		.caps = MQ1132_CAPS,
 		.transforms = MQ11XX_SCAN_ALL,
+		.transforms_8bpp = MQ11XX_SCAN_ROWS,
+		.ge_8bpp = true,
 	}, {
 		/*
 		 * Measured on an h2200: engine fill and copy (including
@@ -392,6 +424,11 @@ static const struct mq11xx_chip mq11xx_chips[] = {
 		.transforms = MQ11XX_SCAN_ALL &
 			      ~BIT(MQ11XX_SCAN_COLUMNS | MQ11XX_SCAN_Y_DECREMENT |
 				   MQ11XX_SCAN_X_DECREMENT),
+		/*
+		 * 8 bpp was fetched only from an upright frame, and the
+		 * engine was only run at 16 bpp.
+		 */
+		.transforms_8bpp = BIT(0),
 	}, {
 		/*
 		 * Presumed to share the MQ1188's layout, but no MQ1178 has
@@ -537,6 +574,14 @@ struct mq11xx_device {
 	phys_addr_t vram_phys;
 	bool vram_wc;
 	void __iomem *regs;
+	/*
+	 * Bytes per pixel of the depth the registers hold, and whether the
+	 * palette has lost its contents since it was last loaded; bring-up
+	 * leaves RGB565 and an undefined palette. Only the commit tail
+	 * changes them after that.
+	 */
+	unsigned int scan_cpp;
+	bool palette_stale;
 
 	/*
 	 * Chip power follows the CRTC: off while the display is blanked.
@@ -1685,6 +1730,21 @@ static bool mq11xx_rect_is_solid16(const void *vaddr, unsigned int pitch,
 	return true;
 }
 
+/* Whether the @r pixels at @vaddr, @pitch bytes per row, are all one index. */
+static bool mq11xx_rect_is_solid8(const void *vaddr, unsigned int pitch,
+				  const struct drm_rect *r, u32 *colour)
+{
+	unsigned int w = drm_rect_width(r), h = drm_rect_height(r), y;
+	u8 c = *(const u8 *)vaddr;
+
+	for (y = 0; y < h; y++)
+		if (memchr_inv(vaddr + y * pitch, c, w))
+			return false;
+
+	*colour = c;
+	return true;
+}
+
 /*
  * Draws a damage rectangle whose shadow pixels are all one colour with an
  * engine fill instead of uploading it: clears, letterbox bars and blank
@@ -1700,21 +1760,26 @@ static int mq11xx_ge_fill_damage(struct mq11xx_device *mq,
 				 const struct drm_rect *damage,
 				 unsigned int vram_pitch)
 {
-	unsigned int pitch = fb->pitches[0];
+	unsigned int pitch = fb->pitches[0], cpp = fb->format->cpp[0];
+	const void *vaddr;
+	bool solid;
 	u32 colour;
 	int ret;
 
-	if (!mq11xx_ge_wanted(mq) || fb->format->cpp[0] != 2 || data->is_iomem ||
+	if (!mq11xx_ge_wanted(mq) || (cpp == 1 && !mq->chip->ge_8bpp) || data->is_iomem ||
 	    drm_rect_width(damage) * drm_rect_height(damage) < MQ11XX_GE_FILL_MIN_PIXELS)
 		return -ENODEV;
 
-	if (!mq11xx_rect_is_solid16(data->vaddr +
-				    drm_fb_clip_offset(pitch, fb->format, damage),
-				    pitch, damage, &colour))
+	vaddr = data->vaddr + drm_fb_clip_offset(pitch, fb->format, damage);
+	if (cpp == 1)
+		solid = mq11xx_rect_is_solid8(vaddr, pitch, damage, &colour);
+	else
+		solid = mq11xx_rect_is_solid16(vaddr, pitch, damage, &colour);
+	if (!solid)
 		return -EINVAL;
 
 	mutex_lock(&mq->ge_lock);
-	ret = mq11xx_ge_set_surface(mq, MQ11XX_SRAM_FRAME, vram_pitch, 2);
+	ret = mq11xx_ge_set_surface(mq, MQ11XX_SRAM_FRAME, vram_pitch, cpp);
 	if (!ret)
 		ret = mq11xx_ge_fill(mq, damage, colour);
 	mutex_unlock(&mq->ge_lock);
@@ -1771,9 +1836,12 @@ static int mq11xx_hw_init(struct mq11xx_device *mq)
 
 	/*
 	 * Both register tables clear GC00[13:12] and start the window at the
-	 * frame, and mq11xx_chip_init() set the row pitch as the stride.
+	 * frame at 16 bpp, and mq11xx_chip_init() set the row pitch as the
+	 * stride.
 	 */
 	mq->scan_transform = 0;
+	mq->scan_cpp = 2;
+	mq->palette_stale = true;
 	mq->powered = true;
 	mq->init_logged = true;
 
@@ -2083,24 +2151,42 @@ static unsigned int mq11xx_supported_rotations(struct mq11xx_device *mq)
 }
 
 /*
- * Pitch of the stored frame. The datasheet requires a column scan's stride
- * to be 8n + 2 bytes, so there each row is padded past its 8-byte-aligned
- * length: 642 bytes for a 320-pixel row, 154,080 bytes for the frame.
+ * Pitch of the stored frame at @cpp bytes per pixel. The datasheet
+ * requires a column scan's stride to be 8n + 2 bytes, so there each row is
+ * padded past its 8-byte-aligned length: 642 bytes for a 320-pixel row,
+ * 154,080 bytes for the frame, 480 more than an unpadded one. Column
+ * scans are offered at 16 bpp only.
  */
-static unsigned int mq11xx_scan_pitch(struct mq11xx_device *mq, unsigned int t)
+static unsigned int mq11xx_scan_pitch(struct mq11xx_device *mq, unsigned int t,
+				      unsigned int cpp)
 {
 	const struct drm_display_mode *mode = mq->mode;
 
 	if (t & MQ11XX_SCAN_COLUMNS)
 		return ALIGN(mode->vdisplay * 2, 8) + 2;
 
-	return mode->hdisplay * 2;
+	return mode->hdisplay * cpp;
 }
 
 /*
- * Points the scan at the stored frame for transform @t. The window starts
- * at the stored pixel shown top left: the last pixel of a row for an x
- * decrement, the first of the last row for a y decrement. For the column
+ * Waits until the beam has left the window, so that registers written next
+ * change the picture between two frames rather than within one.
+ */
+static void mq11xx_wait_blank(struct mq11xx_device *mq)
+{
+	u32 val;
+
+	if (readl_poll_timeout(mq->regs + MQ11XX_GC_VERTICAL_PARAMETER, val,
+			       FIELD_GET(MQ11XX_GC_VCOUNT, val) > mq->mode->vdisplay,
+			       MQ11XX_BLANK_POLL_US, MQ11XX_BLANK_TIMEOUT_US))
+		drm_dbg_kms(&mq->drm, "no vertical blanking seen, changing the scan mid-frame\n");
+}
+
+/*
+ * Points the scan at the stored frame for transform @t at @cpp bytes per
+ * pixel. The window starts at the stored pixel shown top left: the last
+ * pixel of a row for an x decrement, the first of the last row for a y
+ * decrement. For the column
  * scans that is where an MQ1188's fetch was measured to begin, and where
  * the h5550's WinCE driver starts the one it calls 90 degrees (it starts
  * the other one a byte further on); the start corners that Table 4-7 of the
@@ -2110,46 +2196,90 @@ static unsigned int mq11xx_scan_pitch(struct mq11xx_device *mq, unsigned int t)
  * registers are written once the beam has left the window, as the WinCE
  * driver does.
  */
-static void mq11xx_scan_program(struct mq11xx_device *mq, unsigned int t)
+static void mq11xx_scan_program(struct mq11xx_device *mq, unsigned int t,
+				unsigned int cpp)
 {
 	const struct drm_display_mode *mode = mq->mode;
 	bool columns = t & MQ11XX_SCAN_COLUMNS;
 	unsigned int width = columns ? mode->vdisplay : mode->hdisplay;
 	unsigned int rows = columns ? mode->hdisplay : mode->vdisplay;
-	unsigned int pitch = mq11xx_scan_pitch(mq, t);
-	u32 start = MQ11XX_SRAM_FRAME, stride = pitch, control, val;
+	unsigned int pitch = mq11xx_scan_pitch(mq, t, cpp);
+	u32 start = MQ11XX_SRAM_FRAME, stride = pitch, control;
 
 	if (t & MQ11XX_SCAN_X_DECREMENT)
-		start += (width - 1) * 2;
+		start += (width - 1) * cpp;
 	if (t & MQ11XX_SCAN_Y_DECREMENT) {
 		start += (rows - 1) * pitch;
 		stride = -stride;
 	}
 
 	control = readl(mq->regs + MQ11XX_GC_CONTROL) &
-		  ~(MQ11XX_GC_CONTROL_COLUMN_SCAN | MQ11XX_GC_CONTROL_X_DECREMENT);
+		  ~(MQ11XX_GC_CONTROL_COLUMN_SCAN | MQ11XX_GC_CONTROL_X_DECREMENT |
+		    MQ11XX_GC_CONTROL_DEPTH);
+	control |= FIELD_PREP(MQ11XX_GC_CONTROL_DEPTH,
+			      cpp == 1 ? MQ11XX_GC_DEPTH_8BPP : MQ11XX_GC_DEPTH_16BPP);
 	if (columns)
 		control |= MQ11XX_GC_CONTROL_COLUMN_SCAN;
 	if (t & MQ11XX_SCAN_X_DECREMENT)
 		control |= MQ11XX_GC_CONTROL_X_DECREMENT;
 
-	if (readl_poll_timeout(mq->regs + MQ11XX_GC_VERTICAL_PARAMETER, val,
-			       FIELD_GET(MQ11XX_GC_VCOUNT, val) > mode->vdisplay,
-			       MQ11XX_BLANK_POLL_US, MQ11XX_BLANK_TIMEOUT_US))
-		drm_dbg_kms(&mq->drm, "no vertical blanking seen, changing the scan mid-frame\n");
+	mq11xx_wait_blank(mq);
 
 	writel(control, mq->regs + MQ11XX_GC_CONTROL);
 	writel(stride & MQ11XX_GC_STRIDE, mq->regs + MQ11XX_GC_WINDOW_STRIDE);
 	writel(start, mq->regs + MQ11XX_GC_WINDOW_START);
 
 	mq->scan_transform = t;
+	mq->scan_cpp = cpp;
+}
+
+/* ------------------------------------------------------------------ */
+/* Palette */
+
+static void mq11xx_palette_set(struct drm_crtc *crtc, unsigned int index,
+			       u16 red, u16 green, u16 blue)
+{
+	struct mq11xx_device *mq = to_mq11xx(crtc->dev);
+
+	writel(FIELD_PREP(MQ11XX_PALETTE_RED, red >> 8) |
+	       FIELD_PREP(MQ11XX_PALETTE_GREEN, green >> 8) |
+	       FIELD_PREP(MQ11XX_PALETTE_BLUE, blue >> 8),
+	       mq->regs + MQ11XX_PALETTE + index * sizeof(u32));
+}
+
+/*
+ * Loads the palette from @crtc_state's gamma LUT, or a grey ramp without
+ * one. Changing entries the scan is using shows as a band of wrong colours,
+ * so they are written once the beam has left the window, as the WinCE
+ * display drivers' SetPalette does. The 256 register writes take a small
+ * fraction of the vertical blanking interval.
+ */
+static void mq11xx_palette_load(struct mq11xx_device *mq,
+				const struct drm_crtc_state *crtc_state)
+{
+	mq11xx_wait_blank(mq);
+
+	if (crtc_state->gamma_lut)
+		drm_crtc_load_palette_8(&mq->crtc, crtc_state->gamma_lut->data,
+					mq11xx_palette_set);
+	else
+		drm_crtc_fill_palette_8(&mq->crtc, mq11xx_palette_set);
+
+	mq->palette_stale = false;
 }
 
 /* ------------------------------------------------------------------ */
 /* Shadow-plane atomic pipeline, structurally identical to cirrus-qemu.c's */
 
+/*
+ * RGB565 stays first: the palette is bypassed at 16 bpp, and fbdev
+ * emulation takes the preferred depth. C8 is offered only by chips with
+ * MQ11XX_CAP_PALETTE_8BPP and halves the bytes a frame puts on the host
+ * bus, 76,800 instead of 153,600 at 240x320.
+ */
 static const u32 mq11xx_primary_plane_formats[] = {
 	DRM_FORMAT_RGB565,
+	DRM_FORMAT_C8,
 };
 
 static const u64 mq11xx_primary_plane_format_modifiers[] = {
@@ -2466,6 +2596,11 @@ static int mq11xx_primary_plane_helper_atomic_check(struct drm_plane *plane,
 			       rotation, mq->chip->name);
 		return -EINVAL;
 	}
+	if (fb->format->cpp[0] == 1 && !(mq->chip->transforms_8bpp & BIT(t))) {
+		drm_dbg_atomic(plane->dev, "rotation 0x%x not supported at 8 bpp on the %s\n",
+			       rotation, mq->chip->name);
+		return -EINVAL;
+	}
 
 	/* The frame is stored whole at the start of video memory. */
 	width = t & MQ11XX_SCAN_COLUMNS ? mode->vdisplay : mode->hdisplay;
@@ -2477,13 +2612,14 @@ static int mq11xx_primary_plane_helper_atomic_check(struct drm_plane *plane,
 	}
 
 	/*
-	 * The whole frame moves in video memory. The flag is copied from the
-	 * old state on every duplicate, so it has to be cleared again, or one
-	 * rotation change would turn every later commit into a full-frame
-	 * upload.
+	 * The whole frame moves in video memory, or changes its layout. The
+	 * flag is copied from the old state on every duplicate, so it has to
+	 * be cleared again, or one rotation or format change would turn every
+	 * later commit into a full-frame upload.
 	 */
 	new_plane_state->ignore_damage_clips =
-		old_plane_state->rotation != rotation;
+		old_plane_state->rotation != rotation ||
+		(old_plane_state->fb && old_plane_state->fb->format != fb->format);
 
 	return 0;
 }
@@ -2516,15 +2652,15 @@ static void mq11xx_primary_plane_helper_atomic_update(struct drm_plane *plane,
 	struct iosys_map vram_map = IOSYS_MAP_INIT_VADDR_IOMEM(mq->vram);
 	struct drm_atomic_helper_damage_iter iter;
 	unsigned int t = mq11xx_scan_transform(plane_state->rotation);
-	unsigned int vram_pitch[DRM_FORMAT_MAX_PLANES] = {
-		mq11xx_scan_pitch(mq, t),
-	};
+	unsigned int vram_pitch[DRM_FORMAT_MAX_PLANES] = { };
 	struct drm_rect damage;
 	bool dma;
 	int idx;
 
 	if (!fb)
 		return;
+
+	vram_pitch[0] = mq11xx_scan_pitch(mq, t, fb->format->cpp[0]);
 
 	if (!drm_dev_enter(&mq->drm, &idx))
 		return;
@@ -2542,8 +2678,8 @@ static void mq11xx_primary_plane_helper_atomic_update(struct drm_plane *plane,
 	 * A new transform is scanned from the old picture until the full
 	 * upload that atomic_check asked for replaces it.
 	 */
-	if (t != mq->scan_transform)
-		mq11xx_scan_program(mq, t);
+	if (t != mq->scan_transform || fb->format->cpp[0] != mq->scan_cpp)
+		mq11xx_scan_program(mq, t, fb->format->cpp[0]);
 
 	/*
 	 * Read once: every rectangle of this commit is finished before it
@@ -2605,7 +2741,42 @@ static int mq11xx_crtc_helper_atomic_check(struct drm_crtc *crtc, struct drm_ato
 	if (!crtc_state->enable)
 		return 0;
 
+	if (crtc_state->color_mgmt_changed && crtc_state->gamma_lut &&
+	    drm_color_lut_size(crtc_state->gamma_lut) != MQ11XX_PALETTE_SIZE) {
+		drm_dbg_atomic(crtc->dev, "gamma LUT of %u entries, the palette has %u\n",
+			       drm_color_lut_size(crtc_state->gamma_lut),
+			       MQ11XX_PALETTE_SIZE);
+		return -EINVAL;
+	}
+
 	return drm_atomic_helper_check_crtc_primary_plane(crtc_state);
+}
+
+/*
+ * The gamma LUT is the C8 palette; RGB565 bypasses it, so it only needs
+ * loading while C8 is shown. That is done here, before the plane update
+ * switches the depth, so the first C8 frame already has its colours.
+ */
+static void mq11xx_crtc_helper_atomic_begin(struct drm_crtc *crtc,
+					    struct drm_atomic_commit *state)
+{
+	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
+	struct drm_framebuffer *fb = crtc->primary->state->fb;
+	struct mq11xx_device *mq = to_mq11xx(crtc->dev);
+	int idx;
+
+	if (!fb || fb->format->format != DRM_FORMAT_C8)
+		return;
+	if (!crtc_state->color_mgmt_changed && !mq->palette_stale &&
+	    mq->scan_cpp == 1)
+		return;
+
+	if (!drm_dev_enter(&mq->drm, &idx))
+		return;
+	/* As in the plane update: a failed unblank leaves the chip unpowered. */
+	if (mq->powered)
+		mq11xx_palette_load(mq, crtc_state);
+	drm_dev_exit(idx);
 }
 
 static void mq11xx_crtc_helper_atomic_enable(struct drm_crtc *crtc, struct drm_atomic_commit *state)
@@ -2660,6 +2831,7 @@ static void mq11xx_crtc_helper_atomic_disable(struct drm_crtc *crtc,
 static const struct drm_crtc_helper_funcs mq11xx_crtc_helper_funcs = {
 	.mode_valid = mq11xx_crtc_helper_mode_valid,
 	.atomic_check = mq11xx_crtc_helper_atomic_check,
+	.atomic_begin = mq11xx_crtc_helper_atomic_begin,
 	.atomic_flush = drm_crtc_vblank_atomic_flush,
 	.atomic_enable = mq11xx_crtc_helper_atomic_enable,
 	.atomic_disable = mq11xx_crtc_helper_atomic_disable,
@@ -2715,12 +2887,13 @@ static int mq11xx_pipe_init(struct mq11xx_device *mq)
 	struct drm_crtc *crtc = &mq->crtc;
 	struct drm_encoder *encoder = &mq->encoder;
 	struct drm_connector *connector = &mq->connector;
+	bool palette = mq->chip->caps & MQ11XX_CAP_PALETTE_8BPP;
 	int ret;
 
 	ret = drm_universal_plane_init(dev, primary_plane, 0,
 				       &mq11xx_primary_plane_funcs,
 					mq11xx_primary_plane_formats,
-					ARRAY_SIZE(mq11xx_primary_plane_formats),
+					palette ? ARRAY_SIZE(mq11xx_primary_plane_formats) : 1,
 					mq11xx_primary_plane_format_modifiers,
 					DRM_PLANE_TYPE_PRIMARY, NULL);
 	if (ret)
@@ -2743,6 +2916,13 @@ static int mq11xx_pipe_init(struct mq11xx_device *mq)
 	if (ret)
 		return ret;
 	drm_crtc_helper_add(crtc, &mq11xx_crtc_helper_funcs);
+
+	if (palette) {
+		ret = drm_mode_crtc_set_gamma_size(crtc, MQ11XX_PALETTE_SIZE);
+		if (ret)
+			return ret;
+		drm_crtc_enable_color_mgmt(crtc, 0, false, MQ11XX_PALETTE_SIZE);
+	}
 
 	ret = drm_encoder_init(dev, encoder, &mq11xx_encoder_funcs,
 			       DRM_MODE_ENCODER_DPI, NULL);
