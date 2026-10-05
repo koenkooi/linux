@@ -16,6 +16,7 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/irq.h>
+#include <linux/of.h>
 #include <linux/syscore_ops.h>
 #include <linux/soc/pxa/cpu.h>
 
@@ -43,6 +44,7 @@ struct gpio_desc {
 	unsigned	can_wakeup	: 1;
 	unsigned	keypad_gpio	: 1;
 	unsigned	dir_inverted	: 1;
+	unsigned	mfp_configured	: 1; /* gpdr_lpm[] is valid, see pxa2xx_mfp_suspend() */
 	unsigned int	mask; /* bit mask in PWER or PKWR */
 	unsigned int	mux_mask; /* bit mask of muxed gpio bits, 0 if no mux */
 	unsigned long	config;
@@ -63,6 +65,8 @@ static int __mfp_config_gpio(unsigned gpio, unsigned long c)
 
 	if (fn > 3)
 		return -EINVAL;
+
+	gpio_desc[gpio].mfp_configured = 1;
 
 	/* alternate function and direction at run-time */
 	gafr = (uorl == 0) ? GAFR_L(bank) : GAFR_U(bank);
@@ -395,6 +399,7 @@ static unsigned long saved_pgsr[4];
 
 static int pxa2xx_mfp_suspend(void *data)
 {
+	bool dt = of_have_populated_dt();
 	int i;
 
 	/* set corresponding PGSR bit of those marked MFP_LPM_KEEP_OUTPUT */
@@ -421,6 +426,21 @@ static int pxa2xx_mfp_suspend(void *data)
 
 	/* set GPDR bits taking into account MFP_LPM_KEEP_OUTPUT */
 	for (i = 0; i <= pxa_last_gpio; i++) {
+		/*
+		 * On a devicetree boot, a pad no MFP table ever configured
+		 * is owned by the pin controller and gpiolib instead: they
+		 * set its run-time direction directly and never touch
+		 * gpdr_lpm[], which still holds whatever the bootloader left
+		 * in GPDR at boot. Leave such a pad's GPDR alone here so an
+		 * output actually driven at run time stays driven (at the
+		 * sleep level the pin controller does set via PGSR) through
+		 * sleep, instead of reverting to an unrelated boot-time value.
+		 * Legacy non-DT board files configure every pad they use
+		 * through this same MFP table, so this never applies to them.
+		 */
+		if (dt && !gpio_desc[i].mfp_configured)
+			continue;
+
 		if ((gpdr_lpm[gpio_to_bank(i)] & GPIO_bit(i)) ||
 		    ((gpio_desc[i].config & MFP_LPM_KEEP_OUTPUT) &&
 		     (saved_gpdr[gpio_to_bank(i)] & GPIO_bit(i))))
