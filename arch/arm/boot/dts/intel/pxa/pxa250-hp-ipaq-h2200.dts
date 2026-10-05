@@ -3,12 +3,12 @@
  * Device tree for the HP iPAQ h2200 handheld (h2210/h2212/h2215 are the
  * same target).
  *
- * Pin muxing, the HAMCOP companion ASIC and every peripheral it hosts
- * (SD, NAND, ADC/touchscreen, backlight, audio) are not described here yet:
- * the pin table is still applied from arch/arm/mach-pxa/h2200.c by a
- * temporary of_machine_is_compatible() initcall. This file carries only
- * what is needed for the board to be recognised and for RAM to be sized
- * correctly.
+ * Every pad is configured by the pxa2xx_mfp_config() table in
+ * arch/arm/mach-pxa/h2200.c, applied from an of_machine_is_compatible()
+ * gated initcall because the generic PXA25x DT machine has no per-board
+ * hook. HAMCOP and the buttons and joypad it hosts are described below;
+ * the NAND, SD, ADC/touchscreen, LED and 1-Wire cells are its child nodes,
+ * and their register windows and clocks come from the HAMCOP MFD driver.
  *
  * Copyright (C) 2026 Koen Kooi
  */
@@ -16,6 +16,9 @@
 /dts-v1/;
 
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/leds/common.h>
 #include "pxa25x.dtsi"
 
 / {
@@ -70,6 +73,183 @@
 		power-gpios = <&gpio 26 GPIO_ACTIVE_HIGH>;
 		add-en-gpios = <&gpio 25 GPIO_ACTIVE_LOW>;
 		buff-en-gpios = <&gpio 63 GPIO_ACTIVE_HIGH>;
+	};
+
+	/*
+	 * HAMCOP sits on CS0 (physical address 0) but is wired to the SoC's
+	 * nCS_2 signal, muxed by h2200.c. The first reg entry is the register
+	 * window, starting 0x4000 bytes into the chip; the second is the
+	 * 16 KiB on-chip SRAM at chip offset 0, which this board's CPU
+	 * resets into.
+	 *
+	 * ASIC_INT_N is PXA GPIO5, falling-edge.
+	 */
+	hamcop: companion-chip@4000 {
+		compatible = "samsung,hamcop";
+		reg = <0x00004000 0x000fc000>,
+		      <0x00000000 0x00004000>;
+
+		interrupt-parent = <&gpio>;
+		interrupts = <5 IRQ_TYPE_EDGE_FALLING>;
+
+		interrupt-controller;
+		#interrupt-cells = <2>;
+
+		gpio-controller;
+		#gpio-cells = <2>;
+
+		nand-controller {
+			compatible = "samsung,hamcop-nand";
+		};
+
+		mmc {
+			compatible = "samsung,hamcop-sdi";
+		};
+
+		led-controller {
+			compatible = "samsung,hamcop-leds";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			/*
+			 * The amber LED also shows the charge state in hardware
+			 * and blinks by itself in the cradle, so a blinking
+			 * trigger on it could not be told apart from that.
+			 */
+			led@0 {
+				reg = <0>;
+				color = <LED_COLOR_ID_AMBER>;
+				function = LED_FUNCTION_POWER;
+				linux,default-trigger = "default-on";
+			};
+
+			led@1 {
+				reg = <1>;
+				color = <LED_COLOR_ID_GREEN>;
+				function = LED_FUNCTION_INDICATOR;
+				linux,default-trigger = "disk-activity";
+			};
+
+			led@2 {
+				reg = <2>;
+				color = <LED_COLOR_ID_BLUE>;
+				function = LED_FUNCTION_BLUETOOTH;
+				linux,default-trigger = "heartbeat";
+			};
+		};
+
+		/*
+		 * The io-channel cell is an index into the driver's channel
+		 * array: x=0, y=1, z1=2, z2=3, ain0=4, ain1=5, ain2=6.
+		 */
+		adc: adc {
+			compatible = "samsung,hamcop-adc";
+			#io-channel-cells = <1>;
+		};
+
+		/*
+		 * The channel order is load-bearing: x, y, z1, z2 must match
+		 * the packed sample layout the ADC driver pushes. The ADC is
+		 * 10-bit, hence the 1024 ranges.
+		 */
+		touchscreen {
+			compatible = "resistive-adc-touch";
+			io-channels = <&adc 0>, <&adc 1>, <&adc 2>, <&adc 3>;
+			io-channel-names = "x", "y", "z1", "z2";
+			touchscreen-x-plate-ohms = <400>;
+			touchscreen-size-x = <1024>;
+			touchscreen-size-y = <1024>;
+		};
+
+		/*
+		 * The properties restate the values compiled into the MFD driver's
+		 * platform data for this cell. The register file of HAMCOP's 1-Wire
+		 * master is 4-byte strided, hence a bus shift of 2. The interrupt
+		 * polarity is left at the DS1WM power-on default, as HAMCOP exposes
+		 * no trigger type register to check it against.
+		 */
+		onewire {
+			compatible = "samsung,hamcop-onewire", "dallas,ds1wm";
+			dallas,bus-shift = <2>;
+			dallas,reset-recover-delay-ms = <1>;
+		};
+	};
+
+	/*
+	 * Buttons and joypad, all active low. All but the power key are on
+	 * HAMCOP's GPIO A/B banks. GPIO 7 is the battery fault input, not a
+	 * button, hence the gap. The power button is the board's one wakeup
+	 * source.
+	 */
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		/*
+		 * The power switch is also wired to PXA GPIO13. The HAMCOP
+		 * RSTBUTTON source (offset 0) for the same switch never raises an
+		 * interrupt on real hardware while the other HAMCOP buttons do,
+		 * so use the PXA GPIO.
+		 */
+		key-power {
+			label = "Power";
+			linux,code = <KEY_POWER>;
+			gpios = <&gpio 13 GPIO_ACTIVE_LOW>;
+			wakeup-source;
+		};
+
+		key-calendar {
+			label = "Calendar";
+			linux,code = <KEY_CALENDAR>;
+			gpios = <&hamcop 1 GPIO_ACTIVE_LOW>;
+		};
+
+		key-contacts {
+			label = "Contacts";
+			linux,code = <KEY_ADDRESSBOOK>;
+			gpios = <&hamcop 2 GPIO_ACTIVE_LOW>;
+		};
+
+		key-mail {
+			label = "Mail";
+			linux,code = <KEY_MAIL>;
+			gpios = <&hamcop 3 GPIO_ACTIVE_LOW>;
+		};
+
+		key-home {
+			label = "Home";
+			linux,code = <KEY_HOMEPAGE>;
+			gpios = <&hamcop 4 GPIO_ACTIVE_LOW>;
+		};
+
+		key-joypad-left {
+			label = "Joypad Left";
+			linux,code = <KEY_LEFT>;
+			gpios = <&hamcop 5 GPIO_ACTIVE_LOW>;
+		};
+
+		key-joypad-right {
+			label = "Joypad Right";
+			linux,code = <KEY_RIGHT>;
+			gpios = <&hamcop 6 GPIO_ACTIVE_LOW>;
+		};
+
+		key-joypad-down {
+			label = "Joypad Down";
+			linux,code = <KEY_DOWN>;
+			gpios = <&hamcop 8 GPIO_ACTIVE_LOW>;
+		};
+
+		key-joypad-up {
+			label = "Joypad Up";
+			linux,code = <KEY_UP>;
+			gpios = <&hamcop 9 GPIO_ACTIVE_LOW>;
+		};
+
+		key-joypad-select {
+			label = "Joypad Select";
+			linux,code = <KEY_ENTER>;
+			gpios = <&hamcop 10 GPIO_ACTIVE_LOW>;
+		};
 	};
 
 	/*
