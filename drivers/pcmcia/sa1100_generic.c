@@ -65,8 +65,17 @@ static int sa11x0_cf_hw_init(struct soc_pcmcia_socket *skt)
 		return PTR_ERR(skt->gpio_bus_enable);
 
 	skt->vcc.reg = devm_regulator_get_optional(dev, "vcc");
-	if (IS_ERR(skt->vcc.reg))
-		return PTR_ERR(skt->vcc.reg);
+	if (IS_ERR(skt->vcc.reg)) {
+		/*
+		 * devm_regulator_get_optional() returns -ENODEV, never NULL,
+		 * for a supply that the board does not describe. Treat that as
+		 * "no Vcc control", so that the fallback below is reachable
+		 * for a socket without a per-card switch.
+		 */
+		if (PTR_ERR(skt->vcc.reg) != -ENODEV)
+			return PTR_ERR(skt->vcc.reg);
+		skt->vcc.reg = NULL;
+	}
 
 	if (!skt->vcc.reg)
 		dev_warn(dev,
