@@ -74,6 +74,7 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/err.h>
+#include <linux/genalloc.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
@@ -87,6 +88,7 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/platform_data/h2200-sram.h>
 #include <linux/regulator/consumer.h>
 #include <linux/scatterlist.h>
 #include <linux/spinlock.h>
@@ -333,6 +335,22 @@ struct hamcop_sdi_host {
 	unsigned long		clk_rate;
 	unsigned long		real_rate;
 	u8			prescaler;
+
+	/*
+	 * Bounce buffer carved out of HAMCOP's on-chip SRAM, the only memory
+	 * the chip's DMA engine can address. NULL means DMA is unavailable
+	 * and PIO is used, as on any board whose SRAM has no pool producer
+	 * and after any allocation failure.
+	 *
+	 * sram_buf is __iomem although genalloc returns a plain pointer: it
+	 * is an ioremap() cookie for a device aperture, so it may only be
+	 * touched with memcpy_toio() and memcpy_fromio(). sram_dma is the
+	 * bus address the DMA engine uses, with no mapping behind it and no
+	 * cache to sync.
+	 */
+	void __iomem		*sram_buf;
+	dma_addr_t		sram_dma;
+	size_t			sram_size;
 
 	/*
 	 * Shadow copies of SDIIMSK1/SDIIMSK2: reads cost as much as writes
@@ -1426,6 +1444,66 @@ static const struct mmc_host_ops hamcop_sdi_ops = {
  * ---------------------------------------------------------------------
  */
 
+/*
+ * Claim a DMA bounce buffer out of HAMCOP's SRAM, if a producer has
+ * published one. Everything here is best-effort: no pool, or no room in
+ * it, just means DMA is unavailable and PIO is used, so none of these
+ * paths return an error. The SRAM is shared with other potential DMA
+ * users, which is why this suballocates instead of taking the whole
+ * window.
+ */
+static void hamcop_sdi_claim_sram(struct hamcop_sdi_host *host)
+{
+	struct gen_pool *pool = h2200_sram_pool();
+	size_t avail;
+
+	if (!pool) {
+		dev_dbg(host->dev, "no SRAM pool, using PIO\n");
+		return;
+	}
+
+	/*
+	 * Take what is free rather than a fixed size: a bigger bounce buffer
+	 * means fewer, larger requests. Nothing else allocates from the pool
+	 * at the moment; a second user would find it exhausted and have to
+	 * fall back to PIO. Cap at max_req_size: more than one whole request
+	 * can ever occupy is dead space.
+	 */
+	avail = min_t(size_t, gen_pool_avail(pool), host->mmc->max_req_size);
+	avail = rounddown(avail, 512);
+	if (!avail) {
+		dev_dbg(host->dev, "SRAM pool exhausted, using PIO\n");
+		return;
+	}
+
+	/*
+	 * genalloc is typed void * since most SRAM consumers treat their
+	 * pool as ordinary memory, but this is an ioremap()ped aperture that
+	 * is only touched with the io accessors.
+	 */
+	host->sram_buf = (void __iomem __force *)
+		gen_pool_dma_alloc(pool, avail, &host->sram_dma);
+	if (!host->sram_buf) {
+		dev_dbg(host->dev, "SRAM allocation failed, using PIO\n");
+		return;
+	}
+
+	host->sram_size = avail;
+}
+
+static void hamcop_sdi_release_sram(struct hamcop_sdi_host *host)
+{
+	struct gen_pool *pool = h2200_sram_pool();
+
+	if (!host->sram_buf || !pool)
+		return;
+
+	gen_pool_free(pool, (unsigned long __force)host->sram_buf,
+		      host->sram_size);
+	host->sram_buf = NULL;
+	host->sram_size = 0;
+}
+
 static int hamcop_sdi_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1559,15 +1637,25 @@ static int hamcop_sdi_probe(struct platform_device *pdev)
 	mmc->max_seg_size = mmc->max_req_size;
 	mmc->max_segs = 128;
 
+	/*
+	 * After the limits above: the claim sizes itself against
+	 * max_req_size.
+	 */
+	hamcop_sdi_claim_sram(host);
+
 	ret = devm_request_irq(dev, host->irq, hamcop_sdi_irq, 0, "hamcop-sdi", host);
-	if (ret)
+	if (ret) {
+		hamcop_sdi_release_sram(host);
 		return dev_err_probe(dev, ret, "failed to request irq\n");
+	}
 
 	INIT_DELAYED_WORK(&host->scan_retry_work, hamcop_sdi_scan_retry_work);
 
 	ret = mmc_add_host(mmc);
-	if (ret)
+	if (ret) {
+		hamcop_sdi_release_sram(host);
 		return dev_err_probe(dev, ret, "failed to add mmc host\n");
+	}
 	schedule_delayed_work(&host->scan_retry_work, msecs_to_jiffies(6000));
 
 	platform_set_drvdata(pdev, host);
@@ -1590,6 +1678,8 @@ static void hamcop_sdi_remove(struct platform_device *pdev)
 	 */
 	timer_delete_sync(&host->req_timer);
 	tasklet_kill(&host->pio_tasklet);
+	/* After both, so nothing can still be using the buffer. */
+	hamcop_sdi_release_sram(host);
 }
 
 static const struct of_device_id hamcop_sdi_of_match[] = {
