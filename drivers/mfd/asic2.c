@@ -72,7 +72,10 @@
  * Copyright (C) 2026 Koen Kooi
  */
 
+#include <dt-bindings/clock/htc,asic2.h>
+
 #include <linux/bitops.h>
+#include <linux/build_bug.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/clkdev.h>
@@ -1589,25 +1592,19 @@ static const struct clk_ops asic2_audio_clk_ops = {
 };
 
 /*
- * Register the selector as a single clock, index 0, through a clock
- * provider. It is optional: a board without an audio consumer never looks
- * the phandle up, so registering it on h39xx too is harmless.
+ * The selector's clk_hw is registered here, but it is not the clock provider
+ * itself: asic2_clk_provider_register() publishes it together with every
+ * asic2_clk_defs[] gate in one provider. It is optional: a board without an
+ * audio consumer never looks the phandle up, so registering it on h39xx too
+ * is harmless.
  */
 static int asic2_audio_clk_register(struct asic2 *asic)
 {
-	struct clk_hw_onecell_data *onecell;
 	struct clk_init_data init = {
 		.name = "asic2-audio",
 		.ops = &asic2_audio_clk_ops,
 	};
 	int ret;
-
-	if (!asic->dev->of_node)
-		return 0;
-
-	onecell = devm_kzalloc(asic->dev, struct_size(onecell, hws, 1), GFP_KERNEL);
-	if (!onecell)
-		return -ENOMEM;
 
 	asic->audio_clk.asic = asic;
 	asic->audio_clk.hw.init = &init;
@@ -1632,8 +1629,53 @@ static int asic2_audio_clk_register(struct asic2 *asic)
 	if (IS_ERR(asic->audio_clk.ex2_clk))
 		return PTR_ERR(asic->audio_clk.ex2_clk);
 
-	onecell->num = 1;
-	onecell->hws[0] = &asic->audio_clk.hw;
+	return 0;
+}
+
+/*
+ * The ASIC2_CLK_* indices are devicetree ABI. Tie each to its gate, so that
+ * reordering ASIC2_GATE_* cannot silently renumber them.
+ */
+static_assert(ASIC2_GATE_ADC + 1 == ASIC2_CLK_ADC);
+static_assert(ASIC2_GATE_SPI + 1 == ASIC2_CLK_SPI);
+static_assert(ASIC2_GATE_EX1 + 1 == ASIC2_CLK_EX1);
+static_assert(ASIC2_GATE_OWM + 1 == ASIC2_CLK_OWM);
+static_assert(ASIC2_GATE_PWM + 1 == ASIC2_CLK_PWM);
+static_assert(ASIC2_GATE_UART_0 + 1 == ASIC2_CLK_UART_0);
+static_assert(ASIC2_GATE_UART_1 + 1 == ASIC2_CLK_UART_1);
+static_assert(ASIC2_GATE_SLOW_UART_0 + 1 == ASIC2_CLK_SLOW_UART_0);
+static_assert(ASIC2_GATE_SLOW_UART_1 + 1 == ASIC2_CLK_SLOW_UART_1);
+static_assert(ASIC2_GATE_EX2 + 1 == ASIC2_CLK_EX2);
+static_assert(ASIC2_GATE_SD + 1 == ASIC2_CLK_SD);
+static_assert(ASIC2_CLK_SD == ASIC2_NR_CLK_GATES);
+
+/*
+ * One "#clock-cells = <1>" provider for every clk_hw this driver owns, the
+ * ASIC2_CLK_* indices of include/dt-bindings/clock/htc,asic2.h. The audio
+ * selector keeps index 0 so that existing "clocks = <&asic2 0>" phandles
+ * resolve unchanged, and every gate follows at its ASIC2_GATE_* value plus
+ * one. The clkdev aliases of asic2_clk_defs[] stay registered as well, for
+ * consumers whose board gives them no devicetree node or clocks property.
+ * A board with no consumer for an index simply never looks it up.
+ */
+static int asic2_clk_provider_register(struct asic2 *asic)
+{
+	struct clk_hw_onecell_data *onecell;
+	unsigned int i;
+
+	if (!asic->dev->of_node)
+		return 0;
+
+	onecell = devm_kzalloc(asic->dev,
+			       struct_size(onecell, hws, ASIC2_NR_CLK_GATES + 1),
+			       GFP_KERNEL);
+	if (!onecell)
+		return -ENOMEM;
+
+	onecell->num = ASIC2_NR_CLK_GATES + 1;
+	onecell->hws[ASIC2_CLK_AUDIO] = &asic->audio_clk.hw;
+	for (i = 0; i < ASIC2_NR_CLK_GATES; i++)
+		onecell->hws[i + 1] = &asic->gates[i].hw;
 
 	return devm_of_clk_add_hw_provider(asic->dev, of_clk_hw_onecell_get, onecell);
 }
@@ -2156,6 +2198,10 @@ static int asic2_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret,
 				     "failed to register audio clock selector\n");
+
+	ret = asic2_clk_provider_register(asic);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to register clock provider\n");
 
 	/*
 	 * Per-probe pointer, not a compile-time initializer -- see
