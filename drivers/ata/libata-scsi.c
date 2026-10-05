@@ -2323,6 +2323,25 @@ static unsigned int ata_dsm_trim_pages(struct ata_device *dev)
 }
 
 /**
+ *	ata_dev_can_trim - Can this device actually execute a TRIM?
+ *	@dev: Device to check.
+ *
+ *	TRIM reaches the device as a DSM command issued by
+ *	ata_scsi_write_same_xlat(), which refuses outright unless a DMA mode
+ *	is active. Advertising TRIM without checking the same condition
+ *	makes the block layer believe discard works on hosts that can never
+ *	perform it -- notably pata_pcmcia, which is PIO-only by construction,
+ *	where an fstrim then turns every free extent into a WRITE SAME(16)
+ *	that is rejected with "invalid opcode". Keep what we advertise and
+ *	what we can execute in agreement.
+ */
+static bool ata_dev_can_trim(struct ata_device *dev)
+{
+	return ata_id_has_trim(dev->id) && !(dev->quirks & ATA_QUIRK_NOTRIM) &&
+	       ata_dma_enabled(dev);
+}
+
+/**
  *	ata_scsiop_inq_b0 - Simulate INQUIRY VPD page B0, Block Limits
  *	@dev: Target device.
  *	@cmd: SCSI command of interest.
@@ -2360,7 +2379,7 @@ static unsigned int ata_scsiop_inq_b0(struct ata_device *dev,
 	 * that we support some form of unmap - in thise case via WRITE SAME
 	 * with the unmap bit set.
 	 */
-	if (ata_id_has_trim(dev->id)) {
+	if (ata_dev_can_trim(dev)) {
 		unsigned int max_pages = ata_dsm_trim_pages(dev);
 		u64 max_blocks = max_pages * ATA_MAX_TRIM_RNUM * (u64)U16_MAX;
 
@@ -2979,7 +2998,7 @@ static unsigned int ata_scsiop_read_cap(struct ata_device *dev,
 	rbuf[14] = (lowest_aligned >> 8) & 0x3f;
 	rbuf[15] = lowest_aligned;
 
-	if (ata_id_has_trim(dev->id) && !(dev->quirks & ATA_QUIRK_NOTRIM)) {
+	if (ata_dev_can_trim(dev)) {
 		rbuf[14] |= 0x80; /* LBPME */
 
 		if (ata_id_has_zero_after_trim(dev->id) &&
@@ -3669,8 +3688,7 @@ static unsigned int ata_scsi_write_same_xlat(struct ata_queued_cmd *qc)
 	}
 	scsi_16_lba_len(cdb, &block, &n_block);
 
-	if (!unmap || (dev->quirks & ATA_QUIRK_NOTRIM) ||
-	    !ata_id_has_trim(dev->id)) {
+	if (!unmap || !ata_dev_can_trim(dev)) {
 		fp = 1;
 		bp = 3;
 		goto invalid_fld;
