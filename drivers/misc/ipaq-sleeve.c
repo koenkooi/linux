@@ -20,7 +20,9 @@
  *    driver core requires.
  *
  *  - No /proc/bus/sleeve files and no private debug macro; dynamic debug
- *    covers the latter.
+ *    covers the latter. The one sysfs attribute of the bus is the
+ *    bus-level identity_override, see
+ *    Documentation/ABI/testing/sysfs-bus-ipaq-sleeve.
  *
  *  - msleep() instead of mdelay() for the 250 ms EEPROM settle, as it runs
  *    from a work item, and cancel_delayed_work_sync() on this driver's own
@@ -56,8 +58,11 @@
 #include <linux/interrupt.h>
 #include <linux/ipaq-sleeve.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
+#include <linux/string.h>
+#include <linux/sysfs.h>
 #include <linux/workqueue.h>
 
 /* Set once by ipaq_sleeve_register(), cleared by ipaq_sleeve_unregister().
@@ -66,8 +71,11 @@
  * from the ipaq_sleeve_write_egpio()/read_egpio()/egpio_irq() helpers,
  * which is safe because a backend is expected to unregister only after
  * quiescing its own presence IRQ and calling cancel_delayed_work_sync()
- * (done for it, below, inside ipaq_sleeve_unregister()) -- the lock exists
- * to make double-registration safe, not to serialise every access.
+ * (done for it, below, inside ipaq_sleeve_unregister()) -- the ops lock
+ * exists to make double-registration safe, not to serialise every access. Both
+ * registration and unregistration also hold ipaq_sleeve_lock, because the
+ * identity_override store path re-enumerates under that lock alone and is
+ * not covered by the cancel_delayed_work_sync().
  */
 static DEFINE_MUTEX(ipaq_sleeve_ops_lock);
 static struct ipaq_sleeve_ops *sleeve_ops;
@@ -87,64 +95,117 @@ static BLOCKING_NOTIFIER_HEAD(ipaq_sleeve_notifier_list);
 static DEFINE_MUTEX(ipaq_sleeve_lock);
 
 /*
- * Feature lookup table: the single authority for how many CF or PC Card
- * slots a sleeve has, and what else it carries. It is keyed on the IDs
- * read from the sleeve, so a sleeve with no bound driver at all, for example
- * an unrecognised jacket or one whose only driver is unrelated to
- * CF/PCMCIA, still gets an accurate slot count.
+ * Operator-forced identity (identity_override, below). A zero vendor means
+ * that no override is in effect: SLEEVE_NO_VENDOR is never a forceable
+ * value, since it is exactly the ID that ipaq_sleeve_insert() refuses to
+ * treat as an identity. Both are read and written only under
+ * ipaq_sleeve_lock, which ipaq_sleeve_insert() also runs under, so an
+ * insertion never sees a half-updated pair.
+ */
+static unsigned short ipaq_sleeve_forced_vendor;
+static unsigned short ipaq_sleeve_forced_device;
+
+/*
+ * Every sleeve type the bus knows, keyed by the vendor:device pair its ID
+ * EEPROM carries. It is the single authority for how many CF or PC Card
+ * slots a sleeve has and what else it carries, and for the names that an
+ * operator may force through identity_override. It is keyed on the IDs read
+ * from the sleeve, so a sleeve with no bound driver at all, for example an
+ * unrecognised jacket or one whose only driver is unrelated to CF/PCMCIA,
+ * still gets an accurate slot count.
+ *
+ * The names must be unique, must contain neither ':' nor whitespace, and
+ * must never be "none": ipaq_sleeve_parse_identity() relies on that to tell
+ * a name from a raw VVVV:DDDD pair and from the token that clears the
+ * override.
  *
  * The GPRS pack and the Symbol WLAN scanner declare no CF or PCMCIA bit, so
- * they get no socket. An all-ones ID is a blank ID EEPROM, and such a
- * jacket gets one PC Card socket. An all-zeros ID is left out of
- * the table, see ipaq_sleeve_insert() for why that case has to be loud.
+ * they get no socket. An all-ones ID is a blank ID EEPROM and would get one
+ * PC Card socket, but ipaq_sleeve_insert() rejects it on the byte 0 header
+ * check, so that row is reachable only through identity_override. An
+ * all-zeros ID is left out of the table, see ipaq_sleeve_insert()
+ * for why that case has to be loud. The Mercury BackPAQ has no row, because
+ * its features are not known; it can still be forced by its raw ID.
  */
-struct ipaq_sleeve_feature {
+struct ipaq_sleeve_type {
+	const char *name;
 	unsigned short vendor, device;
 	unsigned int features;
 };
 
-static const struct ipaq_sleeve_feature ipaq_sleeve_feature_table[] = {
-	{ COMPAQ_VENDOR_ID, SINGLE_COMPACTFLASH_SLEEVE, SLEEVE_HAS_CF(1) },
-	{ COMPAQ_VENDOR_ID, SINGLE_CF_PLUS_SLEEVE,
+static const struct ipaq_sleeve_type ipaq_sleeve_types[] = {
+	{ "cf", COMPAQ_VENDOR_ID, SINGLE_COMPACTFLASH_SLEEVE,
+	  SLEEVE_HAS_CF(1) },
+	{ "cf_plus", COMPAQ_VENDOR_ID, SINGLE_CF_PLUS_SLEEVE,
 	  SLEEVE_HAS_CF(1) | SLEEVE_HAS_REMOVABLE_BATTERY | SLEEVE_HAS_EBAT },
-	{ COMPAQ_VENDOR_ID, SINGLE_PCMCIA_SLEEVE,
+	{ "pcmcia", COMPAQ_VENDOR_ID, SINGLE_PCMCIA_SLEEVE,
 	  SLEEVE_HAS_PCMCIA(1) | SLEEVE_HAS_FIXED_BATTERY },
-	{ COMPAQ_VENDOR_ID, SINGLE_PCMCIA_PLUS_SLEEVE,
+	{ "pcmcia_plus", COMPAQ_VENDOR_ID, SINGLE_PCMCIA_PLUS_SLEEVE,
 	  SLEEVE_HAS_PCMCIA(1) | SLEEVE_HAS_REMOVABLE_BATTERY | SLEEVE_HAS_EBAT },
-	{ COMPAQ_VENDOR_ID, DUAL_PCMCIA_SLEEVE,
+	{ "dual_pcmcia", COMPAQ_VENDOR_ID, DUAL_PCMCIA_SLEEVE,
 	  SLEEVE_HAS_PCMCIA(2) | SLEEVE_HAS_FIXED_BATTERY },
-	{ COMPAQ_VENDOR_ID, BLUETOOTH_EXPANSION_PACK,
+	{ "bluetooth_cf", COMPAQ_VENDOR_ID, BLUETOOTH_EXPANSION_PACK,
 	  SLEEVE_HAS_CF(1) | SLEEVE_HAS_BLUETOOTH },
-	{ COMPAQ_VENDOR_ID, GPRS_EXPANSION_PACK,
+	{ "gprs", COMPAQ_VENDOR_ID, GPRS_EXPANSION_PACK,
 	  SLEEVE_HAS_FIXED_BATTERY | SLEEVE_HAS_GPRS },
-	{ NEXIAN_VENDOR, NEXIAN_DUAL_CF_SLEEVE,
+	{ "nexian_dual_cf", NEXIAN_VENDOR, NEXIAN_DUAL_CF_SLEEVE,
 	  SLEEVE_HAS_CF(2) | SLEEVE_HAS_REMOVABLE_BATTERY },
-	{ NEXIAN_VENDOR, NEXIAN_CAMERA_CF_SLEEVE,
+	{ "nexian_camera_cf", NEXIAN_VENDOR, NEXIAN_CAMERA_CF_SLEEVE,
 	  SLEEVE_HAS_CF(1) | SLEEVE_HAS_CAMERA },
-	{ SYMBOL_VENDOR, SYMBOL_WLAN_SCANNER_SLEEVE,
+	{ "symbol_wlan_scanner", SYMBOL_VENDOR, SYMBOL_WLAN_SCANNER_SLEEVE,
 	  SLEEVE_HAS_BARCODE_READER | SLEEVE_HAS_802_11B | SLEEVE_HAS_FIXED_BATTERY },
-	{ PITECH_VENDOR, MEMPLUG_SLEEVE, SLEEVE_HAS_CF(2) },
-	{ PITECH_VENDOR, MEMPLUG_SLEEVE3, SLEEVE_HAS_CF(2) },
-	{ TALON_VENDOR, NAVMAN_GPS_SLEEVE, SLEEVE_HAS_CF(1) | SLEEVE_HAS_GPS },
-	{ TALON_VENDOR, NAVMAN_GPS_SLEEVE_ALT, SLEEVE_HAS_CF(1) | SLEEVE_HAS_GPS },
-	{ 0xffff, 0xffff, SLEEVE_HAS_PCMCIA(1) | SLEEVE_HAS_FIXED_BATTERY },
+	{ "pitech_memplug", PITECH_VENDOR, MEMPLUG_SLEEVE,
+	  SLEEVE_HAS_CF(2) },
+	{ "pitech_memplug3", PITECH_VENDOR, MEMPLUG_SLEEVE3,
+	  SLEEVE_HAS_CF(2) },
+	{ "navman_gps_cf", TALON_VENDOR, NAVMAN_GPS_SLEEVE,
+	  SLEEVE_HAS_CF(1) | SLEEVE_HAS_GPS },
+	{ "navman_gps_cf_alt", TALON_VENDOR, NAVMAN_GPS_SLEEVE_ALT,
+	  SLEEVE_HAS_CF(1) | SLEEVE_HAS_GPS },
+	{ "pcmcia_blank_eeprom", 0xffff, 0xffff,
+	  SLEEVE_HAS_PCMCIA(1) | SLEEVE_HAS_FIXED_BATTERY },
 };
+
+static const struct ipaq_sleeve_type *
+ipaq_sleeve_type_by_id(unsigned short vendor, unsigned short device)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(ipaq_sleeve_types); i++) {
+		const struct ipaq_sleeve_type *t = &ipaq_sleeve_types[i];
+
+		if (t->vendor == vendor && t->device == device)
+			return t;
+	}
+
+	return NULL;
+}
+
+/* @buf is raw sysfs input, so match with sysfs_streq() to ignore a trailing
+ * newline.
+ */
+static const struct ipaq_sleeve_type *ipaq_sleeve_type_by_name(const char *buf)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(ipaq_sleeve_types); i++) {
+		if (sysfs_streq(buf, ipaq_sleeve_types[i].name))
+			return &ipaq_sleeve_types[i];
+	}
+
+	return NULL;
+}
 
 unsigned int ipaq_sleeve_features(const struct ipaq_sleeve_device *sdev)
 {
-	unsigned int i;
+	const struct ipaq_sleeve_type *t;
 
 	if (!sdev->id_valid)
 		return 0;
 
-	for (i = 0; i < ARRAY_SIZE(ipaq_sleeve_feature_table); i++) {
-		const struct ipaq_sleeve_feature *f = &ipaq_sleeve_feature_table[i];
+	t = ipaq_sleeve_type_by_id(sdev->vendor, sdev->device);
 
-		if (f->vendor == sdev->vendor && f->device == sdev->device)
-			return f->features;
-	}
-
-	return 0;
+	return t ? t->features : 0;
 }
 EXPORT_SYMBOL_GPL(ipaq_sleeve_features);
 
@@ -279,12 +340,13 @@ static void ipaq_sleeve_eject(void)
 
 /*
  * ipaq_sleeve_insert: power the sleeve's NVRAM rail, wait for it to
- * settle, read its ID EEPROM, register it on the bus so any matching
+ * settle, read its ID EEPROM, apply the operator's identity_override if
+ * one is set, register the sleeve on the bus so any matching
  * ipaq_sleeve_driver can bind, then power the jacket's main rail and
- * notify slot consumers (e.g. the CF socket). EEPROM failure leaves
- * the sleeve explicitly unidentified: ID-matched drivers cannot bind,
- * but a board-specific slot consumer may still use physical detect
- * lines. Runs from ipaq_sleeve_task_handler(), i.e. process context,
+ * notify slot consumers (e.g. the CF socket). EEPROM failure with no
+ * override leaves the sleeve explicitly unidentified: ID-matched drivers
+ * cannot bind, but a board-specific slot consumer may still use physical
+ * detect lines. Runs from ipaq_sleeve_task_handler(), i.e. process context,
  * never from the presence IRQ itself.
  *
  * Order matters: NVRAM rail -> settle -> EEPROM read
@@ -298,18 +360,21 @@ static void ipaq_sleeve_eject(void)
 static void ipaq_sleeve_insert(void)
 {
 	struct ipaq_sleeve_device *sdev;
-	unsigned short vendor = 0, device = 0;
+	unsigned short eeprom_vendor = 0, eeprom_device = 0;
 	unsigned char eeprom[10] = { 0 };
+	unsigned short vendor, device;
 	bool id_valid = false;
 	int ret;
 
 	/*
-	 * A stale active_sleeve means the last remove was missed, most likely
-	 * contact bounce re-triggering the task before the unregister of a
-	 * real removal ran. Eject it before powering the rail, not after:
-	 * ejecting powers the rail off again, and a second power-on without
-	 * a settle would make the EEPROM read below see a jacket that has
-	 * been powered for 0 ms instead of 250.
+	 * No current caller gets here with active_sleeve set:
+	 * ipaq_sleeve_reenumerate() ejects right before calling in, and
+	 * ipaq_sleeve_task_handler() does not call in while a sleeve is
+	 * registered. If a future caller does, eject before powering the rail
+	 * below, not after, so there is exactly one rail-on and it always gets
+	 * the full settle; ejecting after would power-cycle the rail and read
+	 * the EEPROM unsettled. Kept as a defensive invariant check rather
+	 * than deleted.
 	 */
 	if (active_sleeve) {
 		pr_err("ipaq-sleeve: insert without a matching remove, ejecting stale sleeve\n");
@@ -334,23 +399,43 @@ static void ipaq_sleeve_insert(void)
 	 */
 	ret = sleeve_ops->spi_read(sleeve_dev, 0, eeprom, sizeof(eeprom));
 	if (ret) {
-		pr_err("ipaq-sleeve: ID EEPROM read failed: %d; continuing without sleeve identity\n",
-		       ret);
+		pr_err("ipaq-sleeve: ID EEPROM read failed: %d\n", ret);
 	} else if (eeprom[0] != 0xaa) {
-		pr_err("ipaq-sleeve: ID EEPROM byte 0 is 0x%02x, expected 0xaa: bus dead or mis-clocked, or no ID EEPROM on this jacket; continuing without sleeve identity\n",
+		pr_err("ipaq-sleeve: ID EEPROM byte 0 is 0x%02x, expected 0xaa: bus dead or mis-clocked, or no ID EEPROM on this jacket\n",
 		       eeprom[0]);
 	} else {
-		vendor = eeprom[6] | (eeprom[7] << 8);
-		device = eeprom[8] | (eeprom[9] << 8);
+		eeprom_vendor = eeprom[6] | (eeprom[7] << 8);
+		eeprom_device = eeprom[8] | (eeprom[9] << 8);
 
-		if (!vendor || !device) {
-			pr_err("ipaq-sleeve: ID EEPROM returned invalid jacket %04x:%04x; continuing without sleeve identity\n",
-			       vendor, device);
-			vendor = 0;
-			device = 0;
-		} else {
+		if (!eeprom_vendor || !eeprom_device)
+			pr_err("ipaq-sleeve: ID EEPROM returned invalid jacket %04x:%04x\n",
+			       eeprom_vendor, eeprom_device);
+		else
 			id_valid = true;
-		}
+	}
+
+	vendor = id_valid ? eeprom_vendor : SLEEVE_NO_VENDOR;
+	device = id_valid ? eeprom_device : SLEEVE_NO_DEVICE;
+
+	/*
+	 * Applied over a good EEPROM as readily as over a dead one, so that
+	 * one jacket can be made to present as another. The warning names
+	 * both the forced identity and what the EEPROM returned.
+	 */
+	if (ipaq_sleeve_forced_vendor) {
+		const struct ipaq_sleeve_type *t =
+			ipaq_sleeve_type_by_id(ipaq_sleeve_forced_vendor,
+					       ipaq_sleeve_forced_device);
+
+		pr_warn("ipaq-sleeve: identity forced to %s (%04x:%04x) by identity_override; ID EEPROM %s %04x:%04x\n",
+			t ? t->name : "unnamed type",
+			ipaq_sleeve_forced_vendor, ipaq_sleeve_forced_device,
+			ret ? "read failed, returned" : "read",
+			eeprom_vendor, eeprom_device);
+
+		vendor = ipaq_sleeve_forced_vendor;
+		device = ipaq_sleeve_forced_device;
+		id_valid = true;
 	}
 
 	sdev = kzalloc_obj(*sdev, GFP_KERNEL);
@@ -380,11 +465,16 @@ static void ipaq_sleeve_insert(void)
 
 	active_sleeve = sdev;
 
-	if (id_valid)
-		pr_debug("ipaq-sleeve: jacket %04x:%04x, features 0x%08x\n",
-			 vendor, device, ipaq_sleeve_features(sdev));
-	else
-		pr_info("ipaq-sleeve: unidentified jacket present\n");
+	if (id_valid) {
+		const struct ipaq_sleeve_type *t =
+			ipaq_sleeve_type_by_id(vendor, device);
+
+		pr_debug("ipaq-sleeve: jacket %04x:%04x (%s), features 0x%08x\n",
+			 vendor, device, t ? t->name : "unknown type",
+			 ipaq_sleeve_features(sdev));
+	} else {
+		pr_info("ipaq-sleeve: unidentified jacket present; write a type to /sys/bus/ipaq-sleeve/identity_override to force one\n");
+	}
 
 	/*
 	 * Jacket main rail. It is switched on here, once, after
@@ -468,6 +558,205 @@ static int ipaq_sleeve_bus_resume(struct device *dev)
 	return 0;
 }
 
+/*
+ * A software re-plug: tear down whatever is enumerated, then enumerate
+ * whatever the detect line says is on the connector now. This is how a
+ * changed identity_override reaches every consumer at once, because the bus
+ * match, ipaq_sleeve_features(), dev_name() and the slot notifier all take
+ * their identity from ipaq_sleeve_insert().
+ *
+ * Caller holds ipaq_sleeve_lock.
+ */
+static void ipaq_sleeve_reenumerate(void)
+{
+	int opt_det = 0;
+
+	if (!sleeve_ops)
+		return;
+
+	ipaq_sleeve_eject();
+
+	sleeve_ops->get_option_detect(sleeve_dev, &opt_det);
+	if (opt_det)
+		ipaq_sleeve_insert();
+}
+
+/*
+ * Parse an identity_override write: "none", one of the names in
+ * ipaq_sleeve_types[], or a raw "VVVV:DDDD" hexadecimal pair, which reaches
+ * IDs that have no row yet. No name contains ':', so trying the names first
+ * is unambiguous.
+ *
+ * Both halves must be non-zero: zero is the "no override" sentinel and the
+ * value that ipaq_sleeve_insert() refuses to accept as an identity.
+ */
+static int ipaq_sleeve_parse_identity(const char *buf, unsigned short *vendor,
+				      unsigned short *device)
+{
+	const struct ipaq_sleeve_type *t;
+	unsigned short v, d;
+	char trail;
+	int n;
+
+	if (sysfs_streq(buf, "none")) {
+		*vendor = SLEEVE_NO_VENDOR;
+		*device = SLEEVE_NO_DEVICE;
+		return 0;
+	}
+
+	t = ipaq_sleeve_type_by_name(buf);
+	if (t) {
+		*vendor = t->vendor;
+		*device = t->device;
+		return 0;
+	}
+
+	n = sscanf(buf, "%4hx:%4hx%c", &v, &d, &trail);
+	if (n < 2 || (n > 2 && trail != '\n'))
+		return -EINVAL;
+	if (!v || !d)
+		return -EINVAL;
+
+	*vendor = v;
+	*device = d;
+
+	return 0;
+}
+
+/* Shared by the sysfs attribute and the module parameter, which are two
+ * ways to set the same state.
+ */
+static int ipaq_sleeve_apply_identity(const char *buf)
+{
+	unsigned short vendor, device;
+	int ret;
+
+	ret = ipaq_sleeve_parse_identity(buf, &vendor, &device);
+	if (ret)
+		return ret;
+
+	guard(mutex)(&ipaq_sleeve_lock);
+
+	ipaq_sleeve_forced_vendor = vendor;
+	ipaq_sleeve_forced_device = device;
+	ipaq_sleeve_reenumerate();
+
+	return 0;
+}
+
+/*
+ * Like led_trigger_format(), the bracket marks whatever currently governs
+ * the device, not merely that an override was written. With no override
+ * forced, that is the identity detected for active_sleeve (0:0, the same
+ * as SLEEVE_NO_VENDOR/DEVICE, when a jacket is absent or present but
+ * unidentified), so "none" is bracketed only when nothing is identified
+ * at all.
+ */
+static ssize_t identity_override_show(const struct bus_type *bus, char *buf)
+{
+	const struct ipaq_sleeve_type *effective;
+	unsigned short vendor, device;
+	unsigned int i;
+	int len = 0;
+
+	scoped_guard(mutex, &ipaq_sleeve_lock) {
+		if (ipaq_sleeve_forced_vendor) {
+			vendor = ipaq_sleeve_forced_vendor;
+			device = ipaq_sleeve_forced_device;
+		} else if (active_sleeve) {
+			vendor = active_sleeve->vendor;
+			device = active_sleeve->device;
+		} else {
+			vendor = SLEEVE_NO_VENDOR;
+			device = SLEEVE_NO_DEVICE;
+		}
+	}
+
+	effective = vendor ? ipaq_sleeve_type_by_id(vendor, device) : NULL;
+
+	len += sysfs_emit_at(buf, len, "%s", vendor ? "none" : "[none]");
+
+	for (i = 0; i < ARRAY_SIZE(ipaq_sleeve_types); i++) {
+		const struct ipaq_sleeve_type *t = &ipaq_sleeve_types[i];
+
+		len += sysfs_emit_at(buf, len, " %s%s%s",
+				     t == effective ? "[" : "", t->name,
+				     t == effective ? "]" : "");
+	}
+
+	/*
+	 * An effective identity with no row of its own, a forced raw pair or
+	 * a jacket the table does not know, is shown as the bracketed pair.
+	 */
+	if (vendor && !effective)
+		len += sysfs_emit_at(buf, len, " [%04x:%04x]", vendor, device);
+
+	len += sysfs_emit_at(buf, len, "\n");
+
+	return len;
+}
+
+static ssize_t identity_override_store(const struct bus_type *bus,
+				       const char *buf, size_t count)
+{
+	int ret = ipaq_sleeve_apply_identity(buf);
+
+	return ret ? ret : count;
+}
+static BUS_ATTR_RW(identity_override);
+
+static struct attribute *ipaq_sleeve_bus_attrs[] = {
+	&bus_attr_identity_override.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(ipaq_sleeve_bus);
+
+/*
+ * ipaq_sleeve.identity_override= seeds the same state from the kernel command
+ * line, for a board whose console cannot be typed at. It is read-only in
+ * sysfs, so that /sys/bus/ipaq-sleeve/identity_override stays the one
+ * writable path to the variable; reading the module parameter returns the
+ * value in effect now, not the boot string.
+ *
+ * On the command line this only stores the pair, because parameters are
+ * parsed before any initcall, so no backend has registered yet and
+ * ipaq_sleeve_reenumerate() returns immediately.
+ */
+static int ipaq_sleeve_identity_override_set(const char *val,
+					     const struct kernel_param *kp)
+{
+	return ipaq_sleeve_apply_identity(val);
+}
+
+static int ipaq_sleeve_identity_override_get(char *buf,
+					     const struct kernel_param *kp)
+{
+	const struct ipaq_sleeve_type *t;
+	unsigned short vendor, device;
+
+	scoped_guard(mutex, &ipaq_sleeve_lock) {
+		vendor = ipaq_sleeve_forced_vendor;
+		device = ipaq_sleeve_forced_device;
+	}
+
+	if (!vendor)
+		return sysfs_emit(buf, "none\n");
+
+	t = ipaq_sleeve_type_by_id(vendor, device);
+	if (t)
+		return sysfs_emit(buf, "%s\n", t->name);
+
+	return sysfs_emit(buf, "%04x:%04x\n", vendor, device);
+}
+
+static const struct kernel_param_ops ipaq_sleeve_identity_override_ops = {
+	.set = ipaq_sleeve_identity_override_set,
+	.get = ipaq_sleeve_identity_override_get,
+};
+module_param_cb(identity_override, &ipaq_sleeve_identity_override_ops, NULL, 0444);
+MODULE_PARM_DESC(identity_override,
+		 "force the sleeve identity (type name or VVVV:DDDD); same values as /sys/bus/ipaq-sleeve/identity_override");
+
 const struct bus_type ipaq_sleeve_bus_type = {
 	.name		= "ipaq-sleeve",
 	.match		= ipaq_sleeve_bus_match,
@@ -475,6 +764,7 @@ const struct bus_type ipaq_sleeve_bus_type = {
 	.remove		= ipaq_sleeve_bus_remove,
 	.suspend	= ipaq_sleeve_bus_suspend,
 	.resume		= ipaq_sleeve_bus_resume,
+	.bus_groups	= ipaq_sleeve_bus_groups,
 };
 EXPORT_SYMBOL_GPL(ipaq_sleeve_bus_type);
 
@@ -495,9 +785,19 @@ static void ipaq_sleeve_task_handler(struct work_struct *work)
 {
 	int opt_det = 0;
 
-	sleeve_ops->get_option_detect(sleeve_dev, &opt_det);
-
+	/*
+	 * Sample the detect line under the lock: the identity_override store
+	 * path can hold it for several hundred milliseconds, and a value read
+	 * before waiting for it would be stale by the time it is used. It
+	 * also covers a presence IRQ that re-schedules this work after
+	 * ipaq_sleeve_unregister() has returned from cancel_delayed_work_sync().
+	 */
 	guard(mutex)(&ipaq_sleeve_lock);
+
+	if (!sleeve_ops)
+		return;
+
+	sleeve_ops->get_option_detect(sleeve_dev, &opt_det);
 
 	/*
 	 * Act only on a change: insert when a jacket is present and none is
@@ -543,19 +843,27 @@ EXPORT_SYMBOL_GPL(ipaq_sleeve_presence_interrupt);
  */
 int ipaq_sleeve_register(struct ipaq_sleeve_ops *ops, void *dev)
 {
-	mutex_lock(&ipaq_sleeve_ops_lock);
-	if (sleeve_ops) {
-		mutex_unlock(&ipaq_sleeve_ops_lock);
-		return -EBUSY;
-	}
-	sleeve_ops = ops;
-	sleeve_dev = dev;
-	mutex_unlock(&ipaq_sleeve_ops_lock);
+	/*
+	 * The identity_override store path calls ipaq_sleeve_insert() from its
+	 * own context. Hold ipaq_sleeve_lock across publishing the ops and
+	 * clearing the rails, so that a store sees either no backend yet or a
+	 * powered-down connector, and never reads the ID EEPROM while the
+	 * rails are being cleared. The lock order is ipaq_sleeve_lock, then
+	 * ipaq_sleeve_ops_lock.
+	 */
+	scoped_guard(mutex, &ipaq_sleeve_lock) {
+		scoped_guard(mutex, &ipaq_sleeve_ops_lock) {
+			if (sleeve_ops)
+				return -EBUSY;
+			sleeve_ops = ops;
+			sleeve_dev = dev;
+		}
 
-	ipaq_sleeve_clear_egpio(IPAQ_EGPIO_OPT_RESET);
-	ipaq_sleeve_clear_egpio(IPAQ_EGPIO_CARD_RESET);
-	ipaq_sleeve_clear_egpio(IPAQ_EGPIO_OPT_ON);
-	ipaq_sleeve_clear_egpio(IPAQ_EGPIO_OPT_NVRAM_ON);
+		ipaq_sleeve_clear_egpio(IPAQ_EGPIO_OPT_RESET);
+		ipaq_sleeve_clear_egpio(IPAQ_EGPIO_CARD_RESET);
+		ipaq_sleeve_clear_egpio(IPAQ_EGPIO_OPT_ON);
+		ipaq_sleeve_clear_egpio(IPAQ_EGPIO_OPT_NVRAM_ON);
+	}
 
 	mod_delayed_work(system_wq, &ipaq_sleeve_task, msecs_to_jiffies(100));
 
@@ -563,6 +871,13 @@ int ipaq_sleeve_register(struct ipaq_sleeve_ops *ops, void *dev)
 }
 EXPORT_SYMBOL_GPL(ipaq_sleeve_register);
 
+/*
+ * The teardown is one critical section: the identity_override store path is
+ * not cancel_delayed_work_sync()'d, so it can be in ipaq_sleeve_insert()
+ * driving the egpio operations while a backend unloads. Holding
+ * ipaq_sleeve_lock from the eject through clearing the ops makes the "is
+ * there a backend" test of the store authoritative.
+ */
 int ipaq_sleeve_unregister(void)
 {
 	if (!sleeve_ops)
@@ -570,18 +885,19 @@ int ipaq_sleeve_unregister(void)
 
 	cancel_delayed_work_sync(&ipaq_sleeve_task);
 
-	scoped_guard(mutex, &ipaq_sleeve_lock)
-		ipaq_sleeve_eject();
+	guard(mutex)(&ipaq_sleeve_lock);
+
+	ipaq_sleeve_eject();
 
 	ipaq_sleeve_clear_egpio(IPAQ_EGPIO_OPT_RESET);
 	ipaq_sleeve_clear_egpio(IPAQ_EGPIO_CARD_RESET);
 	ipaq_sleeve_clear_egpio(IPAQ_EGPIO_OPT_ON);
 	ipaq_sleeve_clear_egpio(IPAQ_EGPIO_OPT_NVRAM_ON);
 
-	mutex_lock(&ipaq_sleeve_ops_lock);
-	sleeve_ops = NULL;
-	sleeve_dev = NULL;
-	mutex_unlock(&ipaq_sleeve_ops_lock);
+	scoped_guard(mutex, &ipaq_sleeve_ops_lock) {
+		sleeve_ops = NULL;
+		sleeve_dev = NULL;
+	}
 
 	return 0;
 }

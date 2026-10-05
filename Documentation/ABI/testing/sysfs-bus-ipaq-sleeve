@@ -1,0 +1,49 @@
+What:		/sys/bus/ipaq-sleeve/identity_override
+Date:		September 2026
+KernelVersion:	7.2
+Contact:	Koen Kooi <koen@dominion.thruhere.net>
+Description:
+		Force the identity of the expansion pack ("sleeve") on the
+		iPAQ's single sleeve connector, overriding the vendor:device
+		pair read from the pack's ID EEPROM, for packs whose EEPROM
+		reads back invalid (all zeros) or cannot be read, so that
+		the pack's driver and the slot consumers keyed on identity
+		still bind.
+
+		Reading lists "none" followed by every sleeve type the bus
+		knows, space-separated; the active override is enclosed in
+		square brackets:
+
+		  [none] cf cf_plus pcmcia ... navman_gps_cf ...
+
+		An override naming no listed type is shown after the list
+		as a bracketed hexadecimal "VVVV:DDDD" pair.
+
+		Writing a listed name, or a hexadecimal "VVVV:DDDD"
+		vendor:device pair, sets the override; writing "none"
+		clears it. Either takes effect immediately: a pack on the
+		connector is torn down and re-enumerated exactly as on a
+		physical re-insertion (power rails cycle, its driver is
+		removed and re-probed, slot consumers are notified), now
+		carrying the forced identity. With nothing attached the
+		override is stored and applied to the next insertion.
+
+		The override describes the connector, not one insertion:
+		it persists across removals and insertions until "none" is
+		written or the system reboots, and is applied even over a
+		readable, valid EEPROM. Each insertion that applies it logs
+		a warning naming the forced identity and what the EEPROM
+		actually returned. Forcing the wrong type can select the
+		wrong slot count or power configuration for the pack.
+
+		Names and the IDs they stand for:
+		  cf 1125:cf11, cf_plus 1125:0003, pcmcia 1125:d7c3,
+		  pcmcia_plus 1125:0004, dual_pcmcia 1125:0001,
+		  bluetooth_cf 1125:0011, gprs 1125:0010,
+		  nexian_dual_cf 010a:0001, nexian_camera_cf 010a:0003,
+		  symbol_wlan_scanner 0103:0011, pitech_memplug 0111:0001,
+		  pitech_memplug3 0111:0003, navman_gps_cf 0100:0001,
+		  navman_gps_cf_alt 0100:0010, pcmcia_blank_eeprom ffff:ffff
+
+		The ipaq_sleeve.identity_override= kernel parameter seeds
+		the same value at boot and accepts the same strings.
