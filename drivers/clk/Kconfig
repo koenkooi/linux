@@ -393,6 +393,12 @@ config COMMON_CLK_PXA
 	help
 	  Support for the Marvell PXA SoC.
 
+config COMMON_CLK_SA1100
+	def_bool COMMON_CLK && ARCH_SA1100 && OF
+	help
+	  Support for the devicetree-described clock controller of the
+	  Intel StrongARM SA-1100 and SA-1110.
+
 config COMMON_CLK_RS9_PCIE
 	tristate "Clock driver for Renesas 9-series PCIe clock generators"
 	depends on I2C
