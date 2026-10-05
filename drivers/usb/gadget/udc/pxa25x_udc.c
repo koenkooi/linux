@@ -25,6 +25,8 @@
 #include <linux/list.h>
 #include <linux/interrupt.h>
 #include <linux/mm.h>
+#include <linux/mod_devicetable.h>
+#include <linux/of.h>
 #include <linux/platform_data/pxa2xx_udc.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
@@ -2455,7 +2457,17 @@ static int pxa25x_udc_probe(struct platform_device *pdev)
 	/* other non-static parts of init */
 	dev->dev = &pdev->dev;
 
-	dev->transceiver = devm_usb_get_phy(&pdev->dev, USB_PHY_TYPE_USB2);
+	if (of_property_present(pdev->dev.of_node, "usb-phy")) {
+		dev->transceiver = devm_usb_get_phy_by_phandle(&pdev->dev,
+							       "usb-phy", 0);
+		if (IS_ERR(dev->transceiver))
+			return dev_err_probe(&pdev->dev,
+					     PTR_ERR(dev->transceiver),
+					     "failed to get the VBUS transceiver\n");
+	} else {
+		dev->transceiver = devm_usb_get_phy(&pdev->dev,
+						    USB_PHY_TYPE_USB2);
+	}
 
 	dev->pullup_gpio = devm_gpiod_get_index_optional(&pdev->dev, "pullup", 0,
 						    GPIOD_OUT_HIGH);
@@ -2579,6 +2591,12 @@ static int pxa25x_udc_resume(struct platform_device *dev)
 
 /*-------------------------------------------------------------------------*/
 
+static const struct of_device_id pxa25x_udc_of_match[] = {
+	{ .compatible = "marvell,pxa250-udc" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, pxa25x_udc_of_match);
+
 static struct platform_driver udc_driver = {
 	.shutdown	= pxa25x_udc_shutdown,
 	.probe		= pxa25x_udc_probe,
@@ -2587,6 +2605,7 @@ static struct platform_driver udc_driver = {
 	.resume		= pxa25x_udc_resume,
 	.driver		= {
 		.name	= "pxa25x-udc",
+		.of_match_table = pxa25x_udc_of_match,
 	},
 };
 
