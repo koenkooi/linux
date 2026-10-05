@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/usb/marvell,pxa250-udc.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Marvell PXA25x USB Device Controller (UDC)
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  The full-speed USB Device Controller integrated in the PXA210/PXA250/
+  PXA255/PXA26x application processors: sixteen endpoints whose types
+  (ep0 control, then bulk, isochronous and interrupt endpoints in a fixed
+  repeating pattern) are set by the hardware, and an integrated
+  transceiver. This is a different block from the PXA27x UDC, which has
+  configurable endpoints and its own binding. The D+ pullup resistor is
+  not part of the controller; boards that switch it from a GPIO describe
+  that line here.
+
+properties:
+  compatible:
+    const: marvell,pxa250-udc
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+
+  pullup-gpios:
+    maxItems: 1
+    description:
+      GPIO that connects the D+ pullup resistor, making the device visible
+      to the USB host when asserted.
+
+  usb-phy:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle of the device that senses VBUS on the USB connector and reports
+      its presence or loss to the controller.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/pxa-clock.h>
+    #include <dt-bindings/gpio/gpio.h>
+
+    usb@40600000 {
+        compatible = "marvell,pxa250-udc";
+        reg = <0x40600000 0x10000>;
+        interrupts = <11>;
+        clocks = <&clks CLK_USB>;
+        pullup-gpios = <&gpio 33 GPIO_ACTIVE_LOW>;
+    };
+
+...
