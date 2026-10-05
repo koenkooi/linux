@@ -11992,6 +11992,7 @@ L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
 S:	Maintained
 F:	Documentation/devicetree/bindings/mfd/samsung,hamcop.yaml
 F:	Documentation/devicetree/bindings/mmc/samsung,hamcop-sdi.yaml
+F:	Documentation/devicetree/bindings/pcmcia/hp,ipaq-h2200-pcmcia.yaml
 F:	arch/arm/boot/dts/intel/pxa/pxa250-hp-ipaq-h2200.dts
 F:	arch/arm/mach-pxa/h2200*
 F:	drivers/iio/adc/hamcop-adc.c
