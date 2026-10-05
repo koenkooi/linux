@@ -8252,6 +8252,13 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/display/panel/mantix,mlaf057we51-x.yaml
 F:	drivers/gpu/drm/panel/panel-mantix-mlaf057we51.c
 
+DRM DRIVER FOR MEDIAQ MQ11XX DISPLAY CONTROLLERS
+M:	Koen Kooi <koen@dominion.thruhere.net>
+S:	Maintained
+T:	git https://gitlab.freedesktop.org/drm/misc/kernel.git
+F:	Documentation/devicetree/bindings/display/mediaq,mq1132.yaml
+F:	drivers/gpu/drm/tiny/mq11xx.c
+
 DRM DRIVER FOR MGA G200 GRAPHICS CHIPS
 M:	Dave Airlie <airlied@redhat.com>
 R:	Thomas Zimmermann <tzimmermann@suse.de>

@@ -66,6 +66,22 @@ config DRM_GM12U320
 	 This is a KMS driver for projectors which use the GM12U320 chipset
 	 for video transfer over USB2/3, such as the Acer C120 mini projector.
 
+config DRM_MQ11XX
+	tristate "DRM support for the MediaQ 11xx family (HP iPAQ h2200/h5xxx)"
+	depends on DRM && ARCH_PXA && MMU
+	select DRM_CLIENT_SELECTION
+	select DRM_KMS_HELPER
+	select DRM_GEM_SHMEM_HELPER
+	help
+	  DRM driver for the MediaQ 11xx family of external display
+	  controllers (1100/1132/1178) used as the sole display path on
+	  the HP iPAQ h2200 and h5xxx families -- the PXA25x's own LCD
+	  controller is unwired on both. Fixed-resolution RGB565 panel,
+	  memory-mapped off a PXA static memory bank, board-specific
+	  geometry and register table selected by the devicetree compatible.
+
+	  If M is selected the module will be called mq11xx.
+
 config DRM_PANEL_MIPI_DBI
 	tristate "DRM support for MIPI DBI compatible panels"
 	depends on DRM && SPI
