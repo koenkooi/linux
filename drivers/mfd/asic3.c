@@ -50,8 +50,12 @@
  * The chip is described by a devicetree binding
  * (Documentation/devicetree/bindings/mfd/htc,asic3.yaml). An optional
  * "reset-gpios" is pulsed at probe before any register access. Board
- * policy (LED names, keys, socket GPIOs) stays out of this file, which is
- * the MFD core only: register access, IRQ demux, gpio_chip and clocks.
+ * policy (LED names and triggers, keys, socket GPIOs) stays out of this
+ * file. Sub-devices are matched to child device tree nodes by
+ * of_compatible; the one so far is "leds-asic3"
+ * (drivers/leds/leds-asic3.c). This file is the MFD core: register access,
+ * IRQ demux, gpio_chip, clocks, plus the devm_mfd_add_devices() call that
+ * lets DT-described sub-devices attach.
  *
  * Copyright (C) 2026 Koen Kooi
  */
@@ -70,6 +74,7 @@
 #include <linux/irqdomain.h>
 #include <linux/kernel.h>
 #include <linux/mfd/asic3.h>
+#include <linux/mfd/core.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -990,11 +995,63 @@ static int asic3_clocks_register(struct asic3 *asic)
 
 	/*
 	 * "ds1wm": drivers/w1/masters/ds1wm.c calls devm_clk_get(dev, NULL).
-	 * The SD host and LED gates get no alias until their cell drivers
-	 * exist.
+	 * The SD host gates get no alias until its cell driver exists.
 	 */
-	return devm_clk_hw_register_clkdev(asic->dev, &asic->gates[ASIC3_GATE_OWM].hw,
-					    NULL, "ds1wm");
+	ret = devm_clk_hw_register_clkdev(asic->dev, &asic->gates[ASIC3_GATE_OWM].hw,
+					  NULL, "ds1wm");
+	if (ret)
+		return ret;
+
+	/*
+	 * "led0"/"led1"/"led2" against dev_name "leds-asic3" (the mfd_cell
+	 * below): one alias per channel, as the three CLOCK_CDEX_LEDn gates
+	 * are independent. The LED driver uses devm_clk_get_enabled() so that
+	 * a failed probe does not leak the prepare/enable counts.
+	 */
+	ret = devm_clk_hw_register_clkdev(asic->dev, &asic->gates[ASIC3_GATE_LED0].hw,
+					  "led0", "leds-asic3");
+	if (ret)
+		return ret;
+
+	ret = devm_clk_hw_register_clkdev(asic->dev, &asic->gates[ASIC3_GATE_LED1].hw,
+					  "led1", "leds-asic3");
+	if (ret)
+		return ret;
+
+	return devm_clk_hw_register_clkdev(asic->dev, &asic->gates[ASIC3_GATE_LED2].hw,
+					    "led2", "leds-asic3");
+}
+
+/* ---------------------------------------------------------------------
+ * Sub-devices. So far only the LED blink controller
+ * (drivers/leds/leds-asic3.c), matched by of_compatible against a child
+ * device tree node so that board policy (LED names and triggers) stays in
+ * the device tree rather than in this file.
+ * ---------------------------------------------------------------------
+ */
+
+static const struct mfd_cell asic3_leds_cell = {
+	.name		= "leds-asic3",
+	.id		= PLATFORM_DEVID_NONE,
+	.of_compatible	= "htc,asic3-leds",
+};
+
+/*
+ * Whether the node has an available child with the given compatible. mfd-core
+ * warns for a cell that sets .of_compatible when no such child exists, so a
+ * cell that is optional in the devicetree is only added, or only gets its
+ * .of_compatible, when the board describes it.
+ */
+static bool asic3_has_child(struct device *dev, const char *compatible)
+{
+	struct device_node *np;
+	bool present;
+
+	np = of_get_compatible_child(dev->of_node, compatible);
+	present = np && of_device_is_available(np);
+	of_node_put(np);
+
+	return present;
 }
 
 /* ---------------------------------------------------------------------
@@ -1092,6 +1149,18 @@ static int asic3_probe(struct platform_device *pdev)
 	asic3_rmw(asic, ASIC3_EXTCF_BASE + ASIC3_EXTCF_SELECT,
 		  ASIC3_EXTCF_CF0_BUF_EN | ASIC3_EXTCF_CF0_PWAIT_EN,
 		  ASIC3_EXTCF_CF0_BUF_EN | ASIC3_EXTCF_CF0_PWAIT_EN);
+
+	/*
+	 * The LED driver fails to probe without its "led-controller" child,
+	 * so a board that has none gets no LED cell. id 0 with
+	 * PLATFORM_DEVID_NONE on the cell gives an unnumbered "leds-asic3".
+	 */
+	if (asic3_has_child(dev, "htc,asic3-leds")) {
+		ret = devm_mfd_add_devices(dev, 0, &asic3_leds_cell, 1, mem, 0,
+					   asic->domain);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to add sub-devices\n");
+	}
 
 	dev_dbg(dev, "ASIC3 companion ASIC ready, chained on IRQ %d\n", irq);
 
