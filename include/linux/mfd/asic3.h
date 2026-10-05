@@ -211,6 +211,23 @@
 #define ASIC3_SD_CTRL_BASE	0x1000
 #define ASIC3_SDIO_CTRL_BASE	0x1200
 
+/*
+ * SD_CONFIG sub-registers (offsets within the ASIC3_SD_CONFIG_BASE window
+ * above). CTL_BASE is a single 32-bit "SD Control Register Base Address"
+ * field spanning both halves.
+ */
+#define ASIC3_SD_CONFIG_COMMAND	0x04
+#define ASIC3_SD_CONFIG_CTL_BASE	0x10	/* 32-bit: merges Addr0+Addr1 */
+#define ASIC3_SD_CONFIG_CLK_STOP	0x40
+#define ASIC3_SD_CONFIG_CLOCK_MODE	0x42
+#define ASIC3_SD_CONFIG_PWR1		0x48
+#define ASIC3_SD_CONFIG_PWR2		0x49
+#define ASIC3_SD_CONFIG_PWR3		0x4a
+#define ASIC3_SD_CONFIG_SDHC_CARDDETECT	0x4c	/* 16-bit, mode 2 = ~512 ms debounce */
+
+/* Memory access enable: set to access the SD controller registers */
+#define ASIC3_SD_CONFIG_COMMAND_MAE	BIT(1)
+
 #define ASIC3_MAP_SIZE_32BIT	0x2000
 #define ASIC3_MAP_SIZE_16BIT	0x1000
 
@@ -224,5 +241,17 @@
 struct asic3;
 u32 asic3_read_register(struct asic3 *asic, unsigned int reg);
 void asic3_write_register(struct asic3 *asic, unsigned int reg, u32 value);
+
+/*
+ * Called by drivers/mmc/host/tmio_mmc.c from its set_clock() callback to
+ * program the ClockMode register of SD_CONFIG, which lives behind a
+ * mapping private to drivers/mfd/asic3.c. "gated" true selects the
+ * divided/external clock path.
+ */
+void asic3_sd_set_clock_mode(struct asic3 *asic, bool gated);
+void asic3_sd_set_power(struct asic3 *asic, bool on);
+void asic3_sd_set_bus_power(struct asic3 *asic, bool on);
+void asic3_sd_set_slot_voltage(struct asic3 *asic, bool on);
+void asic3_sd_wait_card_detect_settle(struct asic3 *asic);
 
 #endif /* __LINUX_MFD_ASIC3_H */
