@@ -192,6 +192,21 @@
 			compatible = "samsung,hamcop-onewire", "dallas,ds1wm";
 			dallas,bus-shift = <2>;
 			dallas,reset-recover-delay-ms = <1>;
+
+			/*
+			 * The pack's DS2760 gas gauge. The w1 core finds it by
+			 * family code, so the node is only needed for
+			 * "power-supplies": without a supplier link
+			 * power_supply_am_i_supplied() fails and the driver
+			 * reports charge/discharge purely from the sign of the
+			 * measured current, and its full-charge detection is
+			 * never reached.
+			 */
+			battery {
+				compatible = "maxim,ds2760";
+				maxim,pmod-enabled;
+				power-supplies = <&charger>;
+			};
 		};
 	};
 
@@ -270,6 +285,29 @@
 			linux,code = <KEY_ENTER>;
 			gpios = <&hamcop 10 GPIO_ACTIVE_LOW>;
 		};
+	};
+
+	/*
+	 * AC-adapter presence and the MAX1898 charge-enable line.
+	 *
+	 * AC_IN_N is active low. gpio-charger requests the presence line for
+	 * both edges and makes the device a wakeup source, so plugging or
+	 * unplugging the adapter wakes the board through the wake-up enable
+	 * the board file arms for GPIO12.
+	 *
+	 * The charge enable is the MAX1898 EN input, active high: a high
+	 * level enables charging. The board's pin table drives it low in
+	 * sleep, so charging stops in suspend. gpio-charger requests it
+	 * asserted at probe and leaves it asserted instead of gating it on
+	 * adapter presence, since the MAX1898 has no charge current to gate
+	 * without an adapter attached.
+	 */
+	charger: charger {
+		compatible = "gpio-charger";
+		charger-type = "mains";
+
+		gpios = <&gpio 12 GPIO_ACTIVE_LOW>;
+		charge-enable-gpios = <&gpio 21 GPIO_ACTIVE_HIGH>;
 	};
 
 	/*
