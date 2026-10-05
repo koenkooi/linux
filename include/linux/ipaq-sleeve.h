@@ -23,6 +23,7 @@
 #include <linux/interrupt.h>
 #include <linux/notifier.h>
 #include <linux/pm.h>
+#include <linux/types.h>
 
 enum sleeve_vendor_id {
 	SLEEVE_NO_VENDOR	= 0,
@@ -112,6 +113,51 @@ enum sleeve_device_id {
 #define SLEEVE_HAS_FIXED_BATTERY	0x10000000
 #define SLEEVE_HAS_REMOVABLE_BATTERY	0x20000000
 
+/* WinCE parses the description into a 256-byte buffer, NUL included. */
+#define IPAQ_SLEEVE_DESC_MAX		256
+
+/**
+ * struct ipaq_sleeve_record - ID EEPROM record past the 10-byte identity
+ * @length: bytes 1-4; believed to be the record length, not established
+ * @version: byte 5, record layout version (1, 2 or 3)
+ * @description: NUL-terminated description, every byte outside printable
+ *	ASCII replaced by '?'
+ * @type: type byte, never decoded by any known consumer
+ * @interrupt_enable: interrupt-enable byte, exposed but not acted on
+ * @extended_battery: 'Y' or 'y' when the pack carries a battery
+ * @initial_power_state: initial power state byte, meaning unknown
+ * @suspend_power_state: suspend power state byte, meaning unknown
+ * @reset_width_ms: OPT_RESET pulse width in milliseconds
+ * @stabilize_ms: wait after that pulse in milliseconds
+ * @unknown_1a: parsed by every record version, meaning unknown
+ * @unknown_1c: parsed by every record version, meaning unknown
+ * @socket_type: per-socket bridge type; v2 and v3 records only
+ * @opt_on: non-zero when the pack asks for its main rail; v2 and v3 only
+ * @bb_word: the four words of the 0xBB section; words 3 and 4 are the
+ *	first and last address of the pack's memory window
+ * @end: EEPROM offset just past the 0xBB section
+ *
+ * Multi-byte fields are little-endian in the EEPROM and converted here.
+ */
+struct ipaq_sleeve_record {
+	u32 length;
+	u8 version;
+	char description[IPAQ_SLEEVE_DESC_MAX];
+	u8 type;
+	u8 interrupt_enable;
+	u8 extended_battery;
+	u8 initial_power_state;
+	u8 suspend_power_state;
+	u16 reset_width_ms;
+	u16 stabilize_ms;
+	u16 unknown_1a;
+	u16 unknown_1c;
+	u16 socket_type[2];
+	u8 opt_on;
+	u32 bb_word[4];
+	unsigned int end;
+};
+
 /**
  * struct ipaq_sleeve_device - a sleeve enumerated on the bus
  * @dev: driver-core device
@@ -120,6 +166,14 @@ enum sleeve_device_id {
  * @id_valid: the EEPROM reads completed and returned non-zero IDs, or
  *	the identity was forced through the bus's identity_override
  *	(Documentation/ABI/testing/sysfs-bus-ipaq-sleeve)
+ * @identity_forced: @vendor/@device come from identity_override
+ * @record_valid: @record was read in full and every section marker and
+ *	the 0xBB byte matched
+ * @record: the parsed ID EEPROM record; meaningful only if @record_valid
+ *
+ * All fields are set before device_register() and never change while
+ * the device is registered: a changed identity or a re-read EEPROM is a
+ * new device.
  *
  * The original also carried a @procent (/proc/bus/sleeve entry) --
  * dropped here, procfs is not part of this port (see
@@ -130,10 +184,41 @@ struct ipaq_sleeve_device {
 	unsigned short vendor;
 	unsigned short device;
 	bool id_valid;
+	bool identity_forced;
+	bool record_valid;
+	struct ipaq_sleeve_record record;
 };
 
 #define to_ipaq_sleeve_device(_dev) \
 	container_of_const(_dev, struct ipaq_sleeve_device, dev)
+
+/**
+ * ipaq_sleeve_usable_record - the ID EEPROM record a driver may act on
+ * @sdev: the sleeve
+ *
+ * Every behaviour taken from the record goes through this one test. A
+ * forced identity describes a different pack than the EEPROM on the
+ * connector, so its record describes the wrong hardware.
+ *
+ * Return: the record if it parsed in full and the identity is the
+ * EEPROM's own, otherwise NULL, in which case the caller keeps the
+ * behaviour it has without a record.
+ */
+static inline const struct ipaq_sleeve_record *
+ipaq_sleeve_usable_record(const struct ipaq_sleeve_device *sdev)
+{
+	if (!sdev->record_valid || sdev->identity_forced)
+		return NULL;
+
+	return &sdev->record;
+}
+
+/* The Extended Battery byte is 'Y' or 'y' when the pack carries a battery. */
+static inline bool
+ipaq_sleeve_record_ext_battery(const struct ipaq_sleeve_record *rec)
+{
+	return rec->extended_battery == 'Y' || rec->extended_battery == 'y';
+}
 
 /**
  * struct ipaq_sleeve_device_id - one id_table entry

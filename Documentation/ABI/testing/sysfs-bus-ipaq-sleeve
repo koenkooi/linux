@@ -47,3 +47,179 @@ Description:
 
 		The ipaq_sleeve.identity_override= kernel parameter seeds
 		the same value at boot and accepts the same strings.
+
+What:		/sys/bus/ipaq-sleeve/devices/.../id_eeprom_valid
+Date:		September 2026
+KernelVersion:	7.2
+Contact:	Koen Kooi <koen@dominion.thruhere.net>
+Description:
+		(RO) 1 if the pack's ID EEPROM record was read in full:
+		the 0xaa header byte, the description, the fixed fields,
+		the 0x0f0f0f0f section marker and the 0xbb byte all
+		checked out. 0 otherwise, whether the EEPROM could not be
+		read, its header was rejected or a later check failed; the
+		kernel log names which.
+
+		This is independent of whether the pack is identified. A
+		pack whose header and ID read correctly keeps that
+		identity even when a later check fails, and a pack whose
+		identity was forced through identity_override reports the
+		state of its own EEPROM here, not of the forced type. A
+		record read under a forced identity is shown but is not
+		acted on.
+
+		The record attributes below exist only while this reads 1.
+
+What:		/sys/bus/ipaq-sleeve/devices/.../vendor
+What:		/sys/bus/ipaq-sleeve/devices/.../device
+Date:		September 2026
+KernelVersion:	7.2
+Contact:	Koen Kooi <koen@dominion.thruhere.net>
+Description:
+		(RO) Vendor and device ID the bus matches drivers against,
+		as "0x%04x": the pair read from ID EEPROM bytes 6-9, the
+		pair forced through identity_override, or 0x0000 for a pack
+		that could not be identified.
+
+What:		/sys/bus/ipaq-sleeve/devices/.../type
+Date:		September 2026
+KernelVersion:	7.2
+Contact:	Koen Kooi <koen@dominion.thruhere.net>
+Description:
+		(RO) Name of the pack type for vendor and device, from the
+		same list identity_override accepts, or "unknown" for a
+		pair the bus has no name for or an unidentified pack.
+
+What:		/sys/bus/ipaq-sleeve/devices/.../record_length_raw
+Date:		September 2026
+KernelVersion:	7.2
+Contact:	Koen Kooi <koen@dominion.thruhere.net>
+Description:
+		(RO) ID EEPROM bytes 1-4 as a decimal little-endian u32.
+		Believed to be the length of the record, which is not
+		established; no known consumer reads it. The kernel warns
+		when it is shorter than the part of the record that was
+		parsed or longer than the 512-byte EEPROM.
+
+What:		/sys/bus/ipaq-sleeve/devices/.../record_version
+What:		/sys/bus/ipaq-sleeve/devices/.../record_format
+Date:		September 2026
+KernelVersion:	7.2
+Contact:	Koen Kooi <koen@dominion.thruhere.net>
+Description:
+		(RO) Record layout version from ID EEPROM byte 5, as a
+		number (1, 2 or 3) and as "v1", "v2" or "v3". A v1 record
+		carries no socket types and no OPT_ON byte.
+
+What:		/sys/bus/ipaq-sleeve/devices/.../description
+Date:		September 2026
+KernelVersion:	7.2
+Contact:	Koen Kooi <koen@dominion.thruhere.net>
+Description:
+		(RO) The pack's description string. At most 255
+		characters; every byte outside printable ASCII is shown as
+		"?".
+
+What:		/sys/bus/ipaq-sleeve/devices/.../type_raw
+Date:		September 2026
+KernelVersion:	7.2
+Contact:	Koen Kooi <koen@dominion.thruhere.net>
+Description:
+		(RO) The record's type byte, as "0x%02x". Its encoding is
+		not known and nothing acts on it.
+
+What:		/sys/bus/ipaq-sleeve/devices/.../interrupt_enable_raw
+Date:		September 2026
+KernelVersion:	7.2
+Contact:	Koen Kooi <koen@dominion.thruhere.net>
+Description:
+		(RO) The record's interrupt-enable byte, as "0x%02x". Its
+		only known use is gating the vendor OS's own sleeve
+		interrupt dispatch; it says nothing about whether a pack
+		driver needs the OPT_INT line, and nothing acts on it.
+
+What:		/sys/bus/ipaq-sleeve/devices/.../extended_battery
+Date:		September 2026
+KernelVersion:	7.2
+Contact:	Koen Kooi <koen@dominion.thruhere.net>
+Description:
+		(RO) 1 if the record's extended-battery byte is 'Y' or
+		'y', meaning the pack carries a battery, else 0.
+
+What:		/sys/bus/ipaq-sleeve/devices/.../initial_power_state_raw
+What:		/sys/bus/ipaq-sleeve/devices/.../suspend_power_state_raw
+Date:		September 2026
+KernelVersion:	7.2
+Contact:	Koen Kooi <koen@dominion.thruhere.net>
+Description:
+		(RO) The record's initial and suspend power state bytes,
+		as "0x%02x". Their encoding is not known and nothing acts
+		on them.
+
+What:		/sys/bus/ipaq-sleeve/devices/.../reset_width_ms
+What:		/sys/bus/ipaq-sleeve/devices/.../stabilize_ms
+Date:		September 2026
+KernelVersion:	7.2
+Contact:	Koen Kooi <koen@dominion.thruhere.net>
+Description:
+		(RO) Width, in milliseconds, of the OPT_RESET pulse the
+		pack asks for after power-up, and the wait after that
+		pulse, as decimal numbers. A width of 0 asks for no
+		pulse. For a v2 or v3 record with a non-zero width the
+		bus pulses OPT_RESET after powering the pack and before
+		announcing it to slot drivers, each time clamped to
+		1000 ms; v1 records and a forced identity get no pulse.
+
+What:		/sys/bus/ipaq-sleeve/devices/.../unknown_1a_raw
+What:		/sys/bus/ipaq-sleeve/devices/.../unknown_1c_raw
+Date:		September 2026
+KernelVersion:	7.2
+Contact:	Koen Kooi <koen@dominion.thruhere.net>
+Description:
+		(RO) The two 16-bit record fields between the stabilisation
+		wait and the section marker, as "0x%04x". Every record
+		version carries them; their meaning is not known.
+
+What:		/sys/bus/ipaq-sleeve/devices/.../socket0_type
+What:		/sys/bus/ipaq-sleeve/devices/.../socket1_type
+Date:		September 2026
+KernelVersion:	7.2
+Contact:	Koen Kooi <koen@dominion.thruhere.net>
+Description:
+		(RO) How the pack connects each PC Card socket: "direct"
+		(type 0 or 1, the socket is reset directly),
+		"l1110-bridge" (type 2, through a LinkUp L1110 bridge) or
+		"unknown (N)" for any other type N. v2 and v3 records
+		only.
+
+What:		/sys/bus/ipaq-sleeve/devices/.../opt_on_requested
+Date:		September 2026
+KernelVersion:	7.2
+Contact:	Koen Kooi <koen@dominion.thruhere.net>
+Description:
+		(RO) 1 if the record's OPT_ON byte is non-zero, meaning
+		the pack asks for its main power rail, else 0. v2 and v3
+		records only. The rail is currently switched on for every
+		pack regardless.
+
+What:		/sys/bus/ipaq-sleeve/devices/.../memory_window_bytes
+What:		/sys/bus/ipaq-sleeve/devices/.../memory_capable
+Date:		September 2026
+KernelVersion:	7.2
+Contact:	Koen Kooi <koen@dominion.thruhere.net>
+Description:
+		(RO) Size of the memory window the record's 0xbb section
+		declares, end - start + 1 from its third and fourth words,
+		in bytes; 0 if the end lies before the start.
+		memory_capable is 1 if that size is at least 1024 bytes,
+		the threshold from which the pack is treated as carrying
+		memory, else 0.
+
+What:		/sys/bus/ipaq-sleeve/devices/.../bb_word1_raw
+What:		/sys/bus/ipaq-sleeve/devices/.../bb_word2_raw
+Date:		September 2026
+KernelVersion:	7.2
+Contact:	Koen Kooi <koen@dominion.thruhere.net>
+Description:
+		(RO) The first two words of the record's 0xbb section, as
+		"0x%08x". Their meaning is not known.
