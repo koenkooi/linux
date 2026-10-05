@@ -250,6 +250,9 @@ static int grts_probe(struct platform_device *pdev)
 
 	input_set_capability(input, EV_KEY, BTN_TOUCH);
 
+	/* Direct-input touchscreen: userspace device scans skip devices without this. */
+	__set_bit(INPUT_PROP_DIRECT, input->propbit);
+
 	/* parse optional device tree properties */
 	touchscreen_parse_properties(input, false, &st->prop);
 
