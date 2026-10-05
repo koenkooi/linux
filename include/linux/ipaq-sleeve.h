@@ -387,4 +387,9 @@ int ipaq_sleeve_unregister(void);
 irqreturn_t ipaq_sleeve_presence_interrupt(int irq, void *dev_id);
 int ipaq_sleeve_rearm_cd_edge(int nr, bool card_present);
 
+int ipaq_sleeve_get_version(struct ipaq_sleeve_version *ver);
+int ipaq_sleeve_read_battery(unsigned char *chem, unsigned char *percent,
+			     unsigned char *flag);
+int ipaq_sleeve_set_ebat(void);
+
 #endif /* _LINUX_IPAQ_SLEEVE_H */
