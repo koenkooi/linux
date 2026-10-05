@@ -1732,9 +1732,12 @@ sl811h_probe(struct platform_device *dev)
 	sl811->addr_reg = addr_reg;
 	sl811->data_reg = data_reg;
 
-	spin_lock_irq(&sl811->lock);
+	/* No lock here: the hcd has not been added, its IRQ has not been
+	 * requested and the timer has not been armed, so nothing can reach
+	 * these registers yet.  Holding the lock would only put
+	 * port_power()'s 20 ms SE0 busy-wait under local_irq_disable().
+	 */
 	port_power(sl811, 0);
-	spin_unlock_irq(&sl811->lock);
 	msleep(200);
 
 	tmp = sl811_read(sl811, SL11H_HWREVREG);
