@@ -1,0 +1,124 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/hp,ipaq-h3800-audio.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HP iPAQ h3800 audio machine (UDA1341TS over the SA-1110 SSP)
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  Audio path of the HP/Compaq iPAQ h38xx family: a UDA1341TS codec
+  (nxp,uda1341.yaml) on the SA-1110 Ser4 SSP (intel,sa1100-ssp.yaml), with
+  ASIC1 GPIO speaker/headphone routing and audio power, and ASIC2 GPIO2
+  jack detect.
+
+  The sample rate is not derived from a single free-running system clock.
+  It is selected from four fixed taps of the audio clock selector of ASIC2
+  (the "#clock-cells" of htc,asic2.yaml), which feeds the external clock
+  input of the SSP, and the SerClkDiv field of the SSP and the STATUS0 SC
+  field of the codec have to match the selected tap for the bit clock to
+  be 32 fs.
+
+properties:
+  compatible:
+    const: hp,ipaq-h3800-audio
+
+  cpu:
+    type: object
+    description: The SSP CPU DAI (intel,sa1100-ssp.yaml).
+    additionalProperties: false
+
+    properties:
+      sound-dai:
+        maxItems: 1
+
+    required:
+      - sound-dai
+
+  codec:
+    type: object
+    description: The UDA1341TS codec (nxp,uda1341.yaml).
+    additionalProperties: false
+
+    properties:
+      sound-dai:
+        maxItems: 1
+
+    required:
+      - sound-dai
+
+  clocks:
+    maxItems: 1
+    description: >-
+      The audio-clock tap selector of ASIC2 (the "#clock-cells" of
+      htc,asic2.yaml), which provides one of four fixed rates; the rate
+      fields of the SSP and the codec have to match the selected tap.
+
+  clock-names:
+    items:
+      - const: audio
+
+  spk-gpios:
+    maxItems: 1
+    description: >-
+      ASIC1 SPK_ON. Not an independent enable: the speaker and headphone
+      routing is a truth table shared with ear-gpios.
+
+  ear-gpios:
+    maxItems: 1
+    description: ASIC1 EAR_ON_N. See spk-gpios.
+
+  aud-pwr-gpios:
+    maxItems: 1
+    description: >-
+      ASIC1 AUD_PWR_ON, the supply rail of the codec.
+
+  jack-gpios:
+    maxItems: 1
+    description: >-
+      ASIC2 GPIO2 bit 7 (EAR_IN_N), active-low. It is also the jack-detect
+      interrupt source; the gpio-controller of ASIC2 is also an interrupt
+      controller for this line.
+
+required:
+  - compatible
+  - cpu
+  - codec
+  - clocks
+  - clock-names
+  - spk-gpios
+  - ear-gpios
+  - aud-pwr-gpios
+  - jack-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/htc,asic2.h>
+    #include <dt-bindings/gpio/gpio.h>
+
+    sound {
+        compatible = "hp,ipaq-h3800-audio";
+
+        clocks = <&asic2 ASIC2_CLK_AUDIO>;
+        clock-names = "audio";
+
+        spk-gpios = <&asic1 12 GPIO_ACTIVE_HIGH>;
+        ear-gpios = <&asic1 13 GPIO_ACTIVE_HIGH>;
+        aud-pwr-gpios = <&asic1 14 GPIO_ACTIVE_HIGH>;
+        jack-gpios = <&asic2 7 GPIO_ACTIVE_LOW>;
+
+        cpu {
+            sound-dai = <&ssp>;
+        };
+
+        codec {
+            sound-dai = <&uda1341>;
+        };
+    };
+
+...
