@@ -1490,7 +1490,7 @@ reset_gadget(struct pxa25x_udc *dev, struct usb_gadget_driver *driver)
 		ep->stopped = 1;
 		nuke(ep, -ESHUTDOWN);
 	}
-	timer_delete_sync(&dev->timer);
+	timer_delete(&dev->timer);
 
 	/* report reset; the driver is already quiesced */
 	if (driver)
@@ -1517,7 +1517,7 @@ stop_activity(struct pxa25x_udc *dev, struct usb_gadget_driver *driver)
 		ep->stopped = 1;
 		nuke(ep, -ESHUTDOWN);
 	}
-	timer_delete_sync(&dev->timer);
+	timer_delete(&dev->timer);
 
 	/* report disconnect; the driver is already quiesced */
 	if (driver)
