@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/intel,sa1100-ssp.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Intel SA-1100/SA-1110 synchronous serial port
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: |
+  The synchronous serial port (SSP) of serial port 4 of the Intel
+  StrongARM SA-1100 and SA-1110, used as a digital audio interface. It
+  transfers 4 to 16 bit frames in Motorola SPI, Texas Instruments
+  synchronous serial or National Microwire format through an 8-entry
+  transmit and a 12-entry receive FIFO, is programmed through SSCR0,
+  SSCR1, SSDR and SSSR, and raises a single interrupt controller source.
+  Its transmit and receive FIFOs are serviced by the DMA request lines
+  Ser4SSPTr and Ser4SSPRc.
+
+  The serial clock is derived either from the on-chip 3.6864 MHz
+  oscillator or, with the external clock select (ECS) bit of SSCR1 set,
+  from a clock supplied by the board on GPIO19. An audio codec needs the
+  external clock to reach sample rates that are not a multiple of the
+  oscillator frequency. GPIO19 then has to be switched to its SSP_CLK
+  alternate function as an input through the pin controller.
+
+  The register layout is identical on both chips, and differs from the
+  SSP of the PXA2xx: the ECS bit is in SSCR1 here and in SSCR0 there.
+
+allOf:
+  - $ref: dai-common.yaml#
+
+properties:
+  compatible:
+    items:
+      - const: intel,sa1110-ssp
+      - const: intel,sa1100-ssp
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+    description:
+      External serial clock input on GPIO19.
+
+  dmas:
+    items:
+      - description: Ser4SSPTr, transmit
+      - description: Ser4SSPRc, receive
+
+  dma-names:
+    items:
+      - const: tx
+      - const: rx
+
+  "#sound-dai-cells":
+    const: 0
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - dmas
+  - dma-names
+  - "#sound-dai-cells"
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    ssp@80070060 {
+        compatible = "intel,sa1110-ssp", "intel,sa1100-ssp";
+        reg = <0x80070060 0x18>;
+        interrupts = <19>;
+        clocks = <&audio_clk>;
+        dmas = <&dma 14>, <&dma 15>;
+        dma-names = "tx", "rx";
+        pinctrl-names = "default";
+        pinctrl-0 = <&ssp_clk_pins>;
+        #sound-dai-cells = <0>;
+    };
+
+...
