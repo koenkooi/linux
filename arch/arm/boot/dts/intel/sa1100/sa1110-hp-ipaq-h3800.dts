@@ -57,6 +57,23 @@
 	};
 
 	/*
+	 * BT_PWR_ON (bit 11 of ASIC1's GPIO bank) powers the radio of the
+	 * h3870 and h3875. It is driven separately from the ASIC2 UART0
+	 * transport rather than tied to opening the tty. The same devicetree
+	 * serves the models without a radio, so the switch registers blocked:
+	 * rfkill-gpio drives the line high while it probes and drops it again
+	 * when the blocked switch registers, and the rail stays off until
+	 * userspace unblocks the switch before attaching the radio.
+	 */
+	rfkill-bluetooth {
+		compatible = "rfkill-gpio";
+		label = "h3800-bluetooth";
+		radio-type = "bluetooth";
+		shutdown-gpios = <&asic1 11 GPIO_ACTIVE_HIGH>;
+		default-blocked;
+	};
+
+	/*
 	 * Ser3 is the only UART of this board that is a tty and its console;
 	 * Ser1 is used for plain GPIO (see &ppc below) and Ser2 is IrDA only.
 	 * The modem control lines are active low because the RS232
@@ -320,6 +337,24 @@
 			cd-gpios = <&asic2 6 GPIO_ACTIVE_LOW>;
 			wp-gpios = <&ppc 13 GPIO_ACTIVE_HIGH>;
 			vmmc-supply = <&sd_vcc>;
+		};
+
+		/*
+		 * UART0 of ASIC2, the Bluetooth transport of the h3870 and
+		 * h3875, bound by drivers/tty/serial/8250/8250_asic2.c. The MFD
+		 * core adds this cell only because the node is present and
+		 * available. Like the other cells it has no reg: the MFD core
+		 * hands over the sub-window and the demultiplexed interrupt.
+		 * clock-frequency is the 3.6864 MHz reference that the SA-1110
+		 * supplies on GPIO27, not the 24.576 MHz crystal of ASIC2. The
+		 * radio is attached from userspace with hciattach, so no serdev
+		 * child belongs here.
+		 */
+		serial {
+			compatible = "htc,asic2-uart";
+			clock-frequency = <3686400>;
+			clocks = <&asic2 ASIC2_CLK_SLOW_UART_0>, <&asic2 ASIC2_CLK_EX1>;
+			clock-names = "sel", "ex1";
 		};
 
 		/*
