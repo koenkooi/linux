@@ -36,6 +36,7 @@ allOf:
   - $ref: st,stm32-fmc2-ebi-props.yaml#
   - $ref: ingenic,nemc-peripherals.yaml#
   - $ref: intel,ixp4xx-expansion-peripheral-props.yaml#
+  - $ref: intel,sa1110-smc-peripheral-props.yaml#
   - $ref: qcom,ebi2-peripheral-props.yaml#
   - $ref: samsung,exynos4210-srom-peripheral-props.yaml#
   - $ref: ti,gpmc-child.yaml#

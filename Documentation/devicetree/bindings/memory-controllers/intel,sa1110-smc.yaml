@@ -1,0 +1,125 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/memory-controllers/intel,sa1110-smc.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Intel SA-1110 static memory controller
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: |
+  The static memory half of the Intel/StrongARM SA-1110 memory controller.
+  Six chip selects, nCS0 to nCS5, each driving one external device at a
+  fixed window in the physical address map, and each with its own access
+  timing programmed into one 16-bit half of an MSC register: MSC0 holds
+  nCS0/nCS1, MSC1 holds nCS2/nCS3, MSC2 holds nCS4/nCS5.
+
+  The three MSC registers are not contiguous and are interleaved with
+  registers belonging to other functional blocks of the same memory
+  controller (MECR for PCMCIA, MDREFR and the MDCAS registers for DRAM),
+  which have their own drivers. This node therefore takes one "reg" entry
+  per MSC register rather than claiming the whole block.
+
+  Chip-select timing must be correct before anything reads or writes the
+  window behind it. On nCS3 to nCS5 the controller can be placed in
+  variable-latency I/O mode, where a cycle completes only once the slave
+  asserts RDY and there is no bus-error timeout: an access to a device
+  whose timing has not been set up can stall the CPU inside a single load
+  or store for as long as the slave holds RDY deasserted, which on this
+  SoC also starves DRAM refresh. Consequently the driver bound to this
+  node programs every chip select its children describe and only then
+  populates those children as platform devices.
+
+  This binding covers the SA-1110 only. Related controllers differ in the
+  set of MSC registers they have and in what the 16 bits of a half mean:
+  the PXA2xx static memory controller, for one, packs a different set of
+  fields, including a return-data-buffering bit SA-1110 does not have, at
+  different offsets within the same 16 bits, and reprograms them on
+  memory clock changes. Each such variant needs its own compatible string
+  and its own field table; none of them is described here.
+
+properties:
+  $nodename:
+    pattern: "^memory-controller@[0-9a-f]+$"
+
+  compatible:
+    const: intel,sa1110-smc
+
+  reg:
+    items:
+      - description: MSC0, timing for nCS0 (bits 15:0) and nCS1 (bits 31:16)
+      - description: MSC1, timing for nCS2 (bits 15:0) and nCS3 (bits 31:16)
+      - description: MSC2, timing for nCS4 (bits 15:0) and nCS5 (bits 31:16)
+
+  reg-names:
+    items:
+      - const: msc0
+      - const: msc1
+      - const: msc2
+
+  "#address-cells":
+    description:
+      The first cell is the chip select number, the second the offset
+      within that chip select's window.
+    const: 2
+
+  "#size-cells":
+    const: 1
+
+  ranges:
+    description:
+      One entry per chip select in use, mapping <chip-select 0> to the
+      fixed base address that chip select decodes at.
+
+patternProperties:
+  "^.*@[0-5],[0-9a-f]+$":
+    description:
+      Devices attached to a chip select are represented as subnodes.
+    type: object
+    $ref: mc-peripheral-props.yaml#
+    additionalProperties: true
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - "#address-cells"
+  - "#size-cells"
+  - ranges
+
+additionalProperties: false
+
+examples:
+  - |
+    memory-controller@a0000010 {
+        compatible = "intel,sa1110-smc";
+        reg = <0xa0000010 0x4>, <0xa0000014 0x4>, <0xa000002c 0x4>;
+        reg-names = "msc0", "msc1", "msc2";
+        #address-cells = <2>;
+        #size-cells = <1>;
+        ranges = <0 0 0x00000000 0x08000000>,
+                 <5 0 0x48000000 0x08000000>;
+
+        flash@0,0 {
+            compatible = "cfi-flash";
+            reg = <0 0x00000000 0x02000000>;
+            bank-width = <4>;
+            intel,sa1110-smc-type = "nonburst-rom";
+            intel,sa1110-smc-first-access-cycles = <7>;
+            intel,sa1110-smc-next-access-cycles = <3>;
+            intel,sa1110-smc-recovery-cycles = <4>;
+        };
+
+        psram@5,1000000 {
+            compatible = "mtd-ram";
+            reg = <5 0x01000000 0x00100000>;
+            bank-width = <4>;
+            intel,sa1110-smc-type = "vlio";
+            intel,sa1110-smc-first-access-cycles = <11>;
+            intel,sa1110-smc-next-access-cycles = <5>;
+            intel,sa1110-smc-recovery-cycles = <14>;
+        };
+    };
+...
