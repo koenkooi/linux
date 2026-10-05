@@ -580,14 +580,21 @@ static int soc_common_pcmcia_set_io_map(
 		return -1;
 	}
 
+	/*
+	 * Deactivating a window does not un-negotiate it: pcmcia_fixup_iowidth()
+	 * and pcmcia_fixup_iospeed() reprogram a window by deactivating it and
+	 * reactivating it 40 ms later with the real speed. Leave the recorded
+	 * speed and the negotiated flag alone on a deactivate call, so that
+	 * they do not read as un-negotiated during that gap; only an activate
+	 * call updates them.
+	 */
 	if (map->flags & MAP_ACTIVE) {
 		if (speed == 0)
 			speed = SOC_PCMCIA_IO_ACCESS;
-	} else {
-		speed = 0;
-	}
 
-	skt->spd_io[map->map] = speed;
+		skt->spd_io[map->map] = speed;
+		skt->spd_io_negotiated[map->map] = map->speed != 0;
+	}
 	skt->ops->set_timing(skt);
 
 	if (map->stop == 1)
