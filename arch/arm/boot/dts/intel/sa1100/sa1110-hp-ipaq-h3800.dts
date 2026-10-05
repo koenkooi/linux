@@ -77,6 +77,28 @@
 	};
 
 	/*
+	 * AC adapter presence. GPIO12 is AC_IN, which reads low when an
+	 * adapter is present, so it is active low.
+	 *
+	 * There is no adc-battery node as on the h39xx: the ADC channel that
+	 * would read the battery voltage is not used on this board by any
+	 * known firmware.
+	 *
+	 * The charge enable line, bit 4 of ASIC1's GPIO bank (CH_TIMER, high
+	 * while charging), is not given to gpio-charger as
+	 * charge-enable-gpios: the driver asserts it at probe, and the
+	 * factory firmware ends a charge itself on a full cell, over
+	 * temperature, a battery fault or after eight hours, none of which
+	 * the kernel implements for this board. The line stays as the boot
+	 * loader left it.
+	 */
+	charger {
+		compatible = "gpio-charger";
+		charger-type = "mains";
+		gpios = <&gpio 12 GPIO_ACTIVE_LOW>;
+	};
+
+	/*
 	 * BT_PWR_ON (bit 11 of ASIC1's GPIO bank) powers the radio of the
 	 * h3870 and h3875. It is driven separately from the ASIC2 UART0
 	 * transport rather than tied to opening the tty. The same devicetree
