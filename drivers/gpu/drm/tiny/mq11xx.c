@@ -62,6 +62,11 @@
  * of the whole window, so the doubled plane always covers the full screen,
  * and each update puts a quarter of the bytes on the host bus.
  *
+ * Chips with the 64x64 two-colour hardware cursor expose it as a cursor
+ * plane. It takes ARGB8888 images that are opaque in at most two colours
+ * and fully transparent elsewhere; any other image is refused, so
+ * userspace draws that cursor itself.
+ *
  * The init sequence (supply power-up, endianness quirk, oscillator enable,
  * CC-module power-up, register table load with verify-and-retry, then
  * enabling scanout). Two caveats apply:
@@ -82,6 +87,7 @@
 
 #include <linux/backlight.h>
 #include <linux/bitfield.h>
+#include <linux/bitrev.h>
 #include <linux/bits.h>
 #include <linux/completion.h>
 #include <linux/delay.h>
@@ -102,7 +108,9 @@
 #include <linux/pwm.h>
 #include <linux/regulator/consumer.h>
 #include <linux/sizes.h>
+#include <linux/slab.h>
 #include <linux/stdarg.h>
+#include <linux/wordpart.h>
 
 #include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic.h>
@@ -253,6 +261,10 @@ MODULE_PARM_DESC(page_flip, "Double-buffer frames that fit twice in video memory
 #define MQ11XX_GC_CONTROL	(MQ11XX_REG_GC + 0x00)
 #define MQ11XX_GC_WINDOW_START	(MQ11XX_REG_GC + 0x30)	/* gc0c */
 #define MQ11XX_GC_WINDOW_STRIDE	(MQ11XX_REG_GC + 0x38)	/* gc0e, bytes/scanline */
+#define MQ11XX_GC_CURSOR_POSITION (MQ11XX_REG_GC + 0x40)	/* gc10 */
+#define MQ11XX_GC_CURSOR_ADDRESS (MQ11XX_REG_GC + 0x44)	/* gc11 */
+#define MQ11XX_GC_CURSOR_FG	(MQ11XX_REG_GC + 0x48)	/* gc12 */
+#define MQ11XX_GC_CURSOR_BG	(MQ11XX_REG_GC + 0x4c)	/* gc13 */
 #define MQ11XX_GC_VERTICAL_PARAMETER (MQ11XX_REG_GC + 0x74)	/* gc1d */
 #define MQ11XX_FP_OUTPUT_CONTROL (MQ11XX_REG_FP + 0x08)
 /*
@@ -293,6 +305,7 @@ MODULE_PARM_DESC(page_flip, "Double-buffer frames that fit twice in video memory
 #define MQ11XX_GC_CONTROL_DEPTH		GENMASK(7, 4)	/* GC.control */
 #define MQ11XX_GC_DEPTH_8BPP		0x3	/* through the palette */
 #define MQ11XX_GC_DEPTH_16BPP		0xc	/* RGB565, palette bypassed */
+#define MQ11XX_GC_CONTROL_CURSOR	BIT(8)	/* GC.control */
 #define MQ11XX_GC_CONTROL_X_DECREMENT	BIT(12)	/* GC.control */
 #define MQ11XX_GC_CONTROL_COLUMN_SCAN	BIT(13)	/* GC.control */
 #define MQ11XX_GC_CONTROL_DOUBLE_H	BIT(14)	/* GC.control */
@@ -308,6 +321,29 @@ MODULE_PARM_DESC(page_flip, "Double-buffer frames that fit twice in video memory
 #define MQ11XX_PALETTE_RED		GENMASK(7, 0)
 #define MQ11XX_PALETTE_GREEN		GENMASK(15, 8)
 #define MQ11XX_PALETTE_BLUE		GENMASK(23, 16)
+
+/*
+ * Hardware cursor: a 64x64 image of two 1 bpp planes, AND and XOR, 16
+ * bytes per row. Each row is four 32-bit words of 16 pixels, the AND bits
+ * in the low half and the XOR bits in the high half, leftmost pixel in the
+ * least significant bit. AND 1 is transparent, AND 0 XOR 0 shows the
+ * background colour (gc13) and AND 0 XOR 1 the foreground colour (gc12).
+ * The position is in display pixels relative to the image window; HCO and
+ * VCO skip that many columns and rows of the image, which is how it is
+ * clipped at the left and top. gc10 and gc11 take effect at the next
+ * falling edge of VSYNC after their most significant byte is written.
+ */
+#define MQ11XX_CURSOR_SIZE		64
+#define MQ11XX_CURSOR_WORDS		(MQ11XX_CURSOR_SIZE * MQ11XX_CURSOR_SIZE / 16)
+#define MQ11XX_GC_CURSOR_X		GENMASK(10, 0)	/* gc10, HCS */
+#define MQ11XX_GC_CURSOR_Y		GENMASK(25, 16)	/* gc10, VCS */
+#define MQ11XX_GC_CURSOR_ADDR		GENMASK(7, 0)	/* gc11, 1 KiB units */
+#define MQ11XX_GC_CURSOR_HCO		GENMASK(21, 16)	/* gc11 */
+#define MQ11XX_GC_CURSOR_VCO		GENMASK(29, 24)	/* gc11 */
+#define MQ11XX_GC_CURSOR_RED		GENMASK(7, 2)	/* gc12, gc13 */
+#define MQ11XX_GC_CURSOR_GREEN		GENMASK(15, 10)
+#define MQ11XX_GC_CURSOR_BLUE		GENMASK(23, 18)
+
 /*
  * gc1d: the scan line being fetched in bits 9:0. The first line of vertical
  * blanking (320, equal to vdisplay, on a running h2200) is the line the
@@ -390,6 +426,9 @@ struct mq11xx_chip {
 	u8 transforms_8bpp;	/* of those, the ones offered at 8 bpp */
 	bool ge_8bpp;		/* the engine draws 8 bpp surfaces */
 	bool double_8bpp;	/* with MQ11XX_CAP_PIXEL_DOUBLE, also at 8 bpp */
+	/* With MQ11XX_CAP_CURSOR, the transforms the cursor is shown under. */
+	u8 cursor_transforms;
+	bool cursor_double;	/* ... and whether also while pixels are doubled */
 };
 
 /*
@@ -414,6 +453,8 @@ static const struct mq11xx_chip mq11xx_chips[] = {
 		.transforms_8bpp = MQ11XX_SCAN_ROWS,
 		.ge_8bpp = true,
 		.double_8bpp = true,
+		.cursor_transforms = MQ11XX_SCAN_ALL,
+		.cursor_double = true,
 	}, {
 		/* Covered by the same datasheet as the MQ1132. */
 		.device_id = MQ11XX_PCI_DEVICE_1100,
@@ -424,6 +465,8 @@ static const struct mq11xx_chip mq11xx_chips[] = {
 		.transforms_8bpp = MQ11XX_SCAN_ROWS,
 		.ge_8bpp = true,
 		.double_8bpp = true,
+		.cursor_transforms = MQ11XX_SCAN_ALL,
+		.cursor_double = true,
 	}, {
 		/*
 		 * Measured on an h2200: engine fill and copy (including
@@ -449,6 +492,12 @@ static const struct mq11xx_chip mq11xx_chips[] = {
 		 * engine and pixel doubling were only run at 16 bpp.
 		 */
 		.transforms_8bpp = BIT(0),
+		/*
+		 * The cursor was only fetched over an upright, undoubled
+		 * scan, so it is not offered together with a transform or
+		 * pixel doubling.
+		 */
+		.cursor_transforms = BIT(0),
 	}, {
 		/*
 		 * Presumed to share the MQ1188's layout, but no MQ1178 has
@@ -607,6 +656,7 @@ struct mq11xx_device {
 	bool irq_wanted;
 
 	struct drm_plane primary_plane;
+	struct drm_plane cursor_plane;	/* initialised if mq11xx_has_cursor() */
 	struct drm_crtc crtc;
 	struct drm_encoder encoder;
 	struct drm_connector connector;
@@ -639,6 +689,14 @@ struct mq11xx_device {
 	size_t scan_base;
 	bool flip_valid;
 	struct mq11xx_flip_damage flip_prev;
+
+	/*
+	 * The cursor image in video memory, word by word, valid while
+	 * cursor_loaded is set. Every bring-up clears video memory and so
+	 * clears cursor_loaded; only the commit tail changes them after that.
+	 */
+	bool cursor_loaded;
+	u32 cursor_image[MQ11XX_CURSOR_WORDS];
 
 	/*
 	 * Chip power follows the CRTC: off while the display is blanked.
@@ -784,7 +842,7 @@ static const struct mq11xx_reg mq11xx_h2200_init_regs[] = {
 	{ MQ11XX_REG_MIU + 0x18, 0x00000000 },	/* mm06 */
 
 	/* GC: gc06/gc07 (counter inits), gc0f (reserved), gc12/gc13 (cursor
-	 * fg/bg -- no hardware cursor is used) are skipped per mqInitValid.
+	 * fg/bg, written by the cursor plane) are skipped per mqInitValid.
 	 */
 	{ MQ11XX_REG_GC + 0x00, 0x051100c8 },	/* gc00 control, output disabled */
 	{ MQ11XX_REG_GC + 0x04, 0x00000200 },	/* gc01 power_sequencing */
@@ -1951,6 +2009,7 @@ static int mq11xx_hw_init(struct mq11xx_device *mq)
 	mq->scan_base = MQ11XX_SRAM_FRAME;
 	mq->flip_valid = false;
 	mq->palette_stale = true;
+	mq->cursor_loaded = false;
 	mq->powered = true;
 	mq->init_logged = true;
 
@@ -2059,8 +2118,13 @@ static void mq11xx_output_disable(struct mq11xx_device *mq)
 	 */
 	regulator_disable(mq->panel);
 
+	/*
+	 * The cursor goes with scanout; the cursor plane turns it back on
+	 * when the unblank's modeset updates it.
+	 */
 	val = readl(mq->regs + MQ11XX_GC_CONTROL);
-	writel(val & ~MQ11XX_GC_CONTROL_ENABLE, mq->regs + MQ11XX_GC_CONTROL);
+	writel(val & ~(MQ11XX_GC_CONTROL_ENABLE | MQ11XX_GC_CONTROL_CURSOR),
+	       mq->regs + MQ11XX_GC_CONTROL);
 
 	val = readl(mq->regs + MQ11XX_DC_CONFIG_5);
 	writel(val & ~MQ11XX_CONFIG_GE_ENABLE, mq->regs + MQ11XX_DC_CONFIG_5);
@@ -3123,6 +3187,408 @@ static const struct drm_plane_funcs mq11xx_primary_plane_funcs = {
 	DRM_GEM_SHADOW_PLANE_FUNCS,
 };
 
+/* ------------------------------------------------------------------ */
+/* Cursor plane on the hardware cursor */
+
+/*
+ * The cursor image is converted from the framebuffer in atomic_check, so
+ * that an image the hardware cannot show fails the commit and userspace
+ * falls back to a software cursor. The masks hold the image as it appears
+ * on the display, bit n of a row being pixel n from the left.
+ */
+struct mq11xx_cursor_state {
+	struct drm_plane_state base;
+	bool converted;		/* the fields below hold base.fb's image */
+	bool mirror;		/* the scan runs each line from its last pixel */
+	bool dbl;		/* the scan doubles pixels and lines */
+	u32 fg, bg;		/* gc12, gc13 */
+	u64 and_mask[MQ11XX_CURSOR_SIZE];
+	u64 xor_mask[MQ11XX_CURSOR_SIZE];
+};
+
+static struct mq11xx_cursor_state *
+to_mq11xx_cursor_state(struct drm_plane_state *state)
+{
+	return container_of(state, struct mq11xx_cursor_state, base);
+}
+
+static bool mq11xx_has_cursor(struct mq11xx_device *mq)
+{
+	return (mq->chip->caps & MQ11XX_CAP_CURSOR) &&
+	       mq->vram_size >= MQ11XX_SRAM_CURSOR + MQ11XX_SRAM_CURSOR_SIZE;
+}
+
+static const u32 mq11xx_cursor_plane_formats[] = {
+	DRM_FORMAT_ARGB8888,
+};
+
+static u32 mq11xx_cursor_colour(u32 argb)
+{
+	return FIELD_PREP(MQ11XX_GC_CURSOR_RED, (argb >> 18) & 0x3f) |
+	       FIELD_PREP(MQ11XX_GC_CURSOR_GREEN, (argb >> 10) & 0x3f) |
+	       FIELD_PREP(MQ11XX_GC_CURSOR_BLUE, (argb >> 2) & 0x3f);
+}
+
+/*
+ * Fully transparent pixels stay transparent and opaque ones take the
+ * foreground or the background colour, compared at the six bits per
+ * component the colour registers keep. A translucent pixel or a third
+ * colour has no representation.
+ */
+static int mq11xx_cursor_convert(struct drm_plane *plane,
+				 struct mq11xx_cursor_state *cstate)
+{
+	struct drm_plane_state *state = &cstate->base;
+	struct drm_framebuffer *fb = state->fb;
+	struct iosys_map map[DRM_FORMAT_MAX_PLANES];
+	struct iosys_map data[DRM_FORMAT_MAX_PLANES];
+	unsigned int sx = state->src_x >> 16, sy = state->src_y >> 16;
+	unsigned int w = state->src_w >> 16, h = state->src_h >> 16;
+	unsigned int x, y, colours = 0;
+	__le32 row[MQ11XX_CURSOR_SIZE];
+	int ret;
+
+	ret = drm_gem_fb_begin_cpu_access(fb, DMA_FROM_DEVICE);
+	if (ret)
+		return ret;
+	ret = drm_gem_fb_vmap(fb, map, data);
+	if (ret)
+		goto out_end_access;
+
+	cstate->fg = 0;
+	cstate->bg = 0;
+	for (y = 0; y < MQ11XX_CURSOR_SIZE; y++) {
+		cstate->and_mask[y] = ~0ULL;
+		cstate->xor_mask[y] = 0;
+	}
+
+	for (y = 0; y < h; y++) {
+		iosys_map_memcpy_from(row, &data[0],
+				      (sy + y) * fb->pitches[0] + sx * sizeof(row[0]),
+				      w * sizeof(row[0]));
+
+		for (x = 0; x < w; x++) {
+			u32 px = le32_to_cpu(row[x]);
+			u32 c = mq11xx_cursor_colour(px);
+
+			if (!(px >> 24))
+				continue;
+			if (px >> 24 != 0xff) {
+				drm_dbg_atomic(plane->dev, "cursor pixel %u,%u is translucent\n",
+					       x, y);
+				ret = -EINVAL;
+				goto out_vunmap;
+			}
+
+			if (!colours) {
+				cstate->fg = c;
+				colours = 1;
+			} else if (c != cstate->fg && colours == 1) {
+				cstate->bg = c;
+				colours = 2;
+			} else if (c != cstate->fg && c != cstate->bg) {
+				drm_dbg_atomic(plane->dev, "cursor has a third colour\n");
+				ret = -EINVAL;
+				goto out_vunmap;
+			}
+
+			cstate->and_mask[y] &= ~BIT_ULL(x);
+			if (c == cstate->fg)
+				cstate->xor_mask[y] |= BIT_ULL(x);
+		}
+	}
+
+	cstate->converted = true;
+
+out_vunmap:
+	drm_gem_fb_vunmap(fb, map);
+out_end_access:
+	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
+	return ret;
+}
+
+/*
+ * The primary plane state this commit leaves behind. A commit that changes
+ * the primary plane takes the CRTC's lock, which this one holds as well,
+ * so the current state cannot change underneath.
+ */
+static const struct drm_plane_state *
+mq11xx_primary_state(struct mq11xx_device *mq, struct drm_atomic_commit *state)
+{
+	struct drm_plane_state *primary;
+
+	primary = drm_atomic_get_new_plane_state(state, &mq->primary_plane);
+
+	return primary ?: mq->primary_plane.state;
+}
+
+static int mq11xx_cursor_plane_helper_atomic_check(struct drm_plane *plane,
+						   struct drm_atomic_commit *state)
+{
+	struct drm_plane_state *new_state = drm_atomic_get_new_plane_state(state, plane);
+	struct drm_plane_state *old_state = drm_atomic_get_old_plane_state(state, plane);
+	struct mq11xx_cursor_state *cstate = to_mq11xx_cursor_state(new_state);
+	struct mq11xx_device *mq = to_mq11xx(plane->dev);
+	struct drm_crtc_state *crtc_state = NULL;
+	const struct drm_plane_state *primary;
+	unsigned int t = 0, w, h;
+	bool dbl = false;
+	int scale, ret;
+
+	if (new_state->fb != old_state->fb ||
+	    drm_plane_get_damage_clips_count(new_state) ||
+	    new_state->src_x != old_state->src_x ||
+	    new_state->src_y != old_state->src_y ||
+	    new_state->src_w != old_state->src_w ||
+	    new_state->src_h != old_state->src_h)
+		cstate->converted = false;
+
+	if (new_state->crtc && new_state->fb) {
+		crtc_state = drm_atomic_get_new_crtc_state(state, new_state->crtc);
+
+		primary = mq11xx_primary_state(mq, state);
+		if (primary->fb) {
+			t = mq11xx_scan_transform(primary->rotation);
+			dbl = mq11xx_plane_doubled(primary);
+		}
+
+		if (!(mq->chip->cursor_transforms & BIT(t)) ||
+		    (dbl && !mq->chip->cursor_double)) {
+			drm_dbg_atomic(plane->dev, "no cursor on the %s with rotation 0x%x%s\n",
+				       mq->chip->name, primary->rotation,
+				       dbl ? " and pixel doubling" : "");
+			return -EINVAL;
+		}
+	}
+
+	/* The chip doubles the cursor with the rest of the window. */
+	scale = dbl ? MQ11XX_DOUBLE_SCALE : DRM_PLANE_NO_SCALING;
+	ret = drm_atomic_helper_check_plane_state(new_state, crtc_state,
+						  scale, scale, true, true);
+	if (ret || !new_state->visible)
+		return ret;
+
+	w = new_state->src_w >> 16;
+	h = new_state->src_h >> 16;
+	if ((new_state->src_x | new_state->src_y |
+	     new_state->src_w | new_state->src_h) & 0xffff ||
+	    w > MQ11XX_CURSOR_SIZE || h > MQ11XX_CURSOR_SIZE ||
+	    new_state->crtc_w != w << dbl || new_state->crtc_h != h << dbl) {
+		drm_dbg_atomic(plane->dev, "cursor source 0x%x x 0x%x shown %ux%u\n",
+			       new_state->src_w, new_state->src_h,
+			       new_state->crtc_w, new_state->crtc_h);
+		return -EINVAL;
+	}
+
+	cstate->mirror = t & MQ11XX_SCAN_X_DECREMENT;
+	cstate->dbl = dbl;
+
+	return cstate->converted ? 0 : mq11xx_cursor_convert(plane, cstate);
+}
+
+static u64 mq11xx_shr64(u64 v, unsigned int n)
+{
+	return n < 64 ? v >> n : 0;
+}
+
+static u64 mq11xx_rev64(u64 v)
+{
+	return (u64)bitrev32(lower_32_bits(v)) << 32 | bitrev32(upper_32_bits(v));
+}
+
+/*
+ * Loads the image for the cursor's placement: shifted left by @sx columns
+ * and up by @sy rows where the image itself is clipped, transparent from
+ * column @cols and row @rows on, which lie beyond the right and bottom
+ * edges, and reflected for a scan that runs each line from its last pixel:
+ * the datasheet says GC00[12] runs the cursor's lines that way too. Only
+ * the words that change are written.
+ */
+static void mq11xx_cursor_load(struct mq11xx_device *mq,
+			       const struct mq11xx_cursor_state *cstate,
+			       unsigned int sx, unsigned int sy,
+			       unsigned int cols, unsigned int rows)
+{
+	u64 keep = cols < 64 ? BIT_ULL(cols) - 1 : ~0ULL;
+	bool written = false;
+	unsigned int r, k, i;
+	u32 word;
+
+	for (r = 0; r < MQ11XX_CURSOR_SIZE; r++) {
+		u64 am = ~0ULL, xm = 0;
+
+		if (r < rows && r + sy < MQ11XX_CURSOR_SIZE) {
+			am = mq11xx_shr64(cstate->and_mask[r + sy], sx) |
+			     ~mq11xx_shr64(~0ULL, sx) | ~keep;
+			xm = mq11xx_shr64(cstate->xor_mask[r + sy], sx) & keep;
+		}
+		if (cstate->mirror) {
+			am = mq11xx_rev64(am);
+			xm = mq11xx_rev64(xm);
+		}
+
+		for (k = 0; k < 4; k++) {
+			word = (u16)(am >> (16 * k)) |
+			       (u32)(u16)(xm >> (16 * k)) << 16;
+			i = r * 4 + k;
+			if (mq->cursor_loaded && mq->cursor_image[i] == word)
+				continue;
+			writel(word, mq->vram + MQ11XX_SRAM_CURSOR + i * 4);
+			mq->cursor_image[i] = word;
+			written = true;
+		}
+	}
+
+	if (written)
+		mq11xx_vram_flush(mq, MQ11XX_SRAM_CURSOR);
+	mq->cursor_loaded = true;
+}
+
+static void mq11xx_cursor_hide(struct mq11xx_device *mq)
+{
+	u32 control = readl(mq->regs + MQ11XX_GC_CONTROL);
+
+	if (control & MQ11XX_GC_CONTROL_CURSOR)
+		writel(control & ~MQ11XX_GC_CONTROL_CURSOR,
+		       mq->regs + MQ11XX_GC_CONTROL);
+}
+
+/*
+ * HCO and VCO clip an upright image at the left and top, as both boards'
+ * WinCE drivers use them. What they count in a reflected or doubled scan
+ * is not documented, so there the image itself is shifted instead, by
+ * whole image pixels; a doubled pixel half off the left or top edge is
+ * then left out.
+ */
+static void mq11xx_cursor_plane_helper_atomic_update(struct drm_plane *plane,
+						     struct drm_atomic_commit *state)
+{
+	struct drm_plane_state *plane_state = drm_atomic_get_new_plane_state(state, plane);
+	struct mq11xx_cursor_state *cstate = to_mq11xx_cursor_state(plane_state);
+	struct mq11xx_device *mq = to_mq11xx(plane->dev);
+	const struct drm_display_mode *mode = mq->mode;
+	unsigned int hco = 0, vco = 0, sx = 0, sy = 0, cols, rows;
+	int x = plane_state->crtc_x, y = plane_state->crtc_y;
+	unsigned int dbl = cstate->dbl;
+	u32 control;
+	int idx;
+
+	if (!drm_dev_enter(&mq->drm, &idx))
+		return;
+
+	/* As in the primary plane update: a failed unblank leaves the chip unpowered. */
+	if (!mq->powered)
+		goto out_exit;
+
+	if (!plane_state->visible) {
+		mq11xx_cursor_hide(mq);
+		goto out_exit;
+	}
+
+	if (x < 0 && (cstate->mirror || dbl)) {
+		sx = DIV_ROUND_UP(-x, 1 << dbl);
+		x += sx << dbl;
+	} else if (x < 0) {
+		hco = -x;
+		x = 0;
+	}
+	if (y < 0 && dbl) {
+		sy = DIV_ROUND_UP(-y, 1 << dbl);
+		y += sy << dbl;
+	} else if (y < 0) {
+		vco = -y;
+		y = 0;
+	}
+
+	cols = hco + DIV_ROUND_UP(mode->hdisplay - x, 1 << dbl);
+	rows = vco + DIV_ROUND_UP(mode->vdisplay - y, 1 << dbl);
+	mq11xx_cursor_load(mq, cstate, sx, sy, cols, rows);
+
+	writel(cstate->fg, mq->regs + MQ11XX_GC_CURSOR_FG);
+	writel(cstate->bg, mq->regs + MQ11XX_GC_CURSOR_BG);
+	/* Single 32-bit stores, so the most significant byte lands last. */
+	writel(FIELD_PREP(MQ11XX_GC_CURSOR_X, x) | FIELD_PREP(MQ11XX_GC_CURSOR_Y, y),
+	       mq->regs + MQ11XX_GC_CURSOR_POSITION);
+	writel(FIELD_PREP(MQ11XX_GC_CURSOR_ADDR, MQ11XX_SRAM_CURSOR / SZ_1K) |
+	       FIELD_PREP(MQ11XX_GC_CURSOR_HCO, hco) |
+	       FIELD_PREP(MQ11XX_GC_CURSOR_VCO, vco),
+	       mq->regs + MQ11XX_GC_CURSOR_ADDRESS);
+
+	control = readl(mq->regs + MQ11XX_GC_CONTROL);
+	if (!(control & MQ11XX_GC_CONTROL_CURSOR))
+		writel(control | MQ11XX_GC_CONTROL_CURSOR,
+		       mq->regs + MQ11XX_GC_CONTROL);
+
+out_exit:
+	drm_dev_exit(idx);
+}
+
+static void mq11xx_cursor_plane_helper_atomic_disable(struct drm_plane *plane,
+						      struct drm_atomic_commit *state)
+{
+	struct mq11xx_device *mq = to_mq11xx(plane->dev);
+	int idx;
+
+	if (!drm_dev_enter(&mq->drm, &idx))
+		return;
+	if (mq->powered)
+		mq11xx_cursor_hide(mq);
+	drm_dev_exit(idx);
+}
+
+static const struct drm_plane_helper_funcs mq11xx_cursor_plane_helper_funcs = {
+	.atomic_check = mq11xx_cursor_plane_helper_atomic_check,
+	.atomic_update = mq11xx_cursor_plane_helper_atomic_update,
+	.atomic_disable = mq11xx_cursor_plane_helper_atomic_disable,
+};
+
+static struct drm_plane_state *
+mq11xx_cursor_plane_duplicate_state(struct drm_plane *plane)
+{
+	struct mq11xx_cursor_state *cstate;
+
+	if (WARN_ON(!plane->state))
+		return NULL;
+
+	cstate = kmemdup(to_mq11xx_cursor_state(plane->state), sizeof(*cstate),
+			 GFP_KERNEL);
+	if (!cstate)
+		return NULL;
+	__drm_atomic_helper_plane_duplicate_state(plane, &cstate->base);
+
+	return &cstate->base;
+}
+
+static void mq11xx_cursor_plane_destroy_state(struct drm_plane *plane,
+					      struct drm_plane_state *state)
+{
+	__drm_atomic_helper_plane_destroy_state(state);
+	kfree(to_mq11xx_cursor_state(state));
+}
+
+static void mq11xx_cursor_plane_reset(struct drm_plane *plane)
+{
+	struct mq11xx_cursor_state *cstate;
+
+	if (plane->state) {
+		mq11xx_cursor_plane_destroy_state(plane, plane->state);
+		plane->state = NULL;
+	}
+
+	cstate = kzalloc(sizeof(*cstate), GFP_KERNEL);
+	if (cstate)
+		__drm_atomic_helper_plane_reset(plane, &cstate->base);
+}
+
+static const struct drm_plane_funcs mq11xx_cursor_plane_funcs = {
+	.update_plane = drm_atomic_helper_update_plane,
+	.disable_plane = drm_atomic_helper_disable_plane,
+	.destroy = drm_plane_cleanup,
+	.reset = mq11xx_cursor_plane_reset,
+	.atomic_duplicate_state = mq11xx_cursor_plane_duplicate_state,
+	.atomic_destroy_state = mq11xx_cursor_plane_destroy_state,
+};
+
 static enum drm_mode_status mq11xx_crtc_helper_mode_valid(struct drm_crtc *crtc,
 							  const struct drm_display_mode *mode)
 {
@@ -3285,6 +3751,7 @@ static int mq11xx_pipe_init(struct mq11xx_device *mq)
 	struct drm_encoder *encoder = &mq->encoder;
 	struct drm_connector *connector = &mq->connector;
 	bool palette = mq->chip->caps & MQ11XX_CAP_PALETTE_8BPP;
+	struct drm_plane *cursor_plane = NULL;
 	int ret;
 
 	ret = drm_universal_plane_init(dev, primary_plane, 0,
@@ -3306,7 +3773,20 @@ static int mq11xx_pipe_init(struct mq11xx_device *mq)
 			return ret;
 	}
 
-	ret = drm_crtc_init_with_planes(dev, crtc, primary_plane, NULL,
+	if (mq11xx_has_cursor(mq)) {
+		cursor_plane = &mq->cursor_plane;
+		ret = drm_universal_plane_init(dev, cursor_plane, 0,
+					       &mq11xx_cursor_plane_funcs,
+					       mq11xx_cursor_plane_formats,
+					       ARRAY_SIZE(mq11xx_cursor_plane_formats),
+					       mq11xx_primary_plane_format_modifiers,
+					       DRM_PLANE_TYPE_CURSOR, NULL);
+		if (ret)
+			return ret;
+		drm_plane_helper_add(cursor_plane, &mq11xx_cursor_plane_helper_funcs);
+	}
+
+	ret = drm_crtc_init_with_planes(dev, crtc, primary_plane, cursor_plane,
 					mq->irq ? &mq11xx_crtc_irq_funcs :
 						  &mq11xx_crtc_timer_funcs,
 					NULL);
@@ -3338,9 +3818,36 @@ static int mq11xx_pipe_init(struct mq11xx_device *mq)
 
 /* ------------------------------------------------------------------ */
 
+/*
+ * The cursor image is reflected and doubled with the scan, so a commit
+ * that changes the primary plane's transform or doubling updates the
+ * cursor plane too, whose atomic_check then also decides whether the
+ * cursor can still be shown.
+ */
+static int mq11xx_mode_config_atomic_check(struct drm_device *dev,
+					   struct drm_atomic_commit *state)
+{
+	struct mq11xx_device *mq = to_mq11xx(dev);
+	struct drm_plane_state *old_state, *new_state, *cursor_state;
+
+	new_state = drm_atomic_get_new_plane_state(state, &mq->primary_plane);
+	if (mq11xx_has_cursor(mq) && new_state) {
+		old_state = drm_atomic_get_old_plane_state(state, &mq->primary_plane);
+		if (mq11xx_scan_transform(new_state->rotation) !=
+		    mq11xx_scan_transform(old_state->rotation) ||
+		    mq11xx_plane_doubled(new_state) != mq11xx_plane_doubled(old_state)) {
+			cursor_state = drm_atomic_get_plane_state(state, &mq->cursor_plane);
+			if (IS_ERR(cursor_state))
+				return PTR_ERR(cursor_state);
+		}
+	}
+
+	return drm_atomic_helper_check(dev, state);
+}
+
 static const struct drm_mode_config_funcs mq11xx_mode_config_funcs = {
 	.fb_create = drm_gem_fb_create_with_dirty,
-	.atomic_check = drm_atomic_helper_check,
+	.atomic_check = mq11xx_mode_config_atomic_check,
 	.atomic_commit = drm_atomic_helper_commit,
 };
 
@@ -3377,6 +3884,10 @@ static int mq11xx_mode_config_init(struct mq11xx_device *mq)
 	if (mq->chip->caps & MQ11XX_CAP_ROTATION) {
 		dev->mode_config.max_width = max(mq->mode->hdisplay, mq->mode->vdisplay);
 		dev->mode_config.max_height = dev->mode_config.max_width;
+	}
+	if (mq11xx_has_cursor(mq)) {
+		dev->mode_config.cursor_width = MQ11XX_CURSOR_SIZE;
+		dev->mode_config.cursor_height = MQ11XX_CURSOR_SIZE;
 	}
 	dev->mode_config.preferred_depth = 16;
 	dev->mode_config.prefer_shadow = 0;
