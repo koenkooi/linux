@@ -267,6 +267,17 @@
 	};
 };
 
+/*
+ * The ASIC2 UART blocks take their 3.6864 MHz reference from GPIO27. TSEL 1
+ * and TSEL 5 both select that oscillator; 1 is the tap the SA-1111 boards
+ * and the 2.4 kernel's h3800_map_io() use, and the one an h3870 has run
+ * with. The other TUCR fields stay as the boot loader left them.
+ */
+&clks {
+	assigned-clocks = <&clks SA1100_CLK_GPIO27>;
+	assigned-clock-parents = <&clks SA1100_CLK_TSEL_OSC3M6>;
+};
+
 /* The two lines of the PPC block that this board uses. */
 &ppc {
 	gpio-line-names = "", "", "", "", "", "", "", "", "", "", "", "",
@@ -284,6 +295,19 @@
  * binding gives the whole 8-bit data bus.
  */
 &pinctrl {
+	pinctrl-names = "default";
+	pinctrl-0 = <&clk_out_pins>;
+
+	/*
+	 * GPIO27 carries the test clock that "&clks" selects, the reference
+	 * of the ASIC2 UARTs. No driver owns the pin, so the pin controller
+	 * holds the state itself.
+	 */
+	clk_out_pins: clk-out-pins {
+		pins = "P27";
+		function = "32_768kHz";
+	};
+
 	lcd_data_pins: lcd-data-pins {
 		pins = "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9";
 		function = "LDD";
