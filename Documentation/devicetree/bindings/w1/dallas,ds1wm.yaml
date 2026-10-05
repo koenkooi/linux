@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/w1/dallas,ds1wm.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Dallas DS1WM 1-Wire bus master
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  The DS1WM 1-Wire bus master core (drivers/w1/masters/ds1wm.c) as embedded
+  in several HP/Compaq iPAQ companion ASICs: ASIC2 (h38xx/h39xx), ASIC3
+  (hx4700), HAMCOP (h2200) and SAMCOP (h5xxx). The node has no "reg" and no
+  "interrupts" of its own -- the parent MFD core hands this cell its
+  register sub-range and demultiplexed interrupt directly, out of band from
+  this node -- and its gate clock is resolved by devm_clk_get(dev, NULL)
+  against the parent MFD driver's own clkdev alias, which is why this
+  binding deliberately carries no "clocks" property.
+
+properties:
+  compatible:
+    items:
+      - enum:
+          - htc,asic2-onewire
+          - htc,asic3-onewire
+          - samsung,hamcop-onewire
+          - samsung,samcop-onewire
+      - const: dallas,ds1wm
+
+  dallas,bus-shift:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    enum: [0, 1, 2]
+    default: 0
+    description: >-
+      Register-file stride: logical register N (0=CMD, 1=DATA, 2=INT,
+      3=INT_EN, 4=CLKDIV) sits at byte offset N << bus-shift. The driver
+      rejects any value above 2. Register access itself is always
+      byte-wide regardless of this stride.
+
+  dallas,active-high:
+    type: boolean
+    description: >-
+      Sets DS1WM_INTEN's IAS bit: present when the DS1WM-to-parent-ASIC
+      interrupt line is wired active-high, absent when active-low. This is
+      chip-internal wiring, not board policy.
+
+  dallas,reset-recover-delay-ms:
+    default: 0
+    maximum: 10
+    description: >-
+      Milliseconds to sleep after a 1-Wire bus reset pulse before the next
+      transaction. 0 is correct for any 1-Wire-spec-compliant slave --
+      DS1WM's own reset/presence-detect timing is already exact.
+
+  battery:
+    $ref: /schemas/power/supply/maxim,ds2760.yaml#
+    description: >-
+      The DS2760 gas gauge in the handheld's battery pack -- on every
+      board in this family, the bus's only slave. No slave needs a node
+      to be found at all (the w1 core enumerates the bus by family code),
+      but a node is what lets one be referenced: "power-supplies" on this
+      child is how the gauge learns which charger supplies it, and
+      ds2760_battery.c passes dev_fwnode() of the w1 slave device
+      straight through to the power_supply it registers. Node placement
+      under the bus master is the convention
+      Documentation/devicetree/bindings/w1/w1.txt's own example uses.
+
+required:
+  - compatible
+
+additionalProperties: false
+
+examples:
+  - |
+    companion-chip {
+        onewire {
+            compatible = "htc,asic2-onewire", "dallas,ds1wm";
+            dallas,bus-shift = <2>;
+            dallas,active-high;
+            dallas,reset-recover-delay-ms = <1>;
+
+            battery {
+                compatible = "maxim,ds2760";
+            };
+        };
+    };
+
+...
