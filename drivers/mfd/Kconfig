@@ -27,6 +27,24 @@ config MFD_ASIC3
 	  of ASIC3's individual peripherals; select their drivers
 	  separately.
 
+config MFD_ASIC2
+	bool "Compaq/HTC ASIC2 companion ASIC"
+	depends on ARCH_PXA
+	select MFD_CORE
+	help
+	  This is the core driver for the Compaq/HTC ASIC2 companion ASIC
+	  found on the HP/Compaq iPAQ h38xx/h39xx families. ASIC2 provides
+	  a 16-line GPIO block, a 12-line keypad interrupt block, an SPI
+	  master, an ADC + resistive touchscreen front-end, two PWM
+	  channels (one drives the frontlight), a DS1WM-compatible 1-Wire
+	  master, two 16550A-compatible UARTs and an 8254-compatible
+	  timer block.
+
+	  This option enables only the core chip driver (register access,
+	  gpio_chip, clocks, and its IRQ domain) and does not by itself
+	  enable any of ASIC2's individual peripherals; select their
+	  drivers separately.
+
 config MFD_CS5535
 	tristate "AMD CS5535 and CS5536 southbridge core functions"
 	select MFD_CORE
