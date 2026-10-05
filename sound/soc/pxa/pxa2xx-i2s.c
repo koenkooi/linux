@@ -294,6 +294,11 @@ static int pxa2xx_soc_pcm_resume(struct snd_soc_component *component)
 
 static int pxa2xx_i2s_probe(struct snd_soc_dai *dai)
 {
+	/*
+	 * On a DT-probed device the "I2SCLK" connection id is matched against
+	 * the clock-names of the node, not against the legacy clkdev table, so
+	 * the node must carry clock-names.
+	 */
 	clk_i2s = clk_get(dai->dev, "I2SCLK");
 	if (IS_ERR(clk_i2s))
 		return PTR_ERR(clk_i2s);
@@ -340,6 +345,13 @@ static const struct snd_soc_dai_ops pxa_i2s_dai_ops = {
 };
 
 static struct snd_soc_dai_driver pxa_i2s_dai = {
+	/*
+	 * Set explicitly so that dai_links naming the CPU DAI "pxa2xx-i2s" keep
+	 * matching: snd_soc_find_dai() accepts either dai->name or
+	 * dai->driver->name, and with a DT-probed device dai->name becomes
+	 * the dev_name() form ("40400000.i2s").
+	 */
+	.name = "pxa2xx-i2s",
 	.playback = {
 		.channels_min = 2,
 		.channels_max = 2,
@@ -383,11 +395,25 @@ static int pxa2xx_i2s_drv_probe(struct platform_device *pdev)
 					       &pxa_i2s_dai, 1);
 }
 
+/*
+ * Match a devicetree node as well as the legacy platform device name. The
+ * node is needed for DMA on a DT boot: dma_request_chan() resolves dmas and
+ * dma-names through the of_node of the consumer, and the legacy
+ * dma_slave_map is not used once the DMA controller is itself
+ * instantiated from devicetree.
+ */
+static const struct of_device_id pxa2xx_i2s_of_match[] = {
+	{ .compatible = "marvell,pxa2xx-i2s", },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, pxa2xx_i2s_of_match);
+
 static struct platform_driver pxa2xx_i2s_driver = {
 	.probe = pxa2xx_i2s_drv_probe,
 
 	.driver = {
 		.name = "pxa2xx-i2s",
+		.of_match_table = pxa2xx_i2s_of_match,
 	},
 };
 
