@@ -111,6 +111,14 @@ static int serial_pxa_probe(struct platform_device *pdev)
 		return ret;
 
 	uart.port.type = PORT_XSCALE;
+	/*
+	 * PORT_XSCALE's shared uart_config[] entry has no UART_CAP_AFE, so
+	 * serial8250_set_afe() would never set the MCR auto flow control bit.
+	 * Set the capabilities here rather than in the shared table so other
+	 * PORT_XSCALE users are unaffected.
+	 */
+	uart.capabilities = UART_CAP_FIFO | UART_CAP_UUE | UART_CAP_RTOIE |
+			     UART_CAP_AFE;
 	uart.port.mapbase = mmres->start;
 	uart.port.flags = UPF_IOREMAP | UPF_SKIP_TEST | UPF_FIXED_TYPE;
 	uart.port.dev = &pdev->dev;
