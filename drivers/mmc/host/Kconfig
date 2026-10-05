@@ -717,6 +717,17 @@ config MMC_SDHCI_SPRD
 config MMC_TMIO_CORE
 	tristate
 
+config MMC_TMIO
+	tristate "Toshiba Mobile IO Controller (TMIO) MMC/SD function support"
+	depends on MFD_ASIC3
+	select MMC_TMIO_CORE
+	help
+	  This provides support for the SD/MMC cell found in the Compaq/HTC
+	  ASIC3 companion ASIC (HP iPAQ hx4700 and h39xx).
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called tmio_mmc.
+
 config MMC_SDHI
 	tristate "Renesas SDHI SD/SDIO controller support"
 	depends on SUPERH || ARCH_RENESAS || COMPILE_TEST
