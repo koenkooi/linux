@@ -484,6 +484,18 @@ config SPI_NXP_XSPI
 	  This controller does not support generic SPI messages and only
 	  supports the high-level SPI memory interface.
 
+config SPI_ASIC2
+	tristate "ASIC2 companion ASIC SPI Master"
+	depends on MFD_ASIC2 || COMPILE_TEST
+	help
+	  SPI master driver for the byte-at-a-time SPI block inside the
+	  Compaq/HTC ASIC2 companion ASIC (HP iPAQ h38xx/h39xx family).
+	  Used for the expansion-sleeve identification EEPROM and, on some
+	  sleeves, a bespoke sleeve-controller protocol.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called spi-asic2.
+
 config SPI_GPIO
 	tristate "GPIO-based bitbanging SPI Master"
 	depends on GPIOLIB || COMPILE_TEST
