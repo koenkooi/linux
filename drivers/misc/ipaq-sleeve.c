@@ -20,9 +20,17 @@
  *    driver core requires.
  *
  *  - No /proc/bus/sleeve files and no private debug macro; dynamic debug
- *    covers the latter. The one sysfs attribute of the bus is the
- *    bus-level identity_override, see
+ *    covers the latter. Each sleeve device carries read-only sysfs
+ *    attributes for its identity and every decoded field of its ID EEPROM
+ *    record, and the bus has one knob, identity_override, see
  *    Documentation/ABI/testing/sysfs-bus-ipaq-sleeve.
+ *
+ *  - The ID EEPROM is read past the vendor and device IDs: the description,
+ *    the fixed fields and the 0xbb section are parsed into struct
+ *    ipaq_sleeve_record by ipaq_sleeve_parse_record(), following the layout
+ *    of the vendor's option-pack manager. The original read only offsets 6
+ *    and 8, and never pulsed OPT_RESET; the reset width of a v2 or v3
+ *    record now does, see ipaq_sleeve_reset_pulse().
  *
  *  - msleep() instead of mdelay() for the 250 ms EEPROM settle, as it runs
  *    from a work item, and cancel_delayed_work_sync() on this driver's own
@@ -53,6 +61,7 @@
 
 #include <linux/array_size.h>
 #include <linux/cleanup.h>
+#include <linux/ctype.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/interrupt.h>
@@ -62,7 +71,9 @@
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/string_choices.h>
 #include <linux/sysfs.h>
+#include <linux/unaligned.h>
 #include <linux/workqueue.h>
 
 /* Set once by ipaq_sleeve_register(), cleared by ipaq_sleeve_unregister().
@@ -305,6 +316,200 @@ static void ipaq_sleeve_device_release(struct device *dev)
 }
 
 /*
+ * ID EEPROM record layout past the 10-byte identity. The description
+ * starts at byte 10 and ends in a NUL at offset n; everything after it
+ * is at a fixed offset from n + 1, packed, little-endian. v1 records
+ * carry no socket types and no OPT_ON byte, so their section marker,
+ * 0xBB byte and 0xBB section sit five bytes earlier than in v2/v3.
+ */
+#define IPAQ_SLEEVE_EEPROM_SIZE		512	/* 25LC040 */
+#define IPAQ_SLEEVE_DESC_OFFSET		10
+#define IPAQ_SLEEVE_READ_CHUNK		32
+
+#define IPAQ_SLEEVE_TAIL_TYPE		0
+#define IPAQ_SLEEVE_TAIL_INT_ENABLE	1
+#define IPAQ_SLEEVE_TAIL_EXT_BATTERY	2
+#define IPAQ_SLEEVE_TAIL_INIT_POWER	3
+#define IPAQ_SLEEVE_TAIL_SUSP_POWER	4
+#define IPAQ_SLEEVE_TAIL_RESET_WIDTH	5
+#define IPAQ_SLEEVE_TAIL_STABILIZE	7
+#define IPAQ_SLEEVE_TAIL_UNKNOWN_1A	9
+#define IPAQ_SLEEVE_TAIL_UNKNOWN_1C	11
+#define IPAQ_SLEEVE_TAIL_SOCKET0	13	/* v2/v3 */
+#define IPAQ_SLEEVE_TAIL_SOCKET1	15	/* v2/v3 */
+#define IPAQ_SLEEVE_TAIL_OPT_ON		17	/* v2/v3 */
+#define IPAQ_SLEEVE_TAIL_MARKER_V1	13
+#define IPAQ_SLEEVE_TAIL_MARKER_V2	18
+
+#define IPAQ_SLEEVE_MARKER		0x0f0f0f0f
+#define IPAQ_SLEEVE_BB			0xbb
+/* 0xBB byte, then four u32 words */
+#define IPAQ_SLEEVE_BB_SECTION_LEN	(1 + 4 * 4)
+
+#define IPAQ_SLEEVE_TAIL_LEN_V2		(IPAQ_SLEEVE_TAIL_MARKER_V2 + 4 + \
+					 IPAQ_SLEEVE_BB_SECTION_LEN)
+
+/* Memory window size from which WinCE registers the pack as a disk. */
+#define IPAQ_SLEEVE_MEMORY_MIN		1024
+
+static_assert(IPAQ_SLEEVE_DESC_OFFSET + IPAQ_SLEEVE_DESC_MAX +
+	      IPAQ_SLEEVE_TAIL_LEN_V2 <= IPAQ_SLEEVE_EEPROM_SIZE);
+
+static int ipaq_sleeve_eeprom_read(u8 *raw, unsigned int off, unsigned int len)
+{
+	return sleeve_ops->spi_read(sleeve_dev, off, raw + off, len);
+}
+
+/*
+ * ipaq_sleeve_parse_record: read and check the record that follows the
+ * identity in the ID EEPROM. @raw is an IPAQ_SLEEVE_EEPROM_SIZE buffer
+ * holding bytes 0-9 already, header checked. Returns NULL with @rec
+ * complete, or a reason the record was not parsed.
+ *
+ * WinCE stops at the first marker or 0xBB mismatch and treats the pack
+ * as unreadable; here that only leaves the record unparsed. WinCE also
+ * copies the description into a 256-byte buffer without a bound, so the
+ * bound and the sanitising below are this driver's own.
+ */
+static const char *ipaq_sleeve_parse_record(u8 *raw,
+					    struct ipaq_sleeve_record *rec)
+{
+	unsigned int off, len, n, tail, marker_off;
+	const u8 *nul = NULL, *t;
+	int ret;
+
+	rec->length = get_unaligned_le32(&raw[1]);
+	rec->version = raw[5];
+	if (rec->version < 1 || rec->version > 3)
+		return "unknown record version";
+
+	for (off = IPAQ_SLEEVE_DESC_OFFSET;
+	     !nul && off < IPAQ_SLEEVE_DESC_OFFSET + IPAQ_SLEEVE_DESC_MAX;
+	     off += len) {
+		len = min_t(unsigned int, IPAQ_SLEEVE_READ_CHUNK,
+			    IPAQ_SLEEVE_DESC_OFFSET + IPAQ_SLEEVE_DESC_MAX - off);
+		ret = ipaq_sleeve_eeprom_read(raw, off, len);
+		if (ret)
+			return "description read failed";
+		nul = memchr(&raw[off], 0, len);
+	}
+	if (!nul)
+		return "description not terminated within 256 bytes";
+
+	n = nul - raw;
+	for (off = IPAQ_SLEEVE_DESC_OFFSET; off < n; off++)
+		rec->description[off - IPAQ_SLEEVE_DESC_OFFSET] =
+			isascii(raw[off]) && isprint(raw[off]) ? raw[off] : '?';
+	rec->description[n - IPAQ_SLEEVE_DESC_OFFSET] = '\0';
+
+	marker_off = rec->version == 1 ? IPAQ_SLEEVE_TAIL_MARKER_V1 :
+					 IPAQ_SLEEVE_TAIL_MARKER_V2;
+	tail = n + 1;
+	len = marker_off + 4 + IPAQ_SLEEVE_BB_SECTION_LEN;
+	ret = ipaq_sleeve_eeprom_read(raw, tail, len);
+	if (ret)
+		return "fixed fields read failed";
+
+	t = &raw[tail];
+	if (get_unaligned_le32(&t[marker_off]) != IPAQ_SLEEVE_MARKER)
+		return "section marker mismatch";
+	if (t[marker_off + 4] != IPAQ_SLEEVE_BB)
+		return "0xBB byte mismatch";
+
+	rec->type = t[IPAQ_SLEEVE_TAIL_TYPE];
+	rec->interrupt_enable = t[IPAQ_SLEEVE_TAIL_INT_ENABLE];
+	rec->extended_battery = t[IPAQ_SLEEVE_TAIL_EXT_BATTERY];
+	rec->initial_power_state = t[IPAQ_SLEEVE_TAIL_INIT_POWER];
+	rec->suspend_power_state = t[IPAQ_SLEEVE_TAIL_SUSP_POWER];
+	rec->reset_width_ms = get_unaligned_le16(&t[IPAQ_SLEEVE_TAIL_RESET_WIDTH]);
+	rec->stabilize_ms = get_unaligned_le16(&t[IPAQ_SLEEVE_TAIL_STABILIZE]);
+	rec->unknown_1a = get_unaligned_le16(&t[IPAQ_SLEEVE_TAIL_UNKNOWN_1A]);
+	rec->unknown_1c = get_unaligned_le16(&t[IPAQ_SLEEVE_TAIL_UNKNOWN_1C]);
+	if (rec->version >= 2) {
+		rec->socket_type[0] = get_unaligned_le16(&t[IPAQ_SLEEVE_TAIL_SOCKET0]);
+		rec->socket_type[1] = get_unaligned_le16(&t[IPAQ_SLEEVE_TAIL_SOCKET1]);
+		rec->opt_on = t[IPAQ_SLEEVE_TAIL_OPT_ON];
+	}
+	for (off = 0; off < ARRAY_SIZE(rec->bb_word); off++)
+		rec->bb_word[off] = get_unaligned_le32(&t[marker_off + 5 + 4 * off]);
+	rec->end = tail + len;
+
+	return NULL;
+}
+
+/* WinCE's own end - start + 1; a window that ends before it starts is none. */
+static u64 ipaq_sleeve_record_window(const struct ipaq_sleeve_record *rec)
+{
+	u32 start = rec->bb_word[2], end = rec->bb_word[3];
+
+	return end >= start ? (u64)end - start + 1 : 0;
+}
+
+/*
+ * Only a meaning for bytes 1-4 is inferred, so the one check possible is
+ * that a length reaches at least as far as the fields just parsed and no
+ * further than the part holding them.
+ */
+static void ipaq_sleeve_check_record_length(const struct ipaq_sleeve_record *rec)
+{
+	if (rec->length < rec->end || rec->length > IPAQ_SLEEVE_EEPROM_SIZE)
+		pr_warn("ipaq-sleeve: ID EEPROM bytes 1-4 read %u, not a record length covering the %u bytes parsed\n",
+			rec->length, rec->end);
+}
+
+/*
+ * The record's reset width and stabilisation wait are u16 millisecond
+ * counts with no bound in the WinCE reader; the pulse runs under
+ * ipaq_sleeve_lock, so a corrupt record must not stall enumeration for
+ * a minute.
+ */
+#define IPAQ_SLEEVE_RESET_MAX_MS	1000
+
+static unsigned int ipaq_sleeve_reset_clamp(const char *what, u16 ms)
+{
+	if (ms <= IPAQ_SLEEVE_RESET_MAX_MS)
+		return ms;
+
+	pr_warn("ipaq-sleeve: ID EEPROM %s of %u ms clamped to %u ms\n",
+		what, ms, IPAQ_SLEEVE_RESET_MAX_MS);
+	return IPAQ_SLEEVE_RESET_MAX_MS;
+}
+
+/*
+ * ipaq_sleeve_reset_pulse: pulse OPT_RESET for the width a v2/v3 record
+ * asks for, then wait the stabilisation time it names, as the WinCE
+ * option-pack manager does. Only for a record that parsed in full and
+ * describes the pack on the connector (ipaq_sleeve_usable_record()), so
+ * a failed read or a forced identity never resets the jacket. v1 records
+ * get no pulse, as on WinCE.
+ *
+ * Runs after OPT_ON, the order of the h38xx v1.20, h3950 and h5550
+ * managers; the h3870's v2.15 manager pulses before it.
+ *
+ * Caller holds ipaq_sleeve_lock.
+ */
+static void ipaq_sleeve_reset_pulse(const struct ipaq_sleeve_device *sdev)
+{
+	const struct ipaq_sleeve_record *rec = ipaq_sleeve_usable_record(sdev);
+	unsigned int width, stabilize;
+
+	if (!rec || rec->version < 2 || !rec->reset_width_ms)
+		return;
+
+	width = ipaq_sleeve_reset_clamp("reset width", rec->reset_width_ms);
+	stabilize = ipaq_sleeve_reset_clamp("stabilisation wait",
+					    rec->stabilize_ms);
+
+	pr_debug("ipaq-sleeve: OPT_RESET pulse %u ms, then %u ms\n",
+		 width, stabilize);
+
+	sleeve_ops->control_egpio(sleeve_dev, IPAQ_EGPIO_OPT_RESET, 1);
+	msleep(width);
+	sleeve_ops->control_egpio(sleeve_dev, IPAQ_EGPIO_OPT_RESET, 0);
+	msleep(stabilize);
+}
+
+/*
  * ipaq_sleeve_eject: notify slot consumers, unregister the active
  * sleeve, if any, and power its jacket and NVRAM rails down.
  * device_unregister() runs the bound driver's remove() through the
@@ -340,17 +545,19 @@ static void ipaq_sleeve_eject(void)
 
 /*
  * ipaq_sleeve_insert: power the sleeve's NVRAM rail, wait for it to
- * settle, read its ID EEPROM, apply the operator's identity_override if
- * one is set, register the sleeve on the bus so any matching
- * ipaq_sleeve_driver can bind, then power the jacket's main rail and
- * notify slot consumers (e.g. the CF socket). EEPROM failure with no
- * override leaves the sleeve explicitly unidentified: ID-matched drivers
- * cannot bind, but a board-specific slot consumer may still use physical
- * detect lines. Runs from ipaq_sleeve_task_handler(), i.e. process context,
- * never from the presence IRQ itself.
+ * settle, read its ID EEPROM identity and the record behind it, apply
+ * the operator's identity_override if one is set, register the sleeve
+ * on the bus so any matching ipaq_sleeve_driver can bind, then power the
+ * jacket's main rail and notify slot consumers (e.g. the CF socket).
+ * EEPROM failure with no override leaves the sleeve explicitly
+ * unidentified: ID-matched drivers cannot bind, but a board-specific slot
+ * consumer may still use physical detect lines. Runs from
+ * ipaq_sleeve_task_handler(), i.e. process context, never from the
+ * presence IRQ itself.
  *
  * Order matters and is deliberate: NVRAM rail -> settle -> EEPROM read
- * -> device_register() -> OPT_ON -> settle -> notify. device_register()
+ * -> device_register() -> OPT_ON -> settle -> the record's OPT_RESET
+ * pulse, if it asks for one -> notify. device_register()
  * before OPT_ON so a sleeve-specific driver (e.g. the Navman GPS UART)
  * finishes its own probe on an unpowered-but-identified sleeve first;
  * notify last so a slot consumer only ever sees a sleeve whose jacket
@@ -361,9 +568,10 @@ static void ipaq_sleeve_insert(void)
 {
 	struct ipaq_sleeve_device *sdev;
 	unsigned short eeprom_vendor = 0, eeprom_device = 0;
-	unsigned char eeprom[10] = { 0 };
 	unsigned short vendor, device;
+	const char *record_err;
 	bool id_valid = false;
+	u8 *eeprom;
 	int ret;
 
 	/*
@@ -389,6 +597,16 @@ static void ipaq_sleeve_insert(void)
 	 */
 	msleep(250);
 
+	sdev = kzalloc_obj(*sdev, GFP_KERNEL);
+	eeprom = kzalloc(IPAQ_SLEEVE_EEPROM_SIZE, GFP_KERNEL);
+	if (!sdev || !eeprom) {
+		kfree(eeprom);
+		kfree(sdev);
+		sleeve_ops->control_egpio(sleeve_dev,
+					  IPAQ_EGPIO_OPT_NVRAM_ON, 0);
+		return;
+	}
+
 	/*
 	 * Read the header through the device ID (bytes 0 to 9) in one
 	 * transaction. The vendor software rejects anything but 0xaa in byte
@@ -397,10 +615,12 @@ static void ipaq_sleeve_insert(void)
 	 * cannot be told apart between a dead or mis-clocked bus and a jacket
 	 * without an ID EEPROM.
 	 */
-	ret = sleeve_ops->spi_read(sleeve_dev, 0, eeprom, sizeof(eeprom));
+	ret = sleeve_ops->spi_read(sleeve_dev, 0, eeprom, IPAQ_SLEEVE_DESC_OFFSET);
 	if (ret) {
 		pr_err("ipaq-sleeve: ID EEPROM read failed: %d\n", ret);
+		record_err = "identity read failed";
 	} else if (eeprom[0] != 0xaa) {
+		record_err = "header byte is not 0xaa";
 		pr_err("ipaq-sleeve: ID EEPROM byte 0 is 0x%02x, expected 0xaa: bus dead or mis-clocked, or no ID EEPROM on this jacket\n",
 		       eeprom[0]);
 	} else {
@@ -412,6 +632,36 @@ static void ipaq_sleeve_insert(void)
 			       eeprom_vendor, eeprom_device);
 		else
 			id_valid = true;
+
+		/*
+		 * The identity above stands whatever the rest of the record
+		 * holds: a pack whose markers do not check out keeps the
+		 * vendor:device it announced, where WinCE would reject it as
+		 * unreadable.
+		 */
+		record_err = ipaq_sleeve_parse_record(eeprom, &sdev->record);
+		sdev->record_valid = !record_err;
+		if (record_err)
+			memset(&sdev->record, 0, sizeof(sdev->record));
+	}
+	kfree(eeprom);
+
+	if (sdev->record_valid) {
+		const struct ipaq_sleeve_record *rec = &sdev->record;
+
+		pr_debug("ipaq-sleeve: ID EEPROM record v%u \"%s\": type 0x%02x, interrupt enable 0x%02x, extended battery %s, reset %u ms + %u ms, OPT_ON %s, memory window %llu bytes, length %u for %u bytes parsed\n",
+			 rec->version, rec->description, rec->type,
+			 rec->interrupt_enable,
+			 str_yes_no(ipaq_sleeve_record_ext_battery(rec)),
+			 rec->reset_width_ms, rec->stabilize_ms,
+			 rec->version == 1 ? "n/a (v1)" :
+				 str_yes_no(rec->opt_on),
+			 ipaq_sleeve_record_window(rec), rec->length,
+			 rec->end);
+		ipaq_sleeve_check_record_length(rec);
+	} else {
+		pr_debug("ipaq-sleeve: ID EEPROM record not parsed: %s\n",
+			 record_err);
 	}
 
 	vendor = id_valid ? eeprom_vendor : SLEEVE_NO_VENDOR;
@@ -436,13 +686,7 @@ static void ipaq_sleeve_insert(void)
 		vendor = ipaq_sleeve_forced_vendor;
 		device = ipaq_sleeve_forced_device;
 		id_valid = true;
-	}
-
-	sdev = kzalloc_obj(*sdev, GFP_KERNEL);
-	if (!sdev) {
-		sleeve_ops->control_egpio(sleeve_dev,
-					  IPAQ_EGPIO_OPT_NVRAM_ON, 0);
-		return;
+		sdev->identity_forced = true;
 	}
 
 	sdev->vendor = vendor;
@@ -487,6 +731,8 @@ static void ipaq_sleeve_insert(void)
 	sleeve_ops->control_egpio(sleeve_dev, IPAQ_EGPIO_OPT_ON, 1);
 	/* Same settle time as for the NVRAM rail above. */
 	msleep(250);
+
+	ipaq_sleeve_reset_pulse(sdev);
 
 	blocking_notifier_call_chain(&ipaq_sleeve_notifier_list,
 				     IPAQ_SLEEVE_EVENT_ADD, sdev);
@@ -757,6 +1003,173 @@ module_param_cb(identity_override, &ipaq_sleeve_identity_override_ops, NULL, 044
 MODULE_PARM_DESC(identity_override,
 		 "force the sleeve identity (type name or VVVV:DDDD); same values as /sys/bus/ipaq-sleeve/identity_override");
 
+/*
+ * Per-sleeve attributes. Everything they read is set before
+ * device_register() and never changes afterwards (struct
+ * ipaq_sleeve_device), so no lock is taken.
+ */
+static ssize_t id_eeprom_valid_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%d\n", to_ipaq_sleeve_device(dev)->record_valid);
+}
+static DEVICE_ATTR_RO(id_eeprom_valid);
+
+static ssize_t vendor_show(struct device *dev, struct device_attribute *attr,
+			   char *buf)
+{
+	return sysfs_emit(buf, "0x%04x\n", to_ipaq_sleeve_device(dev)->vendor);
+}
+static DEVICE_ATTR_RO(vendor);
+
+static ssize_t device_show(struct device *dev, struct device_attribute *attr,
+			   char *buf)
+{
+	return sysfs_emit(buf, "0x%04x\n", to_ipaq_sleeve_device(dev)->device);
+}
+static DEVICE_ATTR_RO(device);
+
+static ssize_t type_show(struct device *dev, struct device_attribute *attr,
+			 char *buf)
+{
+	const struct ipaq_sleeve_device *sdev = to_ipaq_sleeve_device(dev);
+	const struct ipaq_sleeve_type *t = NULL;
+
+	if (sdev->id_valid)
+		t = ipaq_sleeve_type_by_id(sdev->vendor, sdev->device);
+
+	return sysfs_emit(buf, "%s\n", t ? t->name : "unknown");
+}
+static DEVICE_ATTR_RO(type);
+
+#define IPAQ_SLEEVE_RECORD_ATTR(_name, _fmt, _val)			\
+static ssize_t _name##_show(struct device *dev,				\
+			    struct device_attribute *attr, char *buf)	\
+{									\
+	const struct ipaq_sleeve_record *rec =				\
+		&to_ipaq_sleeve_device(dev)->record;			\
+									\
+	return sysfs_emit(buf, _fmt "\n", _val);			\
+}									\
+static DEVICE_ATTR_RO(_name)
+
+IPAQ_SLEEVE_RECORD_ATTR(record_length_raw, "%u", rec->length);
+IPAQ_SLEEVE_RECORD_ATTR(record_version, "%u", rec->version);
+IPAQ_SLEEVE_RECORD_ATTR(record_format, "v%u", rec->version);
+IPAQ_SLEEVE_RECORD_ATTR(description, "%s", rec->description);
+IPAQ_SLEEVE_RECORD_ATTR(type_raw, "0x%02x", rec->type);
+IPAQ_SLEEVE_RECORD_ATTR(interrupt_enable_raw, "0x%02x", rec->interrupt_enable);
+IPAQ_SLEEVE_RECORD_ATTR(extended_battery, "%d",
+			ipaq_sleeve_record_ext_battery(rec));
+IPAQ_SLEEVE_RECORD_ATTR(initial_power_state_raw, "0x%02x",
+			rec->initial_power_state);
+IPAQ_SLEEVE_RECORD_ATTR(suspend_power_state_raw, "0x%02x",
+			rec->suspend_power_state);
+IPAQ_SLEEVE_RECORD_ATTR(reset_width_ms, "%u", rec->reset_width_ms);
+IPAQ_SLEEVE_RECORD_ATTR(stabilize_ms, "%u", rec->stabilize_ms);
+IPAQ_SLEEVE_RECORD_ATTR(unknown_1a_raw, "0x%04x", rec->unknown_1a);
+IPAQ_SLEEVE_RECORD_ATTR(unknown_1c_raw, "0x%04x", rec->unknown_1c);
+IPAQ_SLEEVE_RECORD_ATTR(opt_on_requested, "%d", !!rec->opt_on);
+IPAQ_SLEEVE_RECORD_ATTR(memory_window_bytes, "%llu",
+			ipaq_sleeve_record_window(rec));
+IPAQ_SLEEVE_RECORD_ATTR(memory_capable, "%d",
+			ipaq_sleeve_record_window(rec) >= IPAQ_SLEEVE_MEMORY_MIN);
+IPAQ_SLEEVE_RECORD_ATTR(bb_word1_raw, "0x%08x", rec->bb_word[0]);
+IPAQ_SLEEVE_RECORD_ATTR(bb_word2_raw, "0x%08x", rec->bb_word[1]);
+
+/*
+ * The bridge type the h38xx WinCE PC Card driver acts on: below 2 it
+ * resets the socket directly, 2 means a LinkUp L1110 bridge.
+ */
+static ssize_t ipaq_sleeve_socket_type_show(struct device *dev, char *buf,
+					    unsigned int socket)
+{
+	u16 type = to_ipaq_sleeve_device(dev)->record.socket_type[socket];
+
+	if (type < 2)
+		return sysfs_emit(buf, "direct\n");
+	if (type == 2)
+		return sysfs_emit(buf, "l1110-bridge\n");
+	return sysfs_emit(buf, "unknown (%u)\n", type);
+}
+
+static ssize_t socket0_type_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	return ipaq_sleeve_socket_type_show(dev, buf, 0);
+}
+static DEVICE_ATTR_RO(socket0_type);
+
+static ssize_t socket1_type_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	return ipaq_sleeve_socket_type_show(dev, buf, 1);
+}
+static DEVICE_ATTR_RO(socket1_type);
+
+static struct attribute *ipaq_sleeve_dev_attrs[] = {
+	&dev_attr_id_eeprom_valid.attr,
+	&dev_attr_vendor.attr,
+	&dev_attr_device.attr,
+	&dev_attr_type.attr,
+	&dev_attr_record_length_raw.attr,
+	&dev_attr_record_version.attr,
+	&dev_attr_record_format.attr,
+	&dev_attr_description.attr,
+	&dev_attr_type_raw.attr,
+	&dev_attr_interrupt_enable_raw.attr,
+	&dev_attr_extended_battery.attr,
+	&dev_attr_initial_power_state_raw.attr,
+	&dev_attr_suspend_power_state_raw.attr,
+	&dev_attr_reset_width_ms.attr,
+	&dev_attr_stabilize_ms.attr,
+	&dev_attr_unknown_1a_raw.attr,
+	&dev_attr_unknown_1c_raw.attr,
+	&dev_attr_socket0_type.attr,
+	&dev_attr_socket1_type.attr,
+	&dev_attr_opt_on_requested.attr,
+	&dev_attr_memory_window_bytes.attr,
+	&dev_attr_memory_capable.attr,
+	&dev_attr_bb_word1_raw.attr,
+	&dev_attr_bb_word2_raw.attr,
+	NULL,
+};
+
+/*
+ * Record fields exist only for a record that parsed in full, and the
+ * socket types and OPT_ON byte only in v2/v3 layouts; a file that is
+ * absent cannot be misread as a field value of zero.
+ */
+static umode_t ipaq_sleeve_dev_attr_visible(struct kobject *kobj,
+					    struct attribute *attr, int n)
+{
+	const struct ipaq_sleeve_device *sdev =
+		to_ipaq_sleeve_device(kobj_to_dev(kobj));
+
+	if (attr == &dev_attr_id_eeprom_valid.attr ||
+	    attr == &dev_attr_vendor.attr ||
+	    attr == &dev_attr_device.attr ||
+	    attr == &dev_attr_type.attr)
+		return attr->mode;
+
+	if (!sdev->record_valid)
+		return 0;
+
+	if ((attr == &dev_attr_socket0_type.attr ||
+	     attr == &dev_attr_socket1_type.attr ||
+	     attr == &dev_attr_opt_on_requested.attr) &&
+	    sdev->record.version < 2)
+		return 0;
+
+	return attr->mode;
+}
+
+static const struct attribute_group ipaq_sleeve_dev_group = {
+	.attrs		= ipaq_sleeve_dev_attrs,
+	.is_visible	= ipaq_sleeve_dev_attr_visible,
+};
+__ATTRIBUTE_GROUPS(ipaq_sleeve_dev);
+
 const struct bus_type ipaq_sleeve_bus_type = {
 	.name		= "ipaq-sleeve",
 	.match		= ipaq_sleeve_bus_match,
@@ -765,6 +1178,7 @@ const struct bus_type ipaq_sleeve_bus_type = {
 	.suspend	= ipaq_sleeve_bus_suspend,
 	.resume		= ipaq_sleeve_bus_resume,
 	.bus_groups	= ipaq_sleeve_bus_groups,
+	.dev_groups	= ipaq_sleeve_dev_groups,
 };
 EXPORT_SYMBOL_GPL(ipaq_sleeve_bus_type);
 

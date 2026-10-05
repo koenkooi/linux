@@ -162,10 +162,11 @@ static int asic2_sleeve_eeprom_ready(struct asic2_sleeve *sleeve)
 
 /*
  * ipaq_sleeve_ops::spi_read -- read @len bytes of the plugged-in
- * sleeve's ID EEPROM at @address. The only caller is
- * ipaq_sleeve_insert() in drivers/misc/ipaq-sleeve.c, which reads the 10
- * bytes from the header byte through the device ID in one transaction.
- * Returns 0 on success.
+ * sleeve's ID EEPROM at @address. The callers are in
+ * drivers/misc/ipaq-sleeve.c: ipaq_sleeve_insert() reads the 10 bytes from
+ * the header byte through the device ID in one transaction, and
+ * ipaq_sleeve_parse_record() reads the description in chunks and then the
+ * fixed fields of the record behind it. Returns 0 on success.
  */
 static int asic2_sleeve_spi_read(void *dev, unsigned short address,
 				 unsigned char *data, unsigned short len)
