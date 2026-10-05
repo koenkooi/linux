@@ -2,4 +2,5 @@
 subdir-y += axm
 subdir-y += ixp
 subdir-y += pxa
+subdir-y += sa1100
 subdir-y += socfpga
