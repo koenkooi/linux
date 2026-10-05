@@ -398,7 +398,7 @@ static int pxa2xx_mfp_suspend(void *data)
 	int i;
 
 	/* set corresponding PGSR bit of those marked MFP_LPM_KEEP_OUTPUT */
-	for (i = 0; i < pxa_last_gpio; i++) {
+	for (i = 0; i <= pxa_last_gpio; i++) {
 		if ((gpio_desc[i].config & MFP_LPM_KEEP_OUTPUT) &&
 		    (GPDR(i) & GPIO_bit(i))) {
 			if (GPLR(i) & GPIO_bit(i))
@@ -420,7 +420,7 @@ static int pxa2xx_mfp_suspend(void *data)
 	}
 
 	/* set GPDR bits taking into account MFP_LPM_KEEP_OUTPUT */
-	for (i = 0; i < pxa_last_gpio; i++) {
+	for (i = 0; i <= pxa_last_gpio; i++) {
 		if ((gpdr_lpm[gpio_to_bank(i)] & GPIO_bit(i)) ||
 		    ((gpio_desc[i].config & MFP_LPM_KEEP_OUTPUT) &&
 		     (saved_gpdr[gpio_to_bank(i)] & GPIO_bit(i))))
