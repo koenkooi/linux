@@ -118,6 +118,24 @@
 	};
 
 	/*
+	 * GPIO3 (USB_DETECT_N) is vbus sensing for the pxa25x_udc gadget
+	 * controller, bound by compatible string rather than by phandle:
+	 * phy-gpio-vbus-usb.c (USB_GPIO_VBUS) matches "gpio-usb-b-connector"
+	 * and reads the "vbus-gpios" property. usb-conn-gpio.c matches the
+	 * same compatible but is an extcon/role-switch driver, which
+	 * pxa25x_udc cannot use: it calls devm_usb_get_phy() for the legacy
+	 * usb_phy that only phy-gpio-vbus-usb.c registers (USB_GPIO_VBUS
+	 * depends on !USB_CONN_GPIO). devm_usb_get_phy() finds the first
+	 * registered phy of the type globally, so no phandle is needed.
+	 *
+	 * The line is active low: it reads low when vbus is present.
+	 */
+	connector {
+		compatible = "gpio-usb-b-connector", "usb-b-connector";
+		vbus-gpios = <&gpio 3 GPIO_ACTIVE_LOW>;
+	};
+
+	/*
 	 * CompactFlash socket. The shared PXA PCMCIA driver is matched by
 	 * name and needs board callbacks that no property can express, so
 	 * the board code registers the platform device and merely looks this
@@ -389,6 +407,16 @@
 };
 
 &ffuart {
+	status = "okay";
+};
+
+/*
+ * GPIO33 (USB_PULLUP_N) switches the D+ pullup. The driver owns it directly
+ * rather than through the gpio-vbus transceiver, which only senses VBUS
+ * here (see the "connector" node).
+ */
+&pxa25x_udc {
+	pullup-gpios = <&gpio 33 GPIO_ACTIVE_LOW>;
 	status = "okay";
 };
 
