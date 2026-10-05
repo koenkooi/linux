@@ -1,0 +1,84 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/pwm/htc,asic2-pwm.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HTC/Compaq ASIC2 companion ASIC PWM block
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  The 2-channel PWM block (TimeBase/PeriodTime/DutyTime per channel) of the
+  ASIC2 companion ASIC found on the HP/Compaq iPAQ h38xx/h39xx family
+  (see htc,asic2.yaml), driving PWM0 to the LCD frontlight on every known
+  board. Its register window comes from the mfd cell of the parent
+  htc,asic2 node, so this node has no reg of its own. Its clocks are
+  two gates of the parent: this block's own and the EX1 crystal gate that
+  every block clocked this way also needs.
+
+  The divider select of TimeBase and PeriodTime are board parameters. The
+  vendor software of h38xx programs divider 8 with a period of 64, where
+  h39xx uses divider 7 with a period of 10, so a board whose hardware
+  differs supplies its own pair with the two properties below.
+
+allOf:
+  - $ref: pwm.yaml#
+
+properties:
+  compatible:
+    const: htc,asic2-pwm
+
+  "#pwm-cells":
+    const: 2
+
+  clocks:
+    items:
+      - description: The parent's PWM clock gate
+      - description: The parent's EX1 crystal gate
+
+  clock-names:
+    items:
+      - const: ref
+      - const: ex1
+
+  htc,pwm-divider:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 0
+    maximum: 8
+    description:
+      The 4-bit clock divider select of TimeBase, 0 to 8. This is the raw
+      register field, not a frequency, as the output frequency of each
+      value is not documented.
+
+  htc,pwm-period:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 1
+    maximum: 255
+    description:
+      The 8-bit PeriodTime register value. The duty cycle floor enforced by
+      the driver, about 33 percent, scales with the configured period.
+
+required:
+  - compatible
+  - "#pwm-cells"
+  - clocks
+  - clock-names
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/htc,asic2.h>
+
+    pwm {
+        compatible = "htc,asic2-pwm";
+        #pwm-cells = <2>;
+        clocks = <&asic2 ASIC2_CLK_PWM>, <&asic2 ASIC2_CLK_EX1>;
+        clock-names = "ref", "ex1";
+        htc,pwm-divider = <8>;
+        htc,pwm-period = <64>;
+    };
+
+...
