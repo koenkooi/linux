@@ -497,6 +497,7 @@ done(struct sl811 *sl811, struct sl811h_ep *ep, u8 bank)
 	} else if (status & SL11H_STATMASK_ACK) {
 		struct usb_device	*udev = urb->dev;
 		int			len;
+		u8			remain;
 		unsigned char		*buf;
 
 		/* urb->iso_frame_desc is currently ignored here... */
@@ -525,8 +526,18 @@ done(struct sl811 *sl811, struct sl811h_ep *ep, u8 bank)
 			// PACKET("...ACK/in_%02x qh%p\n", bank, ep);
 			buf = urb->transfer_buffer + urb->actual_length;
 			prefetchw(buf);
-			len = ep->maxpacket - sl811_read(sl811,
-						bank + SL11H_XFERCNTREG);
+			remain = sl811_read(sl811, bank + SL11H_XFERCNTREG);
+			if (remain > ep->maxpacket) {
+				/* XFERCNT counts down from the packet length
+				 * that was programmed, so it cannot exceed it.
+				 * A larger value did not come from the chip:
+				 * a bus window that has lost its supply reads
+				 * back 0xff, and 0xff > any legal maxpacket.
+				 */
+				urbstat = -EPROTO;
+				break;
+			}
+			len = ep->maxpacket - remain;
 			if (len > ep->length) {
 				len = ep->length;
 				urbstat = -EOVERFLOW;
