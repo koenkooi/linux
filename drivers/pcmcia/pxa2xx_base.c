@@ -156,6 +156,31 @@ static int pxa2xx_pcmcia_mcatt(int sock, int speed, int clock)
 	return val;
 }
 
+/*
+ * Floor for the programmed I/O cycle time, in nanoseconds, for cards that
+ * never negotiate one. The SOC_PCMCIA_IO_ACCESS default of soc_common is
+ * 165ns, the PC Card Release 7 figure, and is what gets programmed at probe.
+ * A 16-bit Prism WLAN card reads back 0xffff at that setting and only works
+ * once the cycle is stretched, so 600ns is an empirical floor for cards that
+ * never ask for anything, not a specification figure. pccard_io_map.speed is
+ * the command width (PC Card twIORD/twIOWR), and on that scale even ATA PIO
+ * mode 0 is 165ns, see pcmcia_pio_t2_ns[] in drivers/ata/pata_pcmcia.c.
+ *
+ * It is much slower than the slowest PIO mode, so it must not be applied on
+ * top of a figure a device asked for: pcmcia_fixup_iospeed() feeds libata's
+ * negotiated PIO t2 through soc_common_pcmcia_set_io_map(), and flooring
+ * that would discard the negotiation. Only timing.io is ever raised.
+ */
+static unsigned short io_access_ns = 600;
+module_param(io_access_ns, ushort, 0444);
+MODULE_PARM_DESC(io_access_ns,
+		 "Minimum programmed PCMCIA I/O cycle time in ns for cards that do not negotiate one (default 600)");
+
+static bool honour_negotiated = true;
+module_param(honour_negotiated, bool, 0444);
+MODULE_PARM_DESC(honour_negotiated,
+		 "Program a negotiated I/O access time as-is instead of flooring it at io_access_ns (default Y)");
+
 static int pxa2xx_pcmcia_set_timing(struct soc_pcmcia_socket *skt)
 {
 	unsigned long clk = clk_get_rate(skt->clk) / 10000;
@@ -163,6 +188,9 @@ static int pxa2xx_pcmcia_set_timing(struct soc_pcmcia_socket *skt)
 	int sock = skt->nr;
 
 	soc_common_pcmcia_get_timing(skt, &timing);
+
+	if (!honour_negotiated || !soc_pcmcia_io_negotiated(skt))
+		timing.io = max(timing.io, io_access_ns);
 
 	pxa_smemc_set_pcmcia_timing(sock,
 		pxa2xx_pcmcia_mcmem(sock, timing.mem, clk),
