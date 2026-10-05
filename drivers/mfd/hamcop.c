@@ -906,6 +906,7 @@ static const struct resource hamcop_nand_resources[] = {
 static const struct resource hamcop_sdi_resources[] = {
 	DEFINE_RES_MEM(HAMCOP_SDI_BASE, HAMCOP_SDI_SIZE),
 	DEFINE_RES_IRQ(HAMCOP_IRQ_SDHC),
+	DEFINE_RES_IRQ(HAMCOP_IRQ_DMA),
 };
 
 static const struct resource hamcop_led_resources[] = {
@@ -952,11 +953,14 @@ static const struct mfd_cell hamcop_cells[] = {
 	},
 	{
 		/*
-		 * drivers/mmc/host/hamcop-sdi.c, PIO-only phase 1. IP is
-		 * S3C24xx SDI, ported with reference to the deleted
-		 * s3cmci.c. Card-detect (PXA GPIO8) and slot-power (PXA
-		 * GPIO61) are h2200 board GPIOs, not HAMCOP registers --
-		 * board policy, so they belong in h2200.c, not this cell.
+		 * drivers/mmc/host/hamcop-sdi.c, PIO with an SRAM-bounced DMA
+		 * path. IP is S3C24xx SDI, ported with reference to the
+		 * deleted s3cmci.c. Card-detect (PXA GPIO8) and slot-power
+		 * (PXA GPIO61) are h2200 board wiring, not HAMCOP registers,
+		 * so the board describes them on the devicetree node of this
+		 * cell. The second IRQ is the DMA engine's completion
+		 * line, distinct from the SDI's own; the driver requests
+		 * it only when the SRAM bounce pool is actually available.
 		 */
 		.name		= "hamcop-sdi",
 		.id		= PLATFORM_DEVID_NONE,
