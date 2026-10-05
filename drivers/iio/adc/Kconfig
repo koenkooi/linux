@@ -801,6 +801,18 @@ config GEHC_PMC_ADC
 	  To compile this driver as a module, choose M here: the module will be
 	  called gehc-pmc-adc.
 
+config ASIC2_ADC
+	tristate "ASIC2 companion ASIC ADC"
+	depends on MFD_ASIC2
+	help
+	  Say Y here to build support for the general-purpose ADC channels
+	  (light sensor, Imin, battery voltage) inside the Compaq/HTC ASIC2
+	  companion ASIC used on the HP iPAQ h38xx/h39xx series. The
+	  touchpanel channels are not covered by this driver.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called asic2-adc.
+
 config HI8435
 	tristate "Holt Integrated Circuits HI-8435 threshold detector"
 	select IIO_TRIGGERED_EVENT
