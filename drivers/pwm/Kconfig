@@ -566,6 +566,20 @@ config PWM_PCA9685
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-pca9685.
 
+config PWM_ASIC2
+	tristate "ASIC2 companion ASIC PWM support"
+	depends on MFD_ASIC2 || COMPILE_TEST
+	depends on HAS_IOMEM
+	help
+	  Generic PWM framework driver for the two-channel PWM block inside
+	  the Compaq/HTC ASIC2 companion ASIC (HP iPAQ h38xx/h39xx family).
+	  PWM0 drives the LCD frontlight. The driver always programs a
+	  fixed period and scales only the duty cycle, which suits a
+	  pwm-backlight consumer.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-asic2.
+
 config PWM_PXA
 	tristate "PXA PWM support"
 	depends on ARCH_PXA || ARCH_MMP || ARCH_SPACEMIT || COMPILE_TEST
