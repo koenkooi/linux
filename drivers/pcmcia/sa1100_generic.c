@@ -33,6 +33,7 @@
 #include <linux/module.h>
 #include <linux/gpio/consumer.h>
 #include <linux/init.h>
+#include <linux/of.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 #include <linux/platform_device.h>
@@ -40,6 +41,7 @@
 #include <pcmcia/ss.h>
 
 #include <asm/hardware/scoop.h>
+#include <mach/hardware.h>
 
 #include "sa1100_generic.h"
 
@@ -55,7 +57,16 @@ static int sa11x0_cf_hw_init(struct soc_pcmcia_socket *skt)
 	struct device *dev = skt->socket.dev.parent;
 	int i;
 
-	skt->gpio_reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
+	/*
+	 * A devicetree socket's reset line is deasserted at idle, as its
+	 * binding documents, so request it deasserted there; a card held in
+	 * reset until the first configure_socket() call can mask the detect
+	 * line. Sockets registered from board code keep requesting it
+	 * asserted, as they always have.
+	 */
+	skt->gpio_reset = devm_gpiod_get(dev, "reset",
+					 dev_of_node(dev) ? GPIOD_OUT_LOW :
+							    GPIOD_OUT_HIGH);
 	if (IS_ERR(skt->gpio_reset))
 		return PTR_ERR(skt->gpio_reset);
 
@@ -115,6 +126,27 @@ static int (*sa11x0_pcmcia_legacy_hw_init[])(struct device *dev) = {
 #endif
 };
 
+static const struct of_device_id sa11x0_pcmcia_dt_ids[] = {
+	{ .compatible = "intel,sa1110-pcmcia" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, sa11x0_pcmcia_dt_ids);
+
+/*
+ * The socket's identity is its fixed 256 MiB window, not a board-assigned
+ * index: unlike the legacy platform_device.id, an OF-created device has
+ * no id of its own (PLATFORM_DEVID_NONE) to key off, so the "reg" a board
+ * gave it is decoded back into a socket number instead.
+ */
+static int sa11x0_pcmcia_socket_nr(resource_size_t base)
+{
+	if (base == _PCMCIA(0))
+		return 0;
+	if (base == _PCMCIA(1))
+		return 1;
+	return -EINVAL;
+}
+
 static int sa11x0_drv_pcmcia_legacy_probe(struct platform_device *dev)
 {
 	int i, ret = -ENODEV;
@@ -146,9 +178,24 @@ static int sa11x0_drv_pcmcia_probe(struct platform_device *pdev)
 {
 	struct soc_pcmcia_socket *skt;
 	struct device *dev = &pdev->dev;
+	int nr;
 
-	if (pdev->id == -1)
+	if (dev_of_node(dev)) {
+		struct resource *res;
+
+		res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+		if (!res)
+			return -ENXIO;
+		nr = sa11x0_pcmcia_socket_nr(res->start);
+		if (nr < 0)
+			return dev_err_probe(dev, nr,
+				"reg %pR is not an SA-1110 PC Card window\n",
+				res);
+	} else if (pdev->id == -1) {
 		return sa11x0_drv_pcmcia_legacy_probe(pdev);
+	} else {
+		nr = pdev->id;
+	}
 
 	skt = devm_kzalloc(dev, sizeof(*skt), GFP_KERNEL);
 	if (!skt)
@@ -156,7 +203,7 @@ static int sa11x0_drv_pcmcia_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, skt);
 
-	skt->nr = pdev->id;
+	skt->nr = nr;
 	skt->clk = devm_clk_get(dev, NULL);
 	if (IS_ERR(skt->clk))
 		return PTR_ERR(skt->clk);
@@ -171,7 +218,7 @@ static void sa11x0_drv_pcmcia_remove(struct platform_device *dev)
 {
 	struct soc_pcmcia_socket *skt;
 
-	if (dev->id == -1) {
+	if (!dev_of_node(&dev->dev) && dev->id == -1) {
 		sa11x0_drv_pcmcia_legacy_remove(dev);
 		return;
 	}
@@ -184,6 +231,7 @@ static void sa11x0_drv_pcmcia_remove(struct platform_device *dev)
 static struct platform_driver sa11x0_pcmcia_driver = {
 	.driver = {
 		.name		= "sa11x0-pcmcia",
+		.of_match_table	= sa11x0_pcmcia_dt_ids,
 	},
 	.probe		= sa11x0_drv_pcmcia_probe,
 	.remove		= sa11x0_drv_pcmcia_remove,
