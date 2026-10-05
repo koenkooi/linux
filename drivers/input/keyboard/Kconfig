@@ -194,6 +194,19 @@ config KEYBOARD_EP93XX
 	  To compile this driver as a module, choose M here: the
 	  module will be called ep93xx_keypad.
 
+config KEYBOARD_ASIC2
+	tristate "ASIC2 companion ASIC keypad"
+	depends on MFD_ASIC2 || COMPILE_TEST
+	help
+	  Keypad driver for the 12-line KPIO block inside the Compaq/HTC
+	  ASIC2 companion ASIC (HP iPAQ h38xx/h39xx family): Record, Left,
+	  Right, four application buttons, and the 5-way navigation pad.
+	  The keypad is a set of direct, active-low inputs rather than a
+	  scanned matrix.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called asic2-keys.
+
 config KEYBOARD_GPIO
 	tristate "GPIO Buttons"
 	depends on GPIOLIB || COMPILE_TEST
