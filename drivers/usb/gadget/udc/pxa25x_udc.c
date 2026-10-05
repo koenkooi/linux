@@ -1922,6 +1922,7 @@ static irqreturn_t
 pxa25x_udc_irq(int irq, void *_dev)
 {
 	struct pxa25x_udc	*dev = _dev;
+	int			handled = 0;
 
 	dev->stats.irqs++;
 	/*
@@ -1931,7 +1932,6 @@ pxa25x_udc_irq(int irq, void *_dev)
 	 */
 	{
 		u32		udccr = udc_get_reg(dev, UDCCR);
-		int		handled = 0;
 
 		/* SUSpend Interrupt Request */
 		if (unlikely(udccr & UDCCR_SUSIR)) {
@@ -1979,14 +1979,38 @@ pxa25x_udc_irq(int irq, void *_dev)
 			}
 
 		} else {
-			u32	usir0 = udc_get_reg(dev, USIR0) &
-					~udc_get_reg(dev, UICR0);
-			u32	usir1 = udc_get_reg(dev, USIR1) &
-					~udc_get_reg(dev, UICR1);
+			u32	uicr0 = udc_get_reg(dev, UICR0);
+			u32	uicr1 = udc_get_reg(dev, UICR1);
+			u32	raw0 = udc_get_reg(dev, USIR0);
+			u32	raw1 = udc_get_reg(dev, USIR1);
+			u32	usir0 = raw0 & ~uicr0;
+			u32	usir1 = raw1 & ~uicr1;
+			u32	stale0 = raw0 & uicr0;
+			u32	stale1 = raw1 & uicr1;
 			int	i;
 
+			/*
+			 * UICR gates dispatch, not assertion: the UDC drives
+			 * its interrupt from USIR alone, so a status bit of a
+			 * masked endpoint keeps the line asserted. Filtering
+			 * those bits out and returning left the line high and
+			 * the interrupt re-fired forever. Acknowledge them
+			 * instead; dropping the event is what the mask asked
+			 * for, as pio_irq_disable() is only used on an
+			 * endpoint with no queued request, and
+			 * pxa25x_ep_queue() services whatever is waiting as
+			 * soon as a request arrives.
+			 */
+			if (unlikely(stale0 || stale1)) {
+				if (stale0)
+					udc_set_reg(dev, USIR0, stale0);
+				if (stale1)
+					udc_set_reg(dev, USIR1, stale1);
+				handled = 1;
+			}
+
 			if (unlikely (!usir0 && !usir1))
-				return IRQ_HANDLED;
+				goto done;
 
 			DBG(DBG_VERY_NOISY, "irq %02x.%02x\n", usir1, usir0);
 
@@ -2027,7 +2051,15 @@ pxa25x_udc_irq(int irq, void *_dev)
 		/* we could also ask for 1 msec SOF (SIR) interrupts */
 
 	}
-	return IRQ_HANDLED;
+
+done:
+	/*
+	 * Do not claim an interrupt that was not handled. On a level
+	 * triggered line that makes a stuck source re-fire forever and hangs
+	 * the machine, whereas genirq disables the line and reports "nobody
+	 * cared" if the handler returns IRQ_NONE.
+	 */
+	return handled ? IRQ_HANDLED : IRQ_NONE;
 }
 
 /*-------------------------------------------------------------------------*/
