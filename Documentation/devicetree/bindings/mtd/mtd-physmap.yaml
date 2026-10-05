@@ -126,6 +126,15 @@ properties:
     minItems: 1
     maxItems: 8
 
+  vpp-gpios:
+    description:
+      GPIO driven to enable the chip's Vpp (or a write-protect override
+      line gated the same way) only while an erase or program operation
+      is in progress, and left deasserted -- write-protected -- the rest
+      of the time. Active level is whatever the GPIO_ACTIVE_* flag says;
+      most boards that have one of these wire it active-high.
+    maxItems: 1
+
   '#address-cells':
     const: 1
 
