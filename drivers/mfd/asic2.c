@@ -57,7 +57,12 @@
  *    separate chip (ASIC1) reached through this window: its GPIO block
  *    ("asic1-gpio", for the gpio-asic1 driver) and its SD/MMC host
  *    ("asic1-mmc", for the asic1-mmc driver), each added by
- *    asic2_add_asic1_cells() only when the devicetree describes it.
+ *    asic2_add_asic1_cells() only when the devicetree describes it. Another
+ *    cell, "asic2-uart0" (for the 8250_asic2 driver, the
+ *    Bluetooth transport of the h3870/h3875), is added the same way by
+ *    asic2_add_uart_cell(). Unlike the cells that are always present it
+ *    also performs hardware bring-up, which has no business running on a
+ *    board that does not wire a radio to this block.
  *
  * KPIO's InterruptEnable register (offset 0x001c) must not be read back,
  * so this driver keeps a software shadow of its state instead of doing
@@ -136,6 +141,13 @@ enum {
 	ASIC2_GATE_PWM,
 	ASIC2_GATE_UART_0,
 	ASIC2_GATE_UART_1,
+	/*
+	 * The reference select gate of UART0, distinct from ASIC2_GATE_UART_0
+	 * above, which is never enabled. _1 is added next to it for
+	 * documentation, like ASIC2_GATE_UART_1, as it has no known consumer.
+	 */
+	ASIC2_GATE_SLOW_UART_0,
+	ASIC2_GATE_SLOW_UART_1,
 	/*
 	 * Before SD, like EX1: asic2_clocks_register() parents
 	 * ASIC2_GATE_SD on EX1 or EX2 depending on the board's SD tap.
@@ -522,10 +534,30 @@ static void asic2_irq_ack(struct irq_data *d)
 	asic2_write(asic, m->block_base + ASIC2_REG_INT_CLEAR, m->mask);
 }
 
+/*
+ * UART0 and UART1 are the only two hwirqs that are also gated at the
+ * chip-wide INTR block (ASIC2_INTR_MASK_AND_FLAG), besides the
+ * InterruptEnable register of their own block. The polarity there is
+ * inverted, 1 masks and 0 enables, and probe leaves both masked by default.
+ */
+static u32 asic2_irq_intr_mask_bit(irq_hw_number_t hwirq)
+{
+	switch (hwirq) {
+	case ASIC2_IRQ_UART_0:
+		return ASIC2_INTMASK_UART_0;
+	case ASIC2_IRQ_UART_1:
+		return ASIC2_INTMASK_UART_1;
+	default:
+		return 0;
+	}
+}
+
 static void asic2_irq_mask(struct irq_data *d)
 {
 	struct asic2 *asic = irq_data_get_irq_chip_data(d);
-	const struct asic2_irq_map *m = &asic2_irq_map[irqd_to_hwirq(d)];
+	irq_hw_number_t hwirq = irqd_to_hwirq(d);
+	const struct asic2_irq_map *m = &asic2_irq_map[hwirq];
+	u32 intr_bit = asic2_irq_intr_mask_bit(hwirq);
 	unsigned long flags;
 
 	if (m->block_base == ASIC2_KPIO_BASE) {
@@ -538,12 +570,18 @@ static void asic2_irq_mask(struct irq_data *d)
 	} else {
 		asic2_rmw(asic, m->block_base + ASIC2_REG_INT_ENABLE, m->mask, 0);
 	}
+
+	if (intr_bit)
+		asic2_rmw(asic, ASIC2_INTR_BASE + ASIC2_INTR_MASK_AND_FLAG,
+			  intr_bit, intr_bit);
 }
 
 static void asic2_irq_unmask(struct irq_data *d)
 {
 	struct asic2 *asic = irq_data_get_irq_chip_data(d);
-	const struct asic2_irq_map *m = &asic2_irq_map[irqd_to_hwirq(d)];
+	irq_hw_number_t hwirq = irqd_to_hwirq(d);
+	const struct asic2_irq_map *m = &asic2_irq_map[hwirq];
+	u32 intr_bit = asic2_irq_intr_mask_bit(hwirq);
 	unsigned long flags;
 
 	/*
@@ -570,6 +608,10 @@ static void asic2_irq_unmask(struct irq_data *d)
 
 		asic2_rmw(asic, m->block_base + ASIC2_REG_INT_ENABLE, m->mask, m->mask);
 	}
+
+	if (intr_bit)
+		asic2_rmw(asic, ASIC2_INTR_BASE + ASIC2_INTR_MASK_AND_FLAG,
+			  intr_bit, 0);
 }
 
 /*
@@ -1142,6 +1184,13 @@ static const struct clk_ops asic2_clk_gate_ops = {
  */
 #define ASIC2_EX2_RATE		33868800UL
 
+/*
+ * The rate of the UART reference select gates, 3.6864 MHz. It is a fixed
+ * value and not derived from EX1: the SA-1110 supplies it. Nothing queries
+ * it today, as the glue driver of the UART uses the same literal.
+ */
+#define ASIC2_UART_REF_RATE	3686400UL
+
 static const struct {
 	const char *name;
 	const char *alias;
@@ -1159,6 +1208,16 @@ static const struct {
 	[ASIC2_GATE_PWM]	= { "asic2-pwm",	"asic2-pwm",	ASIC2_CLOCK_PWM },
 	[ASIC2_GATE_UART_0]	= { "asic2-uart0",	NULL,		ASIC2_CLOCK_UART_0 },
 	[ASIC2_GATE_UART_1]	= { "asic2-uart1",	NULL,		ASIC2_CLOCK_UART_1 },
+	/*
+	 * The core name differs from "asic2-uart0" of ASIC2_GATE_UART_0 so
+	 * that clock names stay unique. The alias is what matters: it makes
+	 * devm_clk_get(dev, NULL) of the "asic2-uart0" cell resolve to this
+	 * gate.
+	 */
+	[ASIC2_GATE_SLOW_UART_0] = { "asic2-uart0-ref", "asic2-uart0",	ASIC2_CLOCK_SLOW_UART_0,
+				      0, 0, ASIC2_UART_REF_RATE },
+	[ASIC2_GATE_SLOW_UART_1] = { "asic2-uart1-ref", NULL,		ASIC2_CLOCK_SLOW_UART_1,
+				      0, 0, ASIC2_UART_REF_RATE },
 	[ASIC2_GATE_EX2]	= { "asic2-ex2",	NULL,		ASIC2_CLOCK_EX2,
 				    0, 0, ASIC2_EX2_RATE },
 	/* .bit and .rate come from asic2_sd_tap() at registration */
@@ -1278,10 +1337,10 @@ static int asic2_clocks_register(struct asic2 *asic)
 
 	/*
 	 * EX1 (24.576 MHz) is the shared crystal feeding ADC, SPI, OWM and
-	 * PWM. It is not modelled as a parent of the ADC, SPI and PWM gates,
-	 * so each of those consumers acquires it as a second clock named
-	 * "ex1" besides its own peripheral gate. OWM is the exception, see
-	 * above.
+	 * PWM. It is not modelled as a parent of the ADC, SPI, PWM and UART0
+	 * gates, so each of those consumers acquires it as a second clock
+	 * named "ex1" besides its own peripheral gate. OWM is the exception,
+	 * see above.
 	 */
 	ret = devm_clk_hw_register_clkdev(asic->dev, &asic->gates[ASIC2_GATE_EX1].hw,
 					  "ex1", "asic2-spi");
@@ -1293,6 +1352,10 @@ static int asic2_clocks_register(struct asic2 *asic)
 		return ret;
 	ret = devm_clk_hw_register_clkdev(asic->dev, &asic->gates[ASIC2_GATE_EX1].hw,
 					  "ex1", "asic2-pwm");
+	if (ret)
+		return ret;
+	ret = devm_clk_hw_register_clkdev(asic->dev, &asic->gates[ASIC2_GATE_EX1].hw,
+					  "ex1", "asic2-uart0");
 	if (ret)
 		return ret;
 
@@ -1605,6 +1668,74 @@ static int asic2_add_asic1_cells(struct asic2 *asic, struct resource *mem)
 }
 
 /*
+ * ASIC2 UART0, the Bluetooth transport of the h3870/h3875. It is added only
+ * when the node has an available "serial" child, gated like the ASIC1 cells
+ * above and for the same reason: the GPIO2 and KPIO writes below have no
+ * business running on a board that does not wire a radio to this block.
+ * Unlike the ASIC1 cells it has an IRQ resource against this driver's own
+ * domain, so asic->domain is passed to devm_mfd_add_devices().
+ *
+ * The bring-up that the vendor software does in one function is split
+ * three ways. This function does the GPIO2 and KPIO writes, because only
+ * this driver holds the lock that every other consumer of those registers
+ * serializes through. The 8250 glue driver does the UART reset pulse and
+ * owns its two named clocks. asic2_irq_mask() and asic2_irq_unmask() do
+ * the per-source bit of the INTR block, since only this irq_chip owns that
+ * register.
+ *
+ * GPIO2 bit 15 is driven to a high output, which is normal operation as
+ * low wakes and resets the radio. GPIO2 bit 4 (ASIC2_GPIO2_BT_RST) is
+ * never written, as the vendor software never drives it. KPIO
+ * bit 14 is driven to a high output too, for a purpose that is not known.
+ * This is done here instead of through a KPIO gpio_chip, which this driver
+ * does not have, and going through asic2_rmw() avoids an
+ * unlocked read-modify-write race with asic2-keys, which modifies the same
+ * KPIO Direction register without a lock of its own.
+ */
+static const struct resource asic2_uart0_resources[] = {
+	DEFINE_RES_MEM(ASIC2_UART0_BASE, 0x24),
+	DEFINE_RES_IRQ(ASIC2_IRQ_UART_0),
+};
+
+static const struct mfd_cell asic2_uart0_cell = {
+	.name		= "asic2-uart0",
+	.id		= PLATFORM_DEVID_NONE,
+	.of_compatible	= "htc,asic2-uart",
+	.resources	= asic2_uart0_resources,
+	.num_resources	= ARRAY_SIZE(asic2_uart0_resources),
+};
+
+static int asic2_add_uart_cell(struct asic2 *asic, struct resource *mem)
+{
+	struct device_node *np;
+	bool present;
+
+	np = of_get_compatible_child(asic->dev->of_node,
+				     asic2_uart0_cell.of_compatible);
+	if (!np)
+		return 0;
+
+	present = of_device_is_available(np);
+	of_node_put(np);
+	if (!present)
+		return 0;
+
+	/* Level before direction, as in asic2_gpio_direction_output() */
+	asic2_rmw(asic, ASIC2_GPIO_BASE + ASIC2_REG_DATA,
+		  ASIC2_GPIO2_UART0_TXD_ENABLE, ASIC2_GPIO2_UART0_TXD_ENABLE);
+	asic2_rmw(asic, ASIC2_GPIO_BASE + ASIC2_REG_DIRECTION,
+		  ASIC2_GPIO2_UART0_TXD_ENABLE, 0);
+
+	asic2_rmw(asic, ASIC2_KPIO_BASE + ASIC2_REG_DATA,
+		  ASIC2_KPIO_BIT14, ASIC2_KPIO_BIT14);
+	asic2_rmw(asic, ASIC2_KPIO_BASE + ASIC2_REG_DIRECTION,
+		  ASIC2_KPIO_BIT14, 0);
+
+	return devm_mfd_add_devices(asic->dev, 0, &asic2_uart0_cell, 1, mem, 0,
+				    asic->domain);
+}
+
+/*
  * PXA GPIO interrupts are edge-only and ASIC2_INT stays asserted while any
  * enabled source is pending. If the edge that woke the core is not delivered
  * to asic2_irq_handler(), no further edge can occur and every ASIC2 source
@@ -1664,9 +1795,17 @@ static int asic2_probe(struct platform_device *pdev)
 	if (!mem)
 		return -EINVAL;
 
-	asic->regs = devm_ioremap_resource(dev, mem);
-	if (IS_ERR(asic->regs))
-		return PTR_ERR(asic->regs);
+	/*
+	 * A plain mapping, not devm_ioremap_resource(): the latter takes an
+	 * exclusive claim on the whole 0x2000 window, which would make the
+	 * resource request of every in-window child fail with -EBUSY. That
+	 * is fatal for the UART0 cell, as the 8250 core requests its own
+	 * sub-range exclusively. The other in-window cells already map their
+	 * ranges with a plain devm_ioremap(), so none of them is affected.
+	 */
+	asic->regs = devm_ioremap(dev, mem->start, resource_size(mem));
+	if (!asic->regs)
+		return -ENOMEM;
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
@@ -1712,7 +1851,10 @@ static int asic2_probe(struct platform_device *pdev)
 	 * asic2.h). It is set permanently since ds1wm has no teardown hook
 	 * to clear it from. The UART and timer sources are masked rather than
 	 * left as the bootloader left them: no cell claims them, so nothing
-	 * could dispatch or acknowledge them if they asserted the line.
+	 * could dispatch or acknowledge them if they asserted the line. The
+	 * UART0 source is unmasked again by asic2_irq_unmask() when the
+	 * "asic2-uart0" cell, which is added only for a board with a "serial"
+	 * child, requests its interrupt.
 	 */
 	asic2_rmw(asic, ASIC2_INTR_BASE + ASIC2_INTR_MASK_AND_FLAG,
 		  ASIC2_INTMASK_GLOBAL | ASIC2_INTMASK_OWM |
@@ -1763,6 +1905,11 @@ static int asic2_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret,
 				     "failed to add ASIC1 sub-devices\n");
+
+	ret = asic2_add_uart_cell(asic, mem);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to add UART0 sub-device\n");
 
 	dev_dbg(dev, "ASIC2 core ready, chained on IRQ %d\n", irq);
 
