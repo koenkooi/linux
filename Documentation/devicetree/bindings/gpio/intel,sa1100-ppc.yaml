@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/gpio/intel,sa1100-ppc.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Intel SA-1110 Peripheral Pin Controller (PPC) GPIO
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  The SA-1110 PPC block lets a handful of SoC pins normally
+  driven by their own on-chip peripheral (the LCD controller, Ser1-Ser4)
+  be used as plain GPIO instead, via a per-pin direction (PPDR), state
+  (PPSR), assignment (PPAR), sleep direction (PSDR) and flag (PPFR)
+  register set. A line becomes a GPIO when a consumer refers to it; a
+  line that no node refers to stays with its peripheral, so a board that
+  uses Ser1 as a UART describes nothing here. The reg property must
+  cover only these five registers (0x14 bytes): two unrelated registers,
+  HSCR2 and MCCR1, live immediately past them in the same page and must
+  never be claimed by this node.
+
+properties:
+  compatible:
+    const: intel,sa1110-ppc
+
+  reg:
+    maxItems: 1
+    description: PPDR..PPFR only -- 0x14 bytes, never more.
+
+  gpio-controller: true
+
+  '#gpio-cells':
+    const: 2
+
+  gpio-line-names:
+    minItems: 1
+    maxItems: 22
+
+required:
+  - compatible
+  - reg
+  - gpio-controller
+  - '#gpio-cells'
+
+additionalProperties: false
+
+examples:
+  - |
+    gpio@90060000 {
+        compatible = "intel,sa1110-ppc";
+        reg = <0x90060000 0x14>;
+        gpio-controller;
+        #gpio-cells = <2>;
+        gpio-line-names = "", "", "", "", "", "", "", "", "", "", "", "",
+                          "COM_DTR", "NSD_WP";
+    };
+
+...
