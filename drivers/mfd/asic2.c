@@ -42,7 +42,9 @@
  *    ASIC2 ADC does not switch the touchscreen plates itself, so GPIO2
  *    bits have to be driven by software and
  *    asic2_touch_gpios_register() hands asic2-adc.c the GPIO descriptors
- *    for them.
+ *    for them. "leds-asic2" covers the three-channel status LED blink-timer
+ *    block, which drives the status LEDs of the h3800; it is added only
+ *    when the board has a "led-controller" child.
  *
  * KPIO's InterruptEnable register (offset 0x001c) must not be read back,
  * so this driver keeps a software shadow of its state instead of doing
@@ -1174,6 +1176,14 @@ static const struct resource asic2_pwm_resources[] = {
 };
 
 /*
+ * One MEM resource spanning the three LED blocks. The extra 0x10 covers the
+ * last register (relative 0x0c) of the third channel.
+ */
+static const struct resource asic2_leds_resources[] = {
+	DEFINE_RES_MEM(ASIC2_LED0_BASE, ASIC2_LED2_BASE - ASIC2_LED0_BASE + 0x10),
+};
+
+/*
  * The 12 keypad lines live in the KPIO block's Data register, with one
  * grouped hwirq (ASIC2_IRQ_KEY). They are not gpio-keys: KPIO's bits are
  * not registered as GPIOs, so asic2-keys reads and diffs the Data register
@@ -1296,6 +1306,19 @@ static const struct mfd_cell asic2_touch_cell = {
 	.name		= "resistive-adc-touch",
 	.id		= PLATFORM_DEVID_NONE,
 	.of_compatible	= "resistive-adc-touch",
+};
+
+/*
+ * The status LEDs are described by a "led-controller" child, one "led" per
+ * channel. The cell is only added when the board has that child, see
+ * asic2_add_optional_cell().
+ */
+static const struct mfd_cell asic2_leds_cell = {
+	.name		= "leds-asic2",
+	.id		= PLATFORM_DEVID_NONE,
+	.of_compatible	= "htc,asic2-leds",
+	.resources	= asic2_leds_resources,
+	.num_resources	= ARRAY_SIZE(asic2_leds_resources),
 };
 
 /*
@@ -1457,6 +1480,11 @@ static int asic2_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret,
 				     "failed to add touchscreen sub-device\n");
+
+	ret = asic2_add_optional_cell(asic, mem, &asic2_leds_cell);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to add LED sub-device\n");
 
 	dev_dbg(dev, "ASIC2 core ready, chained on IRQ %d\n", irq);
 
