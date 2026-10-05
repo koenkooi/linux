@@ -182,11 +182,18 @@ int pcmcia_register_socket(struct pcmcia_socket *socket)
 	pcmcia_parse_events(socket, SS_DETECT);
 
 	/*
-	 * Let's try to get the PCMCIA module for 16-bit PCMCIA support.
-	 * If it fails, it doesn't matter -- we still have 32-bit CardBus
-	 * support to offer, so this is not a failure mode.
+	 * 16-bit PC Card support lives in a separate module. Ask for it
+	 * only when it can be one: with CONFIG_PCMCIA built in the bus
+	 * layer is already registered and there is nothing to load, and
+	 * with it disabled there is no module to ask for. The request is
+	 * not as asynchronous as its name suggests -- request_module_nowait()
+	 * still runs the usermode helper with UMH_WAIT_EXEC and waits for
+	 * the fork+exec to complete, so a pointless call made from a
+	 * driver probe before userspace exists blocks that probe, and the
+	 * deferred-probe worker running it, indefinitely.
 	 */
-	request_module_nowait("pcmcia");
+	if (IS_MODULE(CONFIG_PCMCIA))
+		request_module_nowait("pcmcia");
 
 	return 0;
 
