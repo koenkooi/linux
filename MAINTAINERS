@@ -12049,6 +12049,7 @@ HTC ASIC2 AND ASIC3 COMPANION ASIC DRIVERS
 M:	Koen Kooi <koen@dominion.thruhere.net>
 L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
 S:	Maintained
+F:	Documentation/devicetree/bindings/input/htc,asic2-keys.yaml
 F:	Documentation/devicetree/bindings/leds/htc,asic*-leds.yaml
 F:	Documentation/devicetree/bindings/mfd/htc,asic*.yaml
 F:	Documentation/devicetree/bindings/mmc/htc,asic*.yaml
