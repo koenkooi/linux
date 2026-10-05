@@ -1593,14 +1593,22 @@ sl811h_remove(struct platform_device *dev)
 	usb_remove_hcd(hcd);
 	device_wakeup_disable(hcd->self.controller);
 
-	/* some platforms may use IORESOURCE_IO */
-	res = platform_get_resource(dev, IORESOURCE_MEM, 1);
-	if (res)
-		iounmap(sl811->data_reg);
+	/* undo whichever mapping sl811h_probe() made */
+	res = platform_get_mem_or_io(dev, 1);
+	if (res) {
+		if (resource_type(res) == IORESOURCE_IO)
+			ioport_unmap(sl811->data_reg);
+		else
+			iounmap(sl811->data_reg);
+	}
 
-	res = platform_get_resource(dev, IORESOURCE_MEM, 0);
-	if (res)
-		iounmap(sl811->addr_reg);
+	res = platform_get_mem_or_io(dev, 0);
+	if (res) {
+		if (resource_type(res) == IORESOURCE_IO)
+			ioport_unmap(sl811->addr_reg);
+		else
+			iounmap(sl811->addr_reg);
+	}
 
 	usb_put_hcd(hcd);
 }
@@ -1639,15 +1647,24 @@ sl811h_probe(struct platform_device *dev)
 	irq = ires->start;
 	irqflags = ires->flags & IRQF_TRIGGER_MASK;
 
+	/*
+	 * An I/O resource carries a port number and not an address. Where port
+	 * space is reached through a mapping window, as on ARM, casting the
+	 * number to a pointer and dereferencing it faults, so map it.
+	 */
 	ioaddr = resource_type(addr) == IORESOURCE_IO;
 	if (ioaddr) {
-		/*
-		 * NOTE: 64-bit resource->start is getting truncated
-		 * to avoid compiler warning, assuming that ->start
-		 * is always 32-bit for this case
-		 */
-		addr_reg = (void __iomem *) (unsigned long) addr->start;
-		data_reg = (void __iomem *) (unsigned long) data->start;
+		addr_reg = ioport_map(addr->start, 1);
+		if (!addr_reg) {
+			retval = -ENOMEM;
+			goto err2;
+		}
+
+		data_reg = ioport_map(data->start, 1);
+		if (!data_reg) {
+			retval = -ENOMEM;
+			goto err4;
+		}
 	} else {
 		addr_reg = ioremap(addr->start, 1);
 		if (addr_reg == NULL) {
@@ -1720,10 +1737,14 @@ sl811h_probe(struct platform_device *dev)
  err6:
 	usb_put_hcd(hcd);
  err5:
-	if (!ioaddr)
+	if (ioaddr)
+		ioport_unmap(data_reg);
+	else
 		iounmap(data_reg);
  err4:
-	if (!ioaddr)
+	if (ioaddr)
+		ioport_unmap(addr_reg);
+	else
 		iounmap(addr_reg);
  err2:
 	dev_dbg(&dev->dev, "init error, %d\n", retval);
