@@ -7,13 +7,11 @@
  * off HAMCOP, and CONFIG_MMC_PXA staying unset is correct, not an
  * oversight.
  *
- * PIO only. HAMCOP's SDI block can also drive its own DMA channel into
- * on-chip SRAM (see the 2007 driver's dmabounce-into-SRAM scheme), but
- * that scheme is unportable as-is (dmabounce is gone from mainline) and
- * the SRAM it targeted is now owned outright by arch/arm/mach-pxa/
- * h2200_pm.c's WinCE-bootloader-preservation dance (see hamcop.c's top
- * comment) -- a real internal-DMA path needs a SRAM-claim API neither of
- * those drivers expose yet. That is out of scope for this pass.
+ * Two data paths: PIO, and a DMA bounce through HAMCOP's on-chip SRAM.
+ * The engine cannot address DRAM at all, so DMA means copying the request
+ * in and out of an SRAM window claimed from the h2200 SRAM gen_pool. A
+ * board with no SRAM pool producer, an exhausted pool, or a DMA engine
+ * that cannot be set up falls back to PIO.
  *
  * Card-detect and slot-power are h2200 board lines (PXA GPIO8 and GPIO61
  * respectively), not HAMCOP registers. Card detect is the generic "cd"
@@ -59,9 +57,8 @@
  *    SDIIMSK1 holds SAMCOP bits [17:5] shifted down by 5.
  *  - SDIDCNT1/SDIDCNT2: SAMCOP's status-only remaining-count register
  *    ([23:12]=blocks, [11:0]=bytes) split the same way as SDIDCON/SDIBNUM
- *    (DCNT1 = blocks remaining, DCNT2 = bytes remaining). Not decoded by
- *    this driver -- nothing here needs it bit-exact, only for a debug
- *    dump, and that isn't included in this first pass.
+ *    (DCNT1 = blocks remaining, DCNT2 = bytes remaining). Only checked
+ *    for zero when the DMA engine reports completion.
  *  - SDIDATA: a single 16-bit FIFO port, read/written twice per SAMCOP
  *    32-bit "word" rather than once -- i.e. genuinely a 2-byte access
  *    granularity, not a wider register split into halves. This is the
@@ -84,6 +81,8 @@
 #include <linux/mfd/hamcop.h>
 #include <linux/minmax.h>
 #include <linux/mmc/host.h>
+#include <linux/mmc/mmc.h>
+#include <linux/mmc/sdio.h>
 #include <linux/mmc/slot-gpio.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
@@ -95,6 +94,29 @@
 #include <linux/timer.h>
 #include <linux/unaligned.h>
 #include <linux/workqueue.h>
+
+/*
+ * Smallest transfer worth bouncing through SRAM. The engine was observed
+ * not to complete a transfer as short as an SCR read (four halfwords): the
+ * card answers and the data sits in the FIFO, but the engine's request
+ * line never asserts and the request times out. Anything shorter than one
+ * block is therefore drained by the PIO path, which is also cheaper than a
+ * bounce copy, an engine arm and a two-interrupt rendezvous for a few
+ * halfwords.
+ */
+#define HAMCOP_SDI_DMA_MIN		512
+
+/*
+ * Whether SDIO function transfers may use the SRAM bounce DMA. Off by
+ * default, so CMD53 data goes through PIO, the path the SDIO camera has
+ * been run on. DMA reads of the camera delivered 20 of 20 frames complete
+ * in one test, but that is one card and one transfer size. SD memory
+ * transfers are unaffected.
+ */
+static bool hamcop_sdi_dma_sdio;
+module_param_named(dma_sdio, hamcop_sdi_dma_sdio, bool, 0644);
+MODULE_PARM_DESC(dma_sdio,
+		 "route SDIO function data transfers (CMD53) through the SRAM DMA bounce too (default N: SDIO uses PIO). Takes effect on the next request.");
 
 /* ---------------------------------------------------------------------
  * Register offsets, relative to this cell's own mem resource (i.e.
@@ -124,6 +146,7 @@
 #define HAMCOP_SDI_DCON		0x24
 #define HAMCOP_SDI_DCNT1	0x26
 #define HAMCOP_SDI_DCNT2	0x28
+#define HAMCOP_SDI_DCNT_MASK	0x0fff
 #define HAMCOP_SDI_DSTA		0x2a
 #define HAMCOP_SDI_FSTA		0x2c
 #define HAMCOP_SDI_IMSK1	0x30
@@ -151,6 +174,8 @@
 #define HAMCOP_SDICON_FIFORESET	BIT(1)
 
 /* SDICMDCON / SDICMDSTAT / SDIDSTA / SDIFSTA: unchanged from SAMCOP. */
+#define HAMCOP_SDICMDCON_ABORT		BIT(12)
+#define HAMCOP_SDICMDCON_WITHDATA	BIT(11)
 #define HAMCOP_SDICMDCON_LONGRSP	BIT(10)
 #define HAMCOP_SDICMDCON_WAITRSP	BIT(9)
 #define HAMCOP_SDICMDCON_CMDSTART	BIT(8)
@@ -169,6 +194,74 @@
 #define HAMCOP_SDIDSTA_XFERFINISH	BIT(4)
 #define HAMCOP_SDIDSTA_TXDATAON	BIT(1)
 #define HAMCOP_SDIDSTA_RXDATAON	BIT(0)
+
+/*
+ * The chip's single-channel DMA engine, which is the S3C24xx DMA IP. The
+ * register semantics come from the s3c24xx dmaengine driver that was
+ * removed by commit a7ddf74b784b ("dmaengine: remove s3c24xx driver").
+ * The vendor driver splits each 32-bit register of that IP across a pair
+ * of 16-bit ones:
+ *
+ *	DISRC  = DISRC0 << 29 | DISRC1	(LOC/INC at bits 30:29 | address 14:0)
+ *	DIDST  = DIDST0 << 29 | DIDST1
+ *	DCON   = DCON0 << 20 | DCON1	(count 19:0 | control in DCON0)
+ *	DSTAT  = DSTAT0 << 20 | DSTAT1	(BUSY at bit 20, CURR_TC 19:0)
+ *
+ * so DISRC0, DCON0 and DSTAT0 are the high halves and carry only the top
+ * few bits of their fields. The vendor ORs the address and the two control
+ * bits into one register, so DISRC0/DIDST0 hold the control bits and
+ * DISRC1/DIDST1 the fifteen address bits.
+ *
+ * The offsets below are relative to the engine's own memory resource, the
+ * second one of the cell, and are reached through host->dma_base and the
+ * read_dma()/write_dma() accessors, never through host->base.
+ *
+ * The engine cannot address DRAM, only the chip's own SRAM, so its one
+ * job here is to move a request between the SRAM bounce buffer and the
+ * SDI FIFO port at the real clock rate.
+ */
+#define HAMCOP_DMA_DISRC0	0x00	/* LOC[1] INC[0] */
+#define HAMCOP_DMA_DISRC1	0x04	/* address[14:0] */
+#define HAMCOP_DMA_DIDST0	0x08
+#define HAMCOP_DMA_DIDST1	0x0c
+#define HAMCOP_DMA_DCON0	0x10	/* control (the full DCON's high bits) */
+#define HAMCOP_DMA_DCON1	0x14	/* transfer count (the low bits) */
+#define HAMCOP_DMA_DSTAT0	0x18	/* full-DSTAT bits 31:16 */
+#define HAMCOP_DMA_DSTAT1	0x1c	/* full-DSTAT bits 15:0: CURR_TC */
+#define HAMCOP_DMA_DMASKTRIG	0x28
+
+/* DISRC0/DIDST0 bits: the LOC and INC control bits of the full register. */
+#define HAMCOP_DI_INC_FIXED		BIT(0)
+#define HAMCOP_DI_BUS_APB		BIT(1)
+
+/*
+ * DCON0 bits, i.e. the control bits of the full DCON register shifted
+ * down by 20. The completion interrupt request is bit 28 of the full
+ * register, so bit 8 here. Bit 9 (full bit 29) is not the interrupt enable
+ * in this layout; setting it instead leaves the completion interrupt off
+ * and the engine runs without ever reporting done. The SD request line
+ * is selected by the HWSRC field, whose zero value is the only channel
+ * there is, so it needs no explicit bit.
+ */
+#define HAMCOP_DCON_HALFWORD		BIT(0)	/* DSZ, full bit 20 */
+#define HAMCOP_DCON_NORELOAD		BIT(2)	/* full bit 22 */
+#define HAMCOP_DCON_HWTRIG		BIT(3)	/* full bit 23 */
+#define HAMCOP_DCON_INTREQ		BIT(8)	/* full bit 28 */
+
+/*
+ * The one DCON0 value this driver arms the engine with, and what the probe
+ * time self-test writes. DMD_HS (bit 10) stays clear although the datasheet
+ * labels 0 "Reserved": the vendor bootloader arms the same value and reads
+ * its zImage off SD through this engine on every boot.
+ */
+#define HAMCOP_SDI_DMA_DCON0		(HAMCOP_DCON_INTREQ | HAMCOP_DCON_HWTRIG | \
+					 HAMCOP_DCON_NORELOAD | HAMCOP_DCON_HALFWORD)
+
+/* DSTAT0 bit 0 is the full-DSTAT BUSY bit (bit 20) shifted down. */
+#define HAMCOP_DSTAT_BUSY		BIT(0)
+
+#define HAMCOP_DMASKTRIG_STOP		BIT(2)
+#define HAMCOP_DMASKTRIG_ON		BIT(1)
 
 #define HAMCOP_SDIFSTA_TFDET		BIT(13)
 #define HAMCOP_SDIFSTA_RFDET		BIT(12)
@@ -193,6 +286,7 @@
 #define HAMCOP_SDIDCON_XFER_RXSTART	(2 << 0)
 #define HAMCOP_SDIDCON_XFER_TXSTART	(3 << 0)
 #define HAMCOP_SDIDCON_STOP		BIT(2)
+#define HAMCOP_SDIDCON_DMAEN		BIT(3)
 #define HAMCOP_SDIDCON_WIDEBUS		BIT(4)
 #define HAMCOP_SDIDCON_BLOCKMODE	BIT(5)
 #define HAMCOP_SDIDCON_RXAFTERCMD	BIT(7)
@@ -285,6 +379,23 @@ static unsigned int hamcop_sdi_blip_off_ms = 300;
 module_param_named(blip_off_ms, hamcop_sdi_blip_off_ms, uint, 0644);
 MODULE_PARM_DESC(blip_off_ms, "Milliseconds the slot rail stays off after the warm-up blip");
 
+/*
+ * How long hamcop_sdi_dma_irq() waits, in microseconds, for DSTAT.STAT_BUSY
+ * to settle after the engine has already raised its completion interrupt.
+ * Long enough to cover a register that lags its own INTREQ by a bus cycle
+ * or two, short enough that a genuinely stalled engine is reported rather
+ * than waited on.
+ */
+#define HAMCOP_SDI_DMA_IDLE_US		100
+
+/*
+ * How long hamcop_sdi_quiesce() waits, in microseconds, for DMASKTRIG.ON_OFF
+ * to read back 0 after STOP. Stopping an in-flight atomic transfer may take
+ * several cycles, and ON_OFF reading 0 is the controller's definition of the
+ * actual stop.
+ */
+#define HAMCOP_SDI_DMA_STOP_US		100
+
 enum hamcop_sdi_waitfor {
 	COMPLETION_NONE,
 	COMPLETION_FINALIZE,
@@ -307,15 +418,23 @@ struct hamcop_sdi_host {
 	unsigned int		scan_retries_done;
 	bool			blip_next;
 	void __iomem		*base;
+	/*
+	 * The DMA engine's own window, a second memory resource of this cell
+	 * nowhere near the SDI block. It is a separate mapping so that a
+	 * HAMCOP_DMA_* offset cannot be added to host->base by accident; use
+	 * hamcop_sdi_read_dma()/hamcop_sdi_write_dma() only.
+	 */
+	void __iomem		*dma_base;
+	dma_addr_t		sdi_base_phys;
 	int			irq;
 	struct clk		*clk;
 
 	/*
 	 * Guards every register access below CMDCON write time and all host
-	 * state shared between hamcop_sdi_irq(), the tasklet and the submit
-	 * path. hamcop_sdi_request() takes it and hamcop_sdi_send_request()
-	 * runs entirely underneath it, so send_request() must never be called
-	 * without it held;
+	 * state shared between hamcop_sdi_irq(), hamcop_sdi_dma_irq(), the
+	 * tasklet and the submit path. hamcop_sdi_request() takes it and
+	 * hamcop_sdi_send_request() runs entirely underneath it, so
+	 * send_request() must never be called without it held;
 	 * hamcop_sdi_finalize_request()'s stop-command recursion reaches it
 	 * from the tasklet, which already holds it.
 	 */
@@ -353,6 +472,31 @@ struct hamcop_sdi_host {
 	size_t			sram_size;
 
 	/*
+	 * DMA engine state (HAMCOP's one channel). dma_clk is the engine's
+	 * clock gate. dma_irq is its completion interrupt, distinct from
+	 * host->irq (the SDI's): a DMA request finishes only once both the
+	 * controller has reported XFERFINISH and the engine has reported
+	 * done, in either order. use_dma latches whether this request
+	 * bounces through SRAM; pio_active stays XFER_NONE for the whole
+	 * transfer in that case, which keeps the interrupt handler's PIO
+	 * refill out of the way.
+	 */
+	struct clk		*dma_clk;
+	int			dma_irq;
+	bool			dma_done;
+	bool			use_dma;
+
+	/*
+	 * Controller half of the DMA completion rendezvous: XFERFINISH seen
+	 * and acked while the engine was still busy. It is set only by
+	 * hamcop_sdi_irq() and consumed only by hamcop_sdi_dma_irq(), which
+	 * re-drives finalization once the engine reports idle, as the SDI
+	 * source is acked and masked by then and no further SDI interrupt is
+	 * coming.
+	 */
+	bool			xfer_done;
+
+	/*
 	 * Shadow copies of SDIIMSK1/SDIIMSK2: reads cost as much as writes
 	 * behind HAMCOP's static-memory window, and the PIO path updates the
 	 * mask on every FIFO refill.
@@ -369,8 +513,8 @@ struct hamcop_sdi_host {
 	/*
 	 * Backstop for a data phase that never signals completion at all.
 	 * Every other error this driver reports arrives as an interrupt, so
-	 * a block that simply stops producing them would hang the MMC core's
-	 * request wait forever with nothing in the log.
+	 * a block (or a DMA engine) that simply stops producing them would
+	 * hang the MMC core's request wait forever with nothing in the log.
 	 * Armed per data-carrying command in hamcop_sdi_send_command(),
 	 * disarmed in hamcop_sdi_finalize_request().
 	 */
@@ -387,6 +531,22 @@ static inline u16 hamcop_sdi_read(struct hamcop_sdi_host *host, u32 reg)
 static inline void hamcop_sdi_write(struct hamcop_sdi_host *host, u32 reg, u16 val)
 {
 	writew_relaxed(val, host->base + reg);
+}
+
+/*
+ * The DMA engine lives in a window of its own, so its registers get their
+ * own accessors. Every HAMCOP_DMA_* access must go through these two:
+ * through hamcop_sdi_write() the offset would be added to the SDI block's
+ * mapping instead of the engine's.
+ */
+static inline u16 hamcop_sdi_read_dma(struct hamcop_sdi_host *host, u32 reg)
+{
+	return readw_relaxed(host->dma_base + reg);
+}
+
+static inline void hamcop_sdi_write_dma(struct hamcop_sdi_host *host, u32 reg, u16 val)
+{
+	writew_relaxed(val, host->dma_base + reg);
 }
 
 /* These three update the host->imsk1/imsk2 shadows, so they need host->lock. */
@@ -697,6 +857,7 @@ static void hamcop_sdi_pio_write(struct hamcop_sdi_host *host)
 }
 
 static void hamcop_sdi_finalize_request(struct hamcop_sdi_host *host);
+static void hamcop_sdi_dma_stop(struct hamcop_sdi_host *host);
 static void hamcop_sdi_send_request(struct mmc_host *mmc);
 
 static void hamcop_sdi_tasklet(struct tasklet_struct *t)
@@ -726,10 +887,11 @@ static void hamcop_sdi_tasklet(struct tasklet_struct *t)
 }
 
 /*
- * Defined further down the file, next to the interrupt handler it was
- * factored out of.
+ * Both are defined further down the file, next to the interrupt handlers
+ * they were factored out of.
  */
 static void hamcop_sdi_process_status(struct hamcop_sdi_host *host);
+static void hamcop_sdi_process_dma_done(struct hamcop_sdi_host *host);
 
 /*
  * host->req_timer's callback: a data phase produced no completion
@@ -737,14 +899,14 @@ static void hamcop_sdi_process_status(struct hamcop_sdi_host *host);
  *
  * Before declaring a timeout, ask the question the interrupt would have
  * answered: has the transfer actually finished? The completion logic of the
- * interrupt handler is run directly, reading the SDI block's own status
- * registers rather than relying on the interrupt controller.
- * DSTA.XFERFINISH remains the completion criterion, only polled instead of
- * signalled.
+ * interrupt handlers is run directly, reading the SDI block's and the DMA
+ * engine's own status registers rather than relying on the interrupt
+ * controller. DSTA.XFERFINISH remains the completion criterion, only polled
+ * instead of signalled.
  *
  * If that finds no completion, the abort path reuses the interrupt handler's
- * own: put the block back in a known state, record the error on the
- * in-flight command, then hand the request to the tasklet
+ * own: stop the engine, put the block back in a known state, record the
+ * error on the in-flight command, then hand the request to the tasklet
  * through COMPLETION_FINALIZE, exactly what hamcop_sdi_irq()'s close_transfer
  * leg does. It takes only host->lock and touches no mask bit beyond
  * hamcop_sdi_clear_imsk(), so it adds no new lock interaction with the ISR.
@@ -754,6 +916,7 @@ static void hamcop_sdi_req_timeout(struct timer_list *t)
 	struct hamcop_sdi_host *host = timer_container_of(host, t, req_timer);
 	struct mmc_command *cmd;
 	unsigned long flags;
+	int err = -ETIMEDOUT;
 
 	spin_lock_irqsave(&host->lock, flags);
 
@@ -770,10 +933,38 @@ static void hamcop_sdi_req_timeout(struct timer_list *t)
 	cmd = host->cmd_is_stop ? host->mrq->stop : host->mrq->cmd;
 
 	/*
-	 * Poll fallback. Run the completion logic a real XFERFINISH would
-	 * have delivered.
+	 * Poll fallback. Run the completion logic in the order a real
+	 * XFERFINISH or DMA rendezvous would deliver it. The DMA side is only
+	 * consulted once the engine has gone idle, and a still-busy engine falls
+	 * through to the abort path below with -ETIMEDOUT. An idle engine with
+	 * data still outstanding fails the request with -EIO instead, as the
+	 * buffer is short.
 	 */
 	hamcop_sdi_process_status(host);
+	if (host->use_dma && host->complete_what != COMPLETION_FINALIZE) {
+		bool engine_on, outstanding;
+
+		/*
+		 * An idle engine is not proof of completion: DSTAT0 reads
+		 * idle just as readily for an engine that never ran. Accept
+		 * the DMA side only when the SDI block's own remaining
+		 * counters and its FIFO are empty as well.
+		 */
+		engine_on = (hamcop_sdi_read_dma(host, HAMCOP_DMA_DSTAT0) &
+			     HAMCOP_DSTAT_BUSY) ||
+			    (hamcop_sdi_read_dma(host, HAMCOP_DMA_DMASKTRIG) &
+			     HAMCOP_DMASKTRIG_ON);
+		outstanding = (hamcop_sdi_read(host, HAMCOP_SDI_DCNT1) &
+			       HAMCOP_SDI_DCNT_MASK) ||
+			      (hamcop_sdi_read(host, HAMCOP_SDI_DCNT2) &
+			       HAMCOP_SDI_DCNT_MASK) ||
+			      hamcop_sdi_fifo_count(host);
+
+		if (!engine_on && !outstanding)
+			hamcop_sdi_process_dma_done(host);
+		else if (!engine_on)
+			err = -EIO;
+	}
 
 	if (host->complete_what == COMPLETION_FINALIZE) {
 		dev_dbg(host->dev,
@@ -783,11 +974,18 @@ static void hamcop_sdi_req_timeout(struct timer_list *t)
 	}
 
 	dev_err(host->dev,
-		"request timed out: CMD%u, pio_count:%u pio_bytes:%u DSTA %#06x FSTA %#06x DCON %#06x\n",
-		cmd->opcode, host->pio_count, host->pio_bytes,
+		"request timed out: CMD%u %s, pio_count:%u pio_bytes:%u DSTA %#06x FSTA %#06x DCON %#06x\n",
+		cmd->opcode, host->use_dma ? "DMA" : "PIO",
+		host->pio_count, host->pio_bytes,
 		hamcop_sdi_read(host, HAMCOP_SDI_DSTA),
 		hamcop_sdi_read(host, HAMCOP_SDI_FSTA),
 		hamcop_sdi_read(host, HAMCOP_SDI_DCON));
+	if (err == -EIO)
+		dev_err(host->dev, "DMA engine idle with data outstanding, failing the request with -EIO\n");
+
+	if (host->use_dma)
+		hamcop_sdi_dma_stop(host);
+
 	hamcop_sdi_reset_data(host);
 
 	/*
@@ -797,9 +995,9 @@ static void hamcop_sdi_req_timeout(struct timer_list *t)
 	 */
 	host->pio_active = XFER_NONE;
 
-	cmd->error = -ETIMEDOUT;
+	cmd->error = err;
 	if (cmd->data)
-		cmd->data->error = -ETIMEDOUT;
+		cmd->data->error = err;
 
 	host->complete_what = COMPLETION_FINALIZE;
 	hamcop_sdi_clear_imsk(host);
@@ -925,11 +1123,45 @@ static void hamcop_sdi_process_status(struct hamcop_sdi_host *host)
 	}
 
 	if (dsta & HAMCOP_SDIDSTA_XFERFINISH) {
+		/*
+		 * In DMA mode XFERFINISH means the card has clocked the data
+		 * out, but the engine's own completion interrupt may not
+		 * have run yet. Finalize only once both have fired. On a
+		 * write the copy-in happened before the engine was armed, on
+		 * a read the DMA handler did the copy-out when the engine
+		 * went idle.
+		 *
+		 * Ack XFERFINISH first, before anything decides to park on
+		 * it. It is a latched event, and jumping to clear_status
+		 * without it would write DSTA = 0 and return with the source
+		 * still asserted and DATAFINISH still unmasked. Against an
+		 * edge-mapped demux that re-reads the pending registers on
+		 * every pass, that burns the whole dispatch budget inside one
+		 * chained handler invocation, long before host->req_timer
+		 * can fire.
+		 */
+		dclear |= HAMCOP_SDIDSTA_XFERFINISH;
+
+		if (host->use_dma && !host->dma_done) {
+			/*
+			 * Acking costs the wake-up that would have brought
+			 * the handler back here, so hand finalization to
+			 * hamcop_sdi_dma_irq() through host->xfer_done and
+			 * take DATAFINISH out of the mask. RESPONSEND stays
+			 * enabled -- a COMPLETION_XFERFINISH_RSPFIN request
+			 * still owes its response.
+			 */
+			host->xfer_done = true;
+			hamcop_sdi_disable_imsk(host,
+						HAMCOP_SDIIMSK1_DATAFINISH, 0);
+
+			goto clear_status;
+		}
+
 		if (host->complete_what == COMPLETION_XFERFINISH)
 			goto close_transfer;
 		if (host->complete_what == COMPLETION_XFERFINISH_RSPFIN)
 			host->complete_what = COMPLETION_RSPFIN;
-		dclear |= HAMCOP_SDIDSTA_XFERFINISH;
 	}
 
 clear_status:
@@ -939,6 +1171,8 @@ clear_status:
 
 fail_transfer:
 	host->pio_active = XFER_NONE;
+	if (host->use_dma)
+		hamcop_sdi_dma_stop(host);
 
 close_transfer:
 	host->complete_what = COMPLETION_FINALIZE;
@@ -1049,6 +1283,8 @@ static void hamcop_sdi_finalize_request(struct hamcop_sdi_host *host)
 
 request_done:
 	host->complete_what = COMPLETION_NONE;
+	host->use_dma = false;
+	host->xfer_done = false;
 	host->mrq = NULL;
 	mmc_request_done(host->mmc, mrq);
 }
@@ -1096,6 +1332,265 @@ static void hamcop_sdi_send_command(struct hamcop_sdi_host *host, struct mmc_com
 			     HAMCOP_SDI_REQ_TIMEOUT_MAX_MS);
 
 	mod_timer(&host->req_timer, jiffies + msecs_to_jiffies(ms));
+}
+
+/* ---------------------------------------------------------------------
+ * DMA bounce path
+ *
+ * The engine can only see the chip's own SRAM, so a DMA transfer is a
+ * bounce: the CPU copies the request between the scatterlist and the SRAM
+ * window, and the engine moves it between SRAM and the SDI FIFO port at
+ * the real clock rate, sparing the card the refill latency of PIO.
+ * ---------------------------------------------------------------------
+ */
+
+/*
+ * Copy the request's scatterlist into (write) or out of (read) the SRAM
+ * bounce buffer. sg_miter does the kmap, so this is highmem safe. The
+ * buffer is an ioremap()ped aperture, so the move is memcpy_toio() or
+ * memcpy_fromio(). Returns the number of bytes copied.
+ */
+static unsigned int hamcop_sdi_bounce_copy(struct hamcop_sdi_host *host,
+					   struct mmc_data *data, bool to_sram)
+{
+	struct sg_mapping_iter miter;
+	unsigned int done = 0;
+	unsigned int len = data->sg->length;
+	size_t flags;
+
+	if (len > host->sram_size)
+		len = host->sram_size;
+
+	flags = SG_MITER_ATOMIC | (to_sram ? SG_MITER_FROM_SG : SG_MITER_TO_SG);
+	sg_miter_start(&miter, data->sg, data->sg_len, flags);
+	while (sg_miter_next(&miter) && done < len) {
+		unsigned int chunk = min_t(unsigned int, miter.length,
+					   len - done);
+
+		if (to_sram)
+			memcpy_toio(host->sram_buf + done, miter.addr, chunk);
+		else
+			memcpy_fromio(miter.addr, host->sram_buf + done, chunk);
+		done += chunk;
+	}
+	sg_miter_stop(&miter);
+
+	return done;
+}
+
+/*
+ * Program and arm the engine for a single bounce of len bytes between the
+ * SRAM and the FIFO port: SRAM (AHB, incrementing) to FIFO (APB, fixed)
+ * for a write, and the reverse for a read. Caller holds host->lock.
+ */
+static void hamcop_sdi_dma_start(struct hamcop_sdi_host *host,
+				 struct mmc_data *data, unsigned int len)
+{
+	bool is_write = data->flags & MMC_DATA_WRITE;
+	u32 fifo = (u32)host->sdi_base_phys + HAMCOP_SDI_DATA;
+	u32 sram = (u32)host->sram_dma;
+	u32 src, dst, src_ctl, dst_ctl;
+
+	/*
+	 * The SRAM side is the pool's bus address, the FIFO side is the
+	 * physical address of the SDI data register. Neither is a
+	 * dma_map_*() cookie.
+	 */
+	if (is_write) {
+		src = sram;
+		src_ctl = 0;			/* AHB, increment */
+		dst = fifo;
+		dst_ctl = HAMCOP_DI_INC_FIXED | HAMCOP_DI_BUS_APB;
+	} else {
+		src = fifo;
+		src_ctl = HAMCOP_DI_INC_FIXED | HAMCOP_DI_BUS_APB;
+		dst = sram;
+		dst_ctl = 0;			/* AHB, increment */
+	}
+
+	/*
+	 * The control bits are at bits 30:29 of the full register, so they
+	 * land in the high half and the low half carries the 15-bit address.
+	 * The bounce endpoints are chip-internal addresses and fit that field.
+	 */
+	hamcop_sdi_write_dma(host, HAMCOP_DMA_DISRC0, src_ctl);
+	hamcop_sdi_write_dma(host, HAMCOP_DMA_DISRC1, src & 0x7fff);
+	hamcop_sdi_write_dma(host, HAMCOP_DMA_DIDST0, dst_ctl);
+	hamcop_sdi_write_dma(host, HAMCOP_DMA_DIDST1, dst & 0x7fff);
+
+	/*
+	 * Control goes in DCON0 and the transfer count in DCON1. The count
+	 * is in transfer units, not bytes, so a halfword transfer of len
+	 * bytes is len / 2. HWTRIG drives the transfer from the request
+	 * line of the SDI block, NORELOAD because each chunk is programmed
+	 * once, and HALFWORD matches the 2-byte access unit of the FIFO.
+	 * The count field is 20 bits wide with its top four bits in DCON0,
+	 * which stay zero since a chunk is at most the 16 KiB pool.
+	 */
+	hamcop_sdi_write_dma(host, HAMCOP_DMA_DCON0, HAMCOP_SDI_DMA_DCON0);
+	hamcop_sdi_write_dma(host, HAMCOP_DMA_DCON1, (len / 2) & 0xffff);
+
+	/*
+	 * The engine is hardware triggered, so there is no software trigger.
+	 * Read-modify-write like the vendor bootloader does, so that anything
+	 * else latched in the register is preserved.
+	 */
+	hamcop_sdi_write_dma(host, HAMCOP_DMA_DMASKTRIG,
+			     (hamcop_sdi_read_dma(host, HAMCOP_DMA_DMASKTRIG) &
+			      ~HAMCOP_DMASKTRIG_STOP) | HAMCOP_DMASKTRIG_ON);
+}
+
+/*
+ * Abort an in-flight engine transfer. This is one register read-modify-write,
+ * with no dmaengine channel to race a timeout handler against.
+ */
+static void hamcop_sdi_dma_stop(struct hamcop_sdi_host *host)
+{
+	hamcop_sdi_write_dma(host, HAMCOP_DMA_DMASKTRIG,
+			     hamcop_sdi_read_dma(host, HAMCOP_DMA_DMASKTRIG) |
+			     HAMCOP_DMASKTRIG_STOP);
+}
+
+/*
+ * The engine's own completion interrupt, a plain interrupt rather than a
+ * dmaengine callback. Done means the engine is no longer busy. All this
+ * records is that the engine pushed the last halfword; the card still has
+ * to clock it out, so the request is not completed here, the controller's
+ * XFERFINISH is authoritative.
+ */
+static irqreturn_t hamcop_sdi_dma_irq(int irq, void *dev_id)
+{
+	struct hamcop_sdi_host *host = dev_id;
+	unsigned long flags;
+	u16 dstat0;
+	int ret;
+
+	spin_lock_irqsave(&host->lock, flags);
+
+	/*
+	 * DSTAT.STAT_BUSY is confirmation that the engine finished, not the
+	 * event itself: the event is INTREQ, which this engine raises only at
+	 * terminal count. Gating on the status read loses completions
+	 * outright, because handle_edge_irq() has already acked the pending
+	 * latch by the time the handler runs. If STAT_BUSY had not settled
+	 * yet, returning here left dma_done false with nothing left to set
+	 * it, and the request then hung until host->req_timer fired, on every
+	 * transfer.
+	 *
+	 * Wait for it to settle instead, bounded, with a visible error at the
+	 * bound. Past the bound the engine is stalled rather than lagging, so
+	 * the completion is not taken: leaving dma_done false
+	 * routes the request to the timeout and its register dump, which is
+	 * better than finalizing a read whose SRAM copy-out may be half done.
+	 */
+	ret = read_poll_timeout_atomic(hamcop_sdi_read_dma, dstat0,
+				       !(dstat0 & HAMCOP_DSTAT_BUSY), 1,
+				       HAMCOP_SDI_DMA_IDLE_US, false,
+				       host, HAMCOP_DMA_DSTAT0);
+	if (ret) {
+		dev_err_ratelimited(host->dev,
+				    "DMA completion interrupt with the engine still busy after %u us (DSTAT0 %#06x DSTAT1 %#06x)\n",
+				    HAMCOP_SDI_DMA_IDLE_US, dstat0,
+				    hamcop_sdi_read_dma(host, HAMCOP_DMA_DSTAT1));
+		goto out;
+	}
+
+	hamcop_sdi_process_dma_done(host);
+
+out:
+	spin_unlock_irqrestore(&host->lock, flags);
+
+	/*
+	 * Always IRQ_HANDLED: the engine raised INTREQ and the demux has
+	 * already acked the pending bit, so an IRQ_NONE here buys nothing and
+	 * feeds note_interrupt()'s spurious-interrupt detector on a line that
+	 * was not spurious.
+	 */
+	return IRQ_HANDLED;
+}
+
+/*
+ * The engine-idle-and-rendezvous processing of hamcop_sdi_dma_irq(), factored
+ * out so host->req_timer's callback can run it when the interrupt never
+ * arrives. Caller holds host->lock.
+ */
+static void hamcop_sdi_process_dma_done(struct hamcop_sdi_host *host)
+{
+	u16 dcnt1, dcnt2;
+
+	if (!host->use_dma) {
+		/*
+		 * A completion with no transfer in flight, such as a stale
+		 * interrupt left latched by whatever ran before this driver.
+		 * Stop the engine and claim it: returning IRQ_NONE would
+		 * leave the line asserted and storm the chained parent.
+		 */
+		hamcop_sdi_dma_stop(host);
+		return;
+	}
+
+	host->dma_done = true;
+
+	/*
+	 * At terminal count on a read the engine has drained every unit out of
+	 * the FIFO, which it cannot have done unless the card sent all of them,
+	 * so a nonzero remaining count means the buffer is short. Copying it up
+	 * would hand the block layer stale SRAM, so fail the read instead. A
+	 * write is still being clocked out at this point, so its count says
+	 * nothing yet and XFERFINISH judges it.
+	 */
+	if (host->mrq && host->mrq->data &&
+	    (host->mrq->data->flags & MMC_DATA_READ)) {
+		dcnt1 = hamcop_sdi_read(host, HAMCOP_SDI_DCNT1) & HAMCOP_SDI_DCNT_MASK;
+		dcnt2 = hamcop_sdi_read(host, HAMCOP_SDI_DCNT2) & HAMCOP_SDI_DCNT_MASK;
+
+		if (dcnt1 || dcnt2) {
+			dev_err_ratelimited(host->dev,
+					    "DMA engine idle but %u block(s) + %u byte(s) of the read are outstanding\n",
+					    dcnt1, dcnt2);
+			host->mrq->data->error = -EIO;
+			host->xfer_done = false;
+			host->pio_active = XFER_NONE;
+			hamcop_sdi_dma_stop(host);
+			host->complete_what = COMPLETION_FINALIZE;
+			hamcop_sdi_clear_imsk(host);
+			tasklet_schedule(&host->pio_tasklet);
+			return;
+		}
+	}
+
+	/*
+	 * For a read the data is now fully in the SRAM, so move it to the
+	 * request buffer before XFERFINISH finalizes. A write needs no
+	 * copy-out, what is left in the FIFO is the card's concern and
+	 * XFERFINISH tracks it.
+	 */
+	if (host->mrq && host->mrq->data &&
+	    (host->mrq->data->flags & MMC_DATA_READ))
+		hamcop_sdi_bounce_copy(host, host->mrq->data, false);
+
+	/*
+	 * The other half of the rendezvous. If the controller got there
+	 * first, hamcop_sdi_irq() parked with XFERFINISH acked and DATAFINISH
+	 * masked, so no further SDI interrupt is coming and nothing short of
+	 * host->req_timer would ever finalize this request. Apply exactly the
+	 * transition that leg would have made.
+	 */
+	if (host->xfer_done) {
+		host->xfer_done = false;
+
+		if (host->complete_what == COMPLETION_XFERFINISH) {
+			host->complete_what = COMPLETION_FINALIZE;
+			hamcop_sdi_clear_imsk(host);
+			tasklet_schedule(&host->pio_tasklet);
+		} else if (host->complete_what == COMPLETION_XFERFINISH_RSPFIN) {
+			/*
+			 * RESPONSEND is still unmasked; the SDI side comes
+			 * back for the response on its own.
+			 */
+			host->complete_what = COMPLETION_RSPFIN;
+		}
+	}
 }
 
 static int hamcop_sdi_setup_data(struct hamcop_sdi_host *host, struct mmc_data *data)
@@ -1163,6 +1658,26 @@ static int hamcop_sdi_setup_data(struct hamcop_sdi_host *host, struct mmc_data *
 		dcon |= HAMCOP_SDIDCON_RXAFTERCMD | HAMCOP_SDIDCON_XFER_RXSTART;
 
 	/*
+	 * Decide between DMA and PIO before DCON is written: DMAEN has to
+	 * reach the card in the DCON that starts the transfer, or the card
+	 * never drives the request line of the engine and the armed engine
+	 * waits forever. The bounce copy and arming the engine come after
+	 * the write, at the end of this function.
+	 */
+	if (host->sram_buf && !(data->blksz & 1) && data->sg_len == 1 &&
+	    data->sg->length <= host->sram_size &&
+	    data->sg->length >= HAMCOP_SDI_DMA_MIN &&
+	    (data->mrq->cmd->opcode != SD_IO_RW_EXTENDED || hamcop_sdi_dma_sdio)) {
+		host->use_dma = true;
+		host->dma_done = false;
+		host->xfer_done = false;
+		host->pio_active = XFER_NONE;
+		dcon |= HAMCOP_SDIDCON_DMAEN;
+	} else {
+		host->use_dma = false;
+	}
+
+	/*
 	 * Reset the FIFO before every data phase, not just on the recovery
 	 * path above. Residue from the previous transfer (an aborted read's
 	 * tail, a write the card never drained) would otherwise prefix this
@@ -1185,6 +1700,17 @@ static int hamcop_sdi_setup_data(struct hamcop_sdi_host *host, struct mmc_data *
 	hamcop_sdi_enable_imsk(host,
 			       HAMCOP_SDIIMSK1_FIFOFAIL | HAMCOP_SDIIMSK1_DATACRC |
 				HAMCOP_SDIIMSK1_DATATIMEOUT | HAMCOP_SDIIMSK1_DATAFINISH, 0);
+
+	if (host->use_dma) {
+		/*
+		 * Copy the write payload into the SRAM now. A read is copied
+		 * out by the DMA completion interrupt.
+		 */
+		if (data->flags & MMC_DATA_WRITE)
+			hamcop_sdi_bounce_copy(host, data, true);
+
+		hamcop_sdi_dma_start(host, data, data->sg->length);
+	}
 
 	return 0;
 }
@@ -1211,7 +1737,8 @@ static void hamcop_sdi_prepare_pio(struct hamcop_sdi_host *host, struct mmc_data
  * hamcop_sdi_finalize_request()'s stop-command recursion (which is itself
  * called from the tasklet, already holding it), so it must never take the
  * lock itself. Nothing below here sleeps: the only delay on the path is
- * hamcop_sdi_settle()'s udelay().
+ * hamcop_sdi_settle()'s udelay() and the bounce copy maps with
+ * SG_MITER_ATOMIC.
  */
 static void hamcop_sdi_send_request(struct mmc_host *mmc)
 {
@@ -1247,7 +1774,8 @@ static void hamcop_sdi_send_request(struct mmc_host *mmc)
 			return;
 		}
 
-		hamcop_sdi_prepare_pio(host, cmd->data);
+		if (!host->use_dma)
+			hamcop_sdi_prepare_pio(host, cmd->data);
 	}
 
 	hamcop_sdi_send_command(host, cmd);
@@ -1267,10 +1795,11 @@ static void hamcop_sdi_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	absent = mmc_gpio_get_cd(mmc) == 0;
 
 	/*
-	 * Everything from here down is shared with hamcop_sdi_irq() and the
-	 * tasklet: host->mrq, host->complete_what, the PIO state and, most
-	 * importantly, the host->imsk1/imsk2 shadows, which the submit path
-	 * read-modify-writes while a handler may be zeroing them.
+	 * Everything from here down is shared with hamcop_sdi_irq(),
+	 * hamcop_sdi_dma_irq() and the tasklet: host->mrq, host->complete_what,
+	 * the PIO and DMA state and, most importantly, the host->imsk1/imsk2
+	 * shadows, which the submit path read-modify-writes while a handler
+	 * may be zeroing them.
 	 */
 	spin_lock_irqsave(&host->lock, flags);
 
@@ -1504,6 +2033,142 @@ static void hamcop_sdi_release_sram(struct hamcop_sdi_host *host)
 	host->sram_size = 0;
 }
 
+static void hamcop_sdi_put_dma_clk(void *data)
+{
+	struct clk *clk = data;
+
+	clk_disable_unprepare(clk);
+	clk_put(clk);
+}
+
+/*
+ * Does the engine hold what is written to it? DCON0 and DCON1 are plain
+ * read/write registers, so with the channel off, writing the arming value and
+ * a count and reading them back is harmless. It catches an engine that is
+ * unclocked or not answering before the first transfer times out on it.
+ */
+static bool hamcop_sdi_dma_selftest(struct hamcop_sdi_host *host)
+{
+	const u16 count = 0x0155;
+	u16 dcon0, dcon1;
+
+	hamcop_sdi_write_dma(host, HAMCOP_DMA_DCON0, HAMCOP_SDI_DMA_DCON0);
+	hamcop_sdi_write_dma(host, HAMCOP_DMA_DCON1, count);
+	dcon0 = hamcop_sdi_read_dma(host, HAMCOP_DMA_DCON0);
+	dcon1 = hamcop_sdi_read_dma(host, HAMCOP_DMA_DCON1);
+	hamcop_sdi_write_dma(host, HAMCOP_DMA_DCON0, 0);
+	hamcop_sdi_write_dma(host, HAMCOP_DMA_DCON1, 0);
+
+	if (dcon0 == HAMCOP_SDI_DMA_DCON0 && dcon1 == count)
+		return true;
+
+	dev_err(host->dev,
+		"DMA engine does not hold its registers: DCON0 wrote %#06x read %#06x, DCON1 wrote %#06x read %#06x\n",
+		(u16)HAMCOP_SDI_DMA_DCON0, dcon0, count, dcon1);
+	return false;
+}
+
+/*
+ * Bring up the rest of the DMA path once the SRAM bounce buffer is there:
+ * the clock gate of the engine and its completion interrupt. Failing just
+ * means PIO, and sram_buf is the flag every DMA decision keys off.
+ */
+static int hamcop_sdi_setup_dma(struct hamcop_sdi_host *host,
+				struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct resource *mem;
+	int ret;
+
+	/*
+	 * The engine sits in its own window, the second memory resource of
+	 * the cell. Map it like the SDI window, and for the same reason
+	 * without reserving it: it is a sub-range of the window the HAMCOP
+	 * core already claims. Without it the engine is unreachable, so the
+	 * driver runs PIO.
+	 */
+	mem = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+	if (!mem)
+		return -ENODEV;
+	host->dma_base = devm_ioremap(dev, mem->start, resource_size(mem));
+	if (!host->dma_base)
+		return -ENOMEM;
+
+	/*
+	 * The engine's CLKCON gate, which the HAMCOP core leaves off.
+	 *
+	 * The core registers it as a clkdev alias with dev_id "hamcop-dma" and
+	 * no con_id. A lookup through this device, devm_clk_get_enabled(dev,
+	 * "hamcop-dma"), asks for dev_id "hamcop-sdi" with con_id "hamcop-dma",
+	 * which does not match that entry; clk_find() returns the SD gate
+	 * registered for dev_id "hamcop-sdi" on the device match alone. That left
+	 * the SD gate enabled twice and the engine unclocked, while probe still
+	 * reported DMA as available. Look the gate up by its own dev_id instead.
+	 *
+	 * The gate is optional: any failure to get it, including an
+	 * -EPROBE_DEFER for a gate that is not registered yet, means PIO.
+	 * Propagating the defer would retry the probe for ever.
+	 */
+	host->dma_clk = clk_get_sys("hamcop-dma", NULL);
+	if (IS_ERR(host->dma_clk)) {
+		host->dma_clk = NULL;
+		return -ENODEV;
+	}
+
+	ret = clk_prepare_enable(host->dma_clk);
+	if (ret) {
+		clk_put(host->dma_clk);
+		host->dma_clk = NULL;
+		return -ENODEV;
+	}
+
+	ret = devm_add_action_or_reset(dev, hamcop_sdi_put_dma_clk, host->dma_clk);
+	if (ret) {
+		host->dma_clk = NULL;
+		return ret;
+	}
+
+	/*
+	 * Stop the engine the instant its clock is on. A warm boot out of a
+	 * firmware that used the same engine can leave the channel armed,
+	 * and an armed engine resumes as soon as the gate opens, driving
+	 * the FIFO lines or the SRAM with a stale transfer. This also has
+	 * to happen before the interrupt below is requested: unmasking it
+	 * while the channel is armed and latched would leave the line
+	 * asserted with nobody to clear it. STOP is harmless on an idle
+	 * engine.
+	 */
+	hamcop_sdi_write_dma(host, HAMCOP_DMA_DMASKTRIG, HAMCOP_DMASKTRIG_STOP);
+
+	if (!hamcop_sdi_dma_selftest(host))
+		return -ENODEV;
+
+	host->dma_irq = platform_get_irq(pdev, 1);
+	if (host->dma_irq < 0)
+		return host->dma_irq;
+
+	ret = devm_request_irq(dev, host->dma_irq, hamcop_sdi_dma_irq, 0,
+			       "hamcop-sdi-dma", host);
+	if (ret) {
+		host->dma_irq = 0;
+		return ret;
+	}
+
+	/*
+	 * A copy-based bounce takes one linear segment sized to the pool,
+	 * as the Amlogic MMC driver does for its SRAM bounce. max_blk_count
+	 * stays at the BNUM field: max_req_size already bounds block I/O,
+	 * and sram_size / 512 would cap an SDIO CMD53 at 32 blocks of the
+	 * function's block size, 2 KiB with 64-byte blocks, splitting larger
+	 * reads into several commands.
+	 */
+	host->mmc->max_req_size = host->sram_size;
+	host->mmc->max_seg_size = host->mmc->max_req_size;
+	host->mmc->max_segs = 1;
+
+	return 0;
+}
+
 static int hamcop_sdi_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1536,6 +2201,7 @@ static int hamcop_sdi_probe(struct platform_device *pdev)
 	host->base = devm_ioremap(dev, mem->start, resource_size(mem));
 	if (!host->base)
 		return -ENOMEM;
+	host->sdi_base_phys = mem->start;
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
@@ -1643,6 +2309,11 @@ static int hamcop_sdi_probe(struct platform_device *pdev)
 	 */
 	hamcop_sdi_claim_sram(host);
 
+	if (host->sram_buf && hamcop_sdi_setup_dma(host, pdev)) {
+		dev_dbg(dev, "DMA unavailable, using PIO\n");
+		hamcop_sdi_release_sram(host);
+	}
+
 	ret = devm_request_irq(dev, host->irq, hamcop_sdi_irq, 0, "hamcop-sdi", host);
 	if (ret) {
 		hamcop_sdi_release_sram(host);
@@ -1660,10 +2331,50 @@ static int hamcop_sdi_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, host);
 
-	dev_info(dev, "HAMCOP SD/MMC host ready (PIO%s)\n",
+	dev_info(dev, "HAMCOP SD/MMC host ready (%s%s)\n",
+		 host->sram_buf ? "DMA" : "PIO",
 		 mmc->caps & MMC_CAP_NEEDS_POLL ? ", polled card-detect" : "");
 
 	return 0;
+}
+
+/*
+ * Disarm the DMA engine, stop the data engine and mask every interrupt
+ * source. A hardware-triggered channel left armed keeps driving the SDI
+ * FIFO lines or the SRAM window after this driver has stopped caring, and
+ * on h2200 that window is where the board's restart code puts the
+ * bootloader thunk back.
+ */
+static void hamcop_sdi_quiesce(struct hamcop_sdi_host *host)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&host->lock, flags);
+
+	if (host->dma_clk) {
+		u16 trig;
+
+		/*
+		 * Without waiting for the actual stop, a transfer between the SDI
+		 * FIFO and the SRAM bounce buffer could still be live when the
+		 * board restart code overwrites that window with the bootloader
+		 * thunk. Leave ON_OFF to STOP, it must not be changed directly.
+		 */
+		hamcop_sdi_dma_stop(host);
+
+		if (read_poll_timeout_atomic(hamcop_sdi_read_dma, trig,
+					     !(trig & HAMCOP_DMASKTRIG_ON), 1,
+					     HAMCOP_SDI_DMA_STOP_US, false,
+					     host, HAMCOP_DMA_DMASKTRIG))
+			dev_err(host->dev,
+				"DMA engine still on %u us after STOP (DMASKTRIG %#06x)\n",
+				HAMCOP_SDI_DMA_STOP_US, trig);
+	}
+
+	hamcop_sdi_stop_data(host);
+	hamcop_sdi_clear_imsk(host);
+
+	spin_unlock_irqrestore(&host->lock, flags);
 }
 
 static void hamcop_sdi_remove(struct platform_device *pdev)
@@ -1673,13 +2384,50 @@ static void hamcop_sdi_remove(struct platform_device *pdev)
 	cancel_delayed_work_sync(&host->scan_retry_work);
 	mmc_remove_host(host->mmc);
 
+	/*
+	 * Both interrupts are devm-managed, which would keep them live for
+	 * the whole of remove() and free them only after it returns. A late
+	 * hamcop_sdi_irq() could then reschedule the tasklet killed below
+	 * and run finalize_request() against a removed host, and
+	 * hamcop_sdi_dma_irq() could copy out of the SRAM window after it
+	 * has been handed back to the pool. Free them first, so everything
+	 * below runs with the handlers gone.
+	 */
+	devm_free_irq(&pdev->dev, host->irq, host);
+	if (host->dma_irq > 0)
+		devm_free_irq(&pdev->dev, host->dma_irq, host);
+
+	/*
+	 * The hardware can still be running with the handlers gone: an
+	 * armed, hardware-triggered DMA channel needs a register write.
+	 */
+	hamcop_sdi_quiesce(host);
+
 	/* Process context here, so the synchronous delete is both safe and
 	 * the right one: nothing may re-enter the callback after this.
 	 */
 	timer_delete_sync(&host->req_timer);
 	tasklet_kill(&host->pio_tasklet);
-	/* After both, so nothing can still be using the buffer. */
+	/* Last, so nothing can still be using the buffer. */
 	hamcop_sdi_release_sram(host);
+}
+
+/*
+ * device_shutdown() runs every .shutdown method before kernel_restart() fires
+ * the restart-prepare handlers. On h2200 one of them copies the bootloader
+ * thunk back over all of HAMCOP's SRAM, which is the window the DMA bounce
+ * buffer is allocated from, and it relies on any DMA user having been
+ * quiesced by then. The devm-managed interrupts are freed too late for that
+ * and nothing else disarms the engine, so do it here.
+ */
+static void hamcop_sdi_shutdown(struct platform_device *pdev)
+{
+	struct hamcop_sdi_host *host = platform_get_drvdata(pdev);
+
+	if (!host)
+		return;
+
+	hamcop_sdi_quiesce(host);
 }
 
 static const struct of_device_id hamcop_sdi_of_match[] = {
@@ -1695,6 +2443,7 @@ static struct platform_driver hamcop_sdi_driver = {
 	},
 	.probe	= hamcop_sdi_probe,
 	.remove	= hamcop_sdi_remove,
+	.shutdown = hamcop_sdi_shutdown,
 };
 module_platform_driver(hamcop_sdi_driver);
 
