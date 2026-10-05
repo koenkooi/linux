@@ -136,6 +136,21 @@
 		};
 
 		/*
+		 * The USB device controller, Ser0UDCCR to Ser0UDCSR. It has a
+		 * fixed three endpoints: ep0 control, one bulk-OUT and one
+		 * bulk-IN, with no interrupt endpoint. The interrupt is ICIP
+		 * bit 13, one less than IRQ_Ser0UDC in mach/irqs.h like the
+		 * other on-chip blocks. It stays disabled until a board adds a
+		 * VBUS sense connector and enables it.
+		 */
+		udc: usb@80000000 {
+			compatible = "intel,sa1110-udc", "intel,sa1100-udc";
+			reg = <0x80000000 0x34>;
+			interrupts = <13>;
+			status = "disabled";
+		};
+
+		/*
 		 * MSC0/MSC1/MSC2, the static memory half of the memory
 		 * controller, with one 16-bit timing half per chip select. The
 		 * three "reg" entries are separate because the registers are not
