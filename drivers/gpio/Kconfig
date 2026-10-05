@@ -1354,6 +1354,22 @@ config GPIO_ARIZONA
 	help
 	  Support for GPIOs on Wolfson Arizona class devices.
 
+config GPIO_ASIC1
+	tristate "HTC ASIC1 GPIO block (HP iPAQ h38xx)"
+	depends on MFD_ASIC2
+	select GPIO_GENERIC
+	help
+	  Support for the 15-line GPIO block of the HTC ASIC1 companion
+	  chip on the HP/Compaq iPAQ h38xx family. Every line is a power-
+	  rail or routing output (IR module, SD, RS232 transceiver,
+	  charger, LCD rails, frontlight, Bluetooth, speaker/headphone
+	  routing and audio power). ASIC1 has no chip select of its own
+	  and is reached through ASIC2's register window, so this driver
+	  is instantiated by the ASIC2 core driver.
+
+	  This driver can also be built as a module. If so, the module
+	  will be called gpio-asic1.
+
 config GPIO_BD71815
 	tristate "ROHM BD71815 PMIC GPIO support"
 	depends on MFD_ROHM_BD71828

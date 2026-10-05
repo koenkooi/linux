@@ -2982,10 +2982,12 @@ M:	Koen Kooi <koen@dominion.thruhere.net>
 L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
 S:	Maintained
 F:	Documentation/devicetree/bindings/arm/intel,sa1100.yaml
+F:	Documentation/devicetree/bindings/gpio/htc,asic1-gpio.yaml
 F:	Documentation/devicetree/bindings/gpio/intel,sa1100-*.yaml
 F:	Documentation/devicetree/bindings/interrupt-controller/intel,sa1100-intc.yaml
 F:	arch/arm/boot/dts/intel/sa1100/
 F:	arch/arm/mach-sa1100/h3800.c
+F:	drivers/gpio/gpio-asic1.c
 
 ARM/HP JORNADA 7XX MACHINE SUPPORT
 M:	Kristoffer Ericson <kristoffer.ericson@gmail.com>
