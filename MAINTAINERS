@@ -2993,6 +2993,7 @@ F:	Documentation/devicetree/bindings/memory-controllers/intel,sa1110-smc*.yaml
 F:	Documentation/devicetree/bindings/mmc/htc,asic1-mmc.yaml
 F:	Documentation/devicetree/bindings/pinctrl/intel,sa1100-pinctrl.yaml
 F:	Documentation/devicetree/bindings/serial/intel,sa1100-uart.yaml
+F:	Documentation/devicetree/bindings/sound/hp,ipaq-h3800-audio.yaml
 F:	Documentation/devicetree/bindings/sound/intel,sa1100-ssp.yaml
 F:	Documentation/devicetree/bindings/sound/nxp,uda1341.yaml
 F:	Documentation/devicetree/bindings/usb/intel,sa1100-udc.yaml
