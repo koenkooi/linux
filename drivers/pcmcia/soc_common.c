@@ -828,6 +828,9 @@ EXPORT_SYMBOL(soc_pcmcia_remove_one);
 
 int soc_pcmcia_add_one(struct soc_pcmcia_socket *skt)
 {
+#ifdef CONFIG_CPU_FREQ
+	bool cpufreq_registered = false;
+#endif
 	int ret;
 
 	skt->cs_state = dead_socket;
@@ -888,6 +891,8 @@ int soc_pcmcia_add_one(struct soc_pcmcia_socket *skt)
 			dev_err(skt->socket.dev.parent,
 				"unable to register CPU frequency change notifier for PCMCIA (%d)\n",
 				ret);
+		else
+			cpufreq_registered = true;
 	}
 #endif
 
@@ -910,6 +915,16 @@ int soc_pcmcia_add_one(struct soc_pcmcia_socket *skt)
 	pcmcia_unregister_socket(&skt->socket);
 
  out_err_7:
+#ifdef CONFIG_CPU_FREQ
+	/*
+	 * skt->cpufreq_nb is embedded in the socket the caller is about to
+	 * destroy, so it must not stay on the transition chain. Registration
+	 * failure is only logged, hence the flag.
+	 */
+	if (cpufreq_registered)
+		cpufreq_unregister_notifier(&skt->cpufreq_nb,
+					    CPUFREQ_TRANSITION_NOTIFIER);
+#endif
 	soc_pcmcia_hw_shutdown(skt);
  out_err_6:
 	pci_unmap_iospace(&skt->res_io_io);
