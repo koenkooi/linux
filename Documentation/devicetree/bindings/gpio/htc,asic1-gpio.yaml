@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/gpio/htc,asic1-gpio.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HTC ASIC1 GPIO block
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  ASIC1 is the SD/MMC host and power-rail companion chip of the HP/Compaq
+  iPAQ h38xx family. It has no chip select of its own: the SoC reaches it
+  through a sub-range of ASIC2's register window, with ASIC2 forwarding
+  the bus cycles, so this node is always a child of an htc,asic2 node
+  (Documentation/devicetree/bindings/mfd/htc,asic2.yaml) and carries no
+  reg of its own -- the ASIC2 driver hands the block its register window.
+
+  The block has 15 lines, every one of them wired as a power-rail or
+  routing output on every known board (IR module, SD, RS232 transceiver,
+  charger, the five LCD rails, frontlight, Bluetooth, speaker/headphone
+  routing and audio power). The block also has an interrupt controller
+  of its own, but no board routes its output to the SoC, so no
+  interrupt-controller properties are described.
+
+properties:
+  compatible:
+    const: htc,asic1-gpio
+
+  gpio-controller: true
+
+  '#gpio-cells':
+    const: 2
+
+  gpio-line-names:
+    minItems: 1
+    maxItems: 15
+
+required:
+  - compatible
+  - gpio-controller
+  - '#gpio-cells'
+
+additionalProperties: false
+
+examples:
+  - |
+    gpio {
+        compatible = "htc,asic1-gpio";
+        gpio-controller;
+        #gpio-cells = <2>;
+        gpio-line-names = "IR_ON_N", "SD_PWR_ON", "RS232_ON", "PULSE_GEN",
+                          "CH_TIMER", "LCD_5V_ON", "LCD_ON", "LCD_PCI",
+                          "VGH_ON", "VGL_ON", "FL_PWR_ON", "BT_PWR_ON",
+                          "SPK_ON", "EAR_ON_N", "AUD_PWR_ON";
+    };
+
+...
