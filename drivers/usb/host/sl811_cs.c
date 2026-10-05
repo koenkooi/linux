@@ -87,10 +87,14 @@ static struct platform_device platform_dev = {
 	.num_resources		= ARRAY_SIZE(resources),
 };
 
+static bool platform_dev_registered;
+
 static int sl811_hc_init(struct device *parent, resource_size_t base_addr,
 			 int irq)
 {
-	if (platform_dev.dev.parent)
+	int status;
+
+	if (platform_dev_registered)
 		return -EBUSY;
 	platform_dev.dev.parent = parent;
 
@@ -108,7 +112,17 @@ static int sl811_hc_init(struct device *parent, resource_size_t base_addr,
 	 * by referencing "sl811h_driver".
 	 */
 	platform_dev.name = sl811h_driver.driver.name;
-	return platform_device_register(&platform_dev);
+	status = platform_device_register(&platform_dev);
+	if (status) {
+		/* the reference platform_device_register() took must be
+		 * dropped even when it failed
+		 */
+		platform_device_put(&platform_dev);
+		return status;
+	}
+
+	platform_dev_registered = true;
+	return 0;
 }
 
 /*====================================================================*/
@@ -127,8 +141,18 @@ static void sl811_cs_release(struct pcmcia_device * link)
 {
 	dev_dbg(&link->dev, "sl811_cs_release\n");
 
+	/* Tear the HCD down first: platform_device_unregister() runs
+	 * sl811h_remove() -> usb_remove_hcd() -> sl811h_stop(), which
+	 * programs the chip and unmaps the I/O window whose region
+	 * pcmcia_disable_device() then releases.  The other order leaves
+	 * that teardown reading a window with no supply behind it, which
+	 * returns 0xff for every register.
+	 */
+	if (platform_dev_registered) {
+		platform_device_unregister(&platform_dev);
+		platform_dev_registered = false;
+	}
 	pcmcia_disable_device(link);
-	platform_device_unregister(&platform_dev);
 }
 
 static int sl811_cs_config_check(struct pcmcia_device *p_dev, void *priv_data)
