@@ -115,9 +115,11 @@ enum sleeve_device_id {
 /**
  * struct ipaq_sleeve_device - a sleeve enumerated on the bus
  * @dev: driver-core device
- * @vendor: vendor ID copied from the sleeve's ID EEPROM
- * @device: device ID copied from the sleeve's ID EEPROM
- * @id_valid: the EEPROM reads completed and returned non-zero IDs
+ * @vendor: vendor ID copied from the sleeve's ID EEPROM, or forced
+ * @device: device ID copied from the sleeve's ID EEPROM, or forced
+ * @id_valid: the EEPROM reads completed and returned non-zero IDs, or
+ *	the identity was forced through the bus's identity_override
+ *	(Documentation/ABI/testing/sysfs-bus-ipaq-sleeve)
  *
  * The original also carried a @procent (/proc/bus/sleeve entry) --
  * dropped here, procfs is not part of this port (see
