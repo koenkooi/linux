@@ -11,6 +11,22 @@ config MFD_CORE
 	select IRQ_DOMAIN
 	default n
 
+config MFD_ASIC3
+	bool "Compaq/HTC ASIC3 companion ASIC"
+	depends on ARCH_PXA
+	select MFD_CORE
+	help
+	  This is the core driver for the Compaq/HTC ASIC3 companion ASIC
+	  found on the HP iPAQ hx4700 and h39xx families. ASIC3 provides a
+	  64-line GPIO block that doubles as its own interrupt sources, an
+	  SD/MMC host, a DS1WM-compatible 1-Wire master, a 3-channel LED
+	  blink controller and an SPI block.
+
+	  This option enables only the core chip driver (register access,
+	  IRQ demux, gpio_chip, clocks) and does not by itself enable any
+	  of ASIC3's individual peripherals; select their drivers
+	  separately.
+
 config MFD_CS5535
 	tristate "AMD CS5535 and CS5536 southbridge core functions"
 	select MFD_CORE
