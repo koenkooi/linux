@@ -407,13 +407,23 @@ static void ds2760_battery_set_current_accum(struct ds2760_device_info *di,
 static void ds2760_battery_update_status(struct ds2760_device_info *di)
 {
 	int old_charge_status = di->charge_status;
+	int supplied;
 
 	ds2760_battery_read_status(di);
 
 	if (di->charge_status == POWER_SUPPLY_STATUS_UNKNOWN)
 		di->full_counter = 0;
 
-	if (power_supply_am_i_supplied(di->bat)) {
+	/*
+	 * A negative return (-ENODEV) means no supplier is linked to the
+	 * battery, i.e. there is no supply information, which must not be
+	 * mistaken for "on AC". Without it FULL cannot be told from an idle
+	 * battery, so go by the measured current alone and leave the gauge
+	 * untouched.
+	 */
+	supplied = power_supply_am_i_supplied(di->bat);
+
+	if (supplied > 0) {
 		if (di->current_uA > 10000) {
 			di->charge_status = POWER_SUPPLY_STATUS_CHARGING;
 			di->full_counter = 0;
@@ -440,8 +450,16 @@ static void ds2760_battery_update_status(struct ds2760_device_info *di)
 						di->full_active_uAh);
 			}
 		}
-	} else {
+	} else if (supplied == 0) {
 		di->charge_status = POWER_SUPPLY_STATUS_DISCHARGING;
+		di->full_counter = 0;
+	} else {
+		if (di->current_uA > 10000)
+			di->charge_status = POWER_SUPPLY_STATUS_CHARGING;
+		else if (di->current_uA < -5000)
+			di->charge_status = POWER_SUPPLY_STATUS_DISCHARGING;
+		else
+			di->charge_status = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		di->full_counter = 0;
 	}
 
