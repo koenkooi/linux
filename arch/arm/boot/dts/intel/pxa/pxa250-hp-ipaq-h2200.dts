@@ -15,6 +15,7 @@
 
 /dts-v1/;
 
+#include <dt-bindings/gpio/gpio.h>
 #include "pxa25x.dtsi"
 
 / {
@@ -28,6 +29,25 @@
 	memory@a0000000 {
 		device_type = "memory";
 		reg = <0xa0000000 0x04000000>; /* 64 MiB */
+	};
+
+	/*
+	 * CompactFlash socket. The shared PXA PCMCIA driver is matched by
+	 * name and needs board callbacks that no property can express, so
+	 * the board code registers the platform device and merely looks this
+	 * node up to resolve the GPIOs, hence disabled. Detect and add-en
+	 * are active low, as their _N hardware pin names say.
+	 */
+	pcmcia {
+		compatible = "hp,ipaq-h2200-pcmcia";
+		status = "disabled";
+
+		detect-gpios = <&gpio 9 GPIO_ACTIVE_LOW>;
+		ready-gpios = <&gpio 7 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio 23 GPIO_ACTIVE_HIGH>;
+		power-gpios = <&gpio 26 GPIO_ACTIVE_HIGH>;
+		add-en-gpios = <&gpio 25 GPIO_ACTIVE_LOW>;
+		buff-en-gpios = <&gpio 63 GPIO_ACTIVE_HIGH>;
 	};
 };
 
