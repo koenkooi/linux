@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/mmc/htc,asic1-mmc.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HTC ASIC1 SD/MMC host (HP/Compaq iPAQ h38xx family)
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  ASIC1 is the SD/MMC host and power-rail companion chip of the HP/Compaq
+  iPAQ h38xx family. It has no chip select of its own: the SoC reaches it
+  through a sub-range of ASIC2's register window, with ASIC2 forwarding the
+  bus cycles, so this node is always a child of an htc,asic2 node and has
+  no reg of its own. The ASIC2 driver hands the block its register window.
+
+  Unlike ASIC1's GPIO block, the completion interrupt of the SD host does
+  not stay inside ASIC2's demux. It reaches the SoC on a dedicated GPIO
+  line, so this node has an "interrupts" property against the interrupt
+  controller of the SoC, not of htc,asic2.
+
+  Card detect is a separate signal, bit 6 of ASIC2's own GPIO bank, and is
+  expressed with a "cd-gpios" phandle into the htc,asic2 node. Write
+  protect is wired to a different GPIO controller again, a line of the
+  SA-1100 PPC block.
+
+allOf:
+  - $ref: /schemas/mmc/mmc-controller.yaml#
+
+properties:
+  compatible:
+    const: htc,asic1-mmc
+
+  interrupts:
+    maxItems: 1
+    description:
+      The SD host's own completion interrupt, wired directly to an
+      SA-1100 core GPIO (interrupt-parent pointing at that gpio node,
+      not at the parent htc,asic2 node).
+
+  clocks:
+    items:
+      - description: The SD card clock selector of the parent htc,asic2
+
+required:
+  - compatible
+  - interrupts
+  - clocks
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/htc,asic2.h>
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    asic2: companion-chip@49000000 {
+        compatible = "htc,asic2";
+        reg = <0x49000000 0x2000>;
+        interrupt-parent = <&gpio>;
+        interrupts = <1 IRQ_TYPE_EDGE_RISING>;
+        gpio-controller;
+        #gpio-cells = <2>;
+        #clock-cells = <1>;
+
+        mmc {
+            compatible = "htc,asic1-mmc";
+            interrupt-parent = <&gpio>;
+            interrupts = <18 IRQ_TYPE_EDGE_RISING>;
+            clocks = <&asic2 ASIC2_CLK_SD>;
+            cd-gpios = <&asic2 6 GPIO_ACTIVE_LOW>;
+            wp-gpios = <&ppc 13 GPIO_ACTIVE_LOW>;
+            vmmc-supply = <&sd_vcc>;
+        };
+    };
+
+...
