@@ -12051,6 +12051,8 @@ L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
 S:	Maintained
 F:	Documentation/devicetree/bindings/leds/htc,asic*-leds.yaml
 F:	Documentation/devicetree/bindings/mfd/htc,asic*.yaml
+F:	drivers/mfd/asic*.c
+F:	include/linux/mfd/asic*.h
 
 HTCPEN TOUCHSCREEN DRIVER
 M:	Pau Oliva Fora <pof@eslack.org>
