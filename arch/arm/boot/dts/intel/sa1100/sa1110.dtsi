@@ -97,6 +97,17 @@
 		};
 
 		/*
+		 * Only PPDR..PPFR: HSCR2 (+0x28) and MCCR1 (+0x30) live in the
+		 * same page and must not be claimed by this node.
+		 */
+		ppc: gpio@90060000 {
+			compatible = "intel,sa1110-ppc";
+			reg = <0x90060000 0x14>;
+			gpio-controller;
+			#gpio-cells = <2>;
+		};
+
+		/*
 		 * MSC0/MSC1/MSC2, the static memory half of the memory
 		 * controller, with one 16-bit timing half per chip select. The
 		 * three "reg" entries are separate because the registers are not
