@@ -564,6 +564,29 @@ config IPAQ_SLEEVE_BUS
 	  To compile this driver as a module, choose M here: the module
 	  will be called ipaq-sleeve.
 
+config MISC_ASIC2_SLEEVE
+	tristate "ASIC2 expansion-pack (sleeve) backend (HP iPAQ h38xx/h39xx)"
+	depends on MFD_ASIC2
+	depends on SPI
+	select IPAQ_SLEEVE_BUS
+	help
+	  ipaq_sleeve_ops backend for the h38xx/h39xx expansion-pack
+	  ("option jacket") connector. It drives the connector through the
+	  SPI block of the ASIC2 and four GPIO power and reset lines of the
+	  ASIC2, with jacket presence on a SoC GPIO.
+
+	  It implements both SPI protocols of the connector: the passive ID
+	  EEPROM read that every sleeve answers, and the checksummed
+	  command and reply protocol spoken by the microcontroller inside a
+	  powered PCMCIA or extended-battery jacket (firmware version,
+	  battery telemetry, external-battery enable).
+
+	  It probes only when the "sleeve" child node of the ASIC2 is
+	  enabled in the devicetree.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called asic2-sleeve.
+
 config MCHP_LAN966X_PCI
 	tristate "Microchip LAN966x PCIe Support"
 	depends on PCI
