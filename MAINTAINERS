@@ -2984,6 +2984,7 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/arm/intel,sa1100.yaml
 F:	Documentation/devicetree/bindings/gpio/intel,sa1100-*.yaml
 F:	Documentation/devicetree/bindings/interrupt-controller/intel,sa1100-intc.yaml
+F:	arch/arm/boot/dts/intel/sa1100/
 F:	arch/arm/mach-sa1100/h3800.c
 
 ARM/HP JORNADA 7XX MACHINE SUPPORT

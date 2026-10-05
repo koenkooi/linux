@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * sa1110.dtsi - Device Tree Include file for the Intel SA-1110 SoC
+ *
+ * Copyright (C) 2026 Koen Kooi
+ */
+
+/ {
+	#address-cells = <1>;
+	#size-cells = <1>;
+	model = "Intel SA-1110 family SoC";
+	compatible = "intel,sa1110";
+	interrupt-parent = <&intc>;
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu@0 {
+			device_type = "cpu";
+			/*
+			 * Not "intel,sa1110": that is the board root fallback
+			 * compatible, and arm/cpus.yaml matches any node with a
+			 * compatible from its enum, so using it here makes the
+			 * cpu schema apply to the root node as well. The
+			 * SA-1100 compatible describes the same core.
+			 */
+			compatible = "intel,sa1100";
+			reg = <0>;
+		};
+	};
+
+	/* The crystal references the timer and the RTC are clocked from. */
+	clk32768: clock-32768hz {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <32768>;
+		clock-output-names = "clk32768";
+	};
+
+	clk3686400: clock-3686400hz {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <3686400>;
+		clock-output-names = "clk3686400";
+	};
+
+	soc {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		/* The interrupt controller has no per-line trigger type. */
+		intc: interrupt-controller@90050000 {
+			compatible = "intel,sa1110-intc", "intel,sa1100-intc";
+			reg = <0x90050000 0x24>;
+			interrupt-controller;
+			#interrupt-cells = <1>;
+		};
+
+		/*
+		 * The GPIO block is edge-only. GPIO0-10 each have their own
+		 * interrupt controller line, GPIO11-27 share one.
+		 */
+		gpio: gpio@90040000 {
+			compatible = "intel,sa1110-gpio", "intel,sa1100-gpio";
+			reg = <0x90040000 0x20>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupts = <0>, <1>, <2>, <3>, <4>, <5>, <6>, <7>,
+				     <8>, <9>, <10>, <11>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+		};
+
+		/*
+		 * The OS timer, which is also the watchdog: with OWER.WME set,
+		 * a match on OSMR3 resets the SoC. The watchdog has no node of
+		 * its own; its registers, counter and clock are this block's.
+		 * The register layout is the PXA one, hence the fallback.
+		 */
+		timer@90000000 {
+			compatible = "intel,sa1110-timer", "intel,sa1100-timer",
+				     "marvell,pxa-timer";
+			reg = <0x90000000 0x20>;
+			interrupts = <26>;
+			clocks = <&clk3686400>;
+		};
+
+		rtc@90010000 {
+			compatible = "mrvl,sa1100-rtc";
+			reg = <0x90010000 0x40>;
+			interrupts = <30>, <31>;
+			interrupt-names = "rtc 1Hz", "rtc alarm";
+			clocks = <&clk32768>;
+		};
+	};
+};
