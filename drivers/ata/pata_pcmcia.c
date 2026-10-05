@@ -328,6 +328,16 @@ static int pcmcia_init_one(struct pcmcia_device *pdev)
 		 * identifies, so a PIO 0 card gets the timing it always had.
 		 * PIO 3 and 4 are IORDY modes, which assumes the socket routes
 		 * the card's nWAIT line to its memory controller, as is normal.
+		 *
+		 * The ceiling stops at PIO 4 although CF cards routinely
+		 * report "max PIO6". PIO 5 and 6 are CFA advanced timing
+		 * modes decoded from IDENTIFY word 163 by ata_id_xfermask(),
+		 * and libata has no ata_timing[] entry or ATA_PIO5/ATA_PIO6
+		 * host mask for them. They also drop IORDY (CF r4.1 Table
+		 * 22, see ata_pio_need_iordy()), which would give up the
+		 * nWAIT handshake for a lower t2 floor that this socket
+		 * cannot deliver: its cycle is quantised to whole memory
+		 * clocks and is already about twice the PIO 4 minimum.
 		 */
 		ap->pio_mask = ATA_PIO4;
 		ap->flags |= ATA_FLAG_SLAVE_POSS;
