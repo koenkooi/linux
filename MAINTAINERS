@@ -2983,6 +2983,7 @@ L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
 S:	Maintained
 F:	Documentation/devicetree/bindings/arm/intel,sa1100.yaml
 F:	Documentation/devicetree/bindings/clock/intel,sa1100-clocks.yaml
+F:	Documentation/devicetree/bindings/display/intel,sa1100-lcdc.yaml
 F:	Documentation/devicetree/bindings/gpio/htc,asic1-gpio.yaml
 F:	Documentation/devicetree/bindings/gpio/intel,sa1100-*.yaml
 F:	Documentation/devicetree/bindings/interrupt-controller/intel,sa1100-intc.yaml

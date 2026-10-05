@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/intel,sa1100-lcdc.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Intel/StrongARM SA-1100 LCD controller
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: |
+  The LCD controller integrated in the Intel/StrongARM SA-1100 and SA-1110
+  application processors, driving a parallel RGB (DPI) panel connected
+  through the "port" of the OF graph. SA-1100 and SA-1110 share the
+  identical register block; "intel,sa1100-lcdc" is the fallback compatible
+  for both.
+
+  Unlike marvell,pxa2xx-lcdc's frame-descriptor DMA engine, this
+  controller has a single pair of DMA base-address registers (DBAR1/
+  DBAR2) and re-reads them at the start of every frame on its own; there
+  is no descriptor to chain and this binding describes no such thing.
+
+properties:
+  $nodename:
+    pattern: "^lcd-controller@[0-9a-f]+$"
+
+  compatible:
+    items:
+      - const: intel,sa1110-lcdc
+      - const: intel,sa1100-lcdc
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+    description:
+      The clock this controller's pixel-clock divider runs from. On both
+      SA-1100 and SA-1110 this is the core clock (CCLK), the PLL output
+      that clocks the CPU core, not a dedicated LCD PLL.
+
+  port:
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    unevaluatedProperties: false
+    description:
+      Connection to the panel or bridge.
+
+    properties:
+      endpoint:
+        $ref: /schemas/media/video-interfaces.yaml#
+        unevaluatedProperties: false
+
+        properties:
+          bus-width:
+            const: 16
+            description:
+              Output bit width. In active (TFT) mode the controller drives
+              all 16 data lines, LDD<15:0>, one RGB565 pixel per clock.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - port
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/intel,sa1100-clocks.h>
+
+    lcd-controller@b0100000 {
+        compatible = "intel,sa1110-lcdc", "intel,sa1100-lcdc";
+        reg = <0xb0100000 0x2c>;
+        interrupts = <12>;
+        clocks = <&clks SA1100_CLK_CPU>;
+
+        port {
+            lcdc_out: endpoint {
+                remote-endpoint = <&panel_in>;
+                bus-width = <16>;
+            };
+        };
+    };
