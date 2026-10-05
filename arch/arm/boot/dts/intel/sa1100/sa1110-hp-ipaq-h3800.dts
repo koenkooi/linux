@@ -457,6 +457,53 @@
 		};
 
 		/*
+		 * The ADC of ASIC2, which also serves the resistive touchscreen.
+		 * Labelled so that the "touchscreen" node below reaches it through
+		 * a real "io-channels" phandle: a probe-ordering race against this
+		 * node then becomes an ordinary deferred probe instead of a
+		 * permanent failure. The light sensor on channel 0 has no consumer
+		 * node yet.
+		 */
+		asic2_adc: adc {
+			compatible = "htc,asic2-adc";
+			#io-channel-cells = <1>;
+			clocks = <&asic2 ASIC2_CLK_ADC>, <&asic2 ASIC2_CLK_EX1>;
+			clock-names = "ref", "ex1";
+		};
+
+		/*
+		 * The generic resistive-adc-touch driver, consuming the two
+		 * touch-plate channels of the ADC block above. The cell values 3
+		 * and 4 are the positions of TP_X0 and TP_Y1 in asic2-adc.c's
+		 * channel array: that driver installs no fwnode_xlate, so IIO
+		 * indexes the channels directly by this cell value. There is no
+		 * "touchscreen-x-plate-ohms" and there are no z1/z2 channels, since
+		 * asic2-adc.c synthesises only x and y and the pressure path of
+		 * resistive-adc-touch is optional. The size is the ADC's real 10
+		 * bits.
+		 */
+		touchscreen {
+			compatible = "resistive-adc-touch";
+			io-channels = <&asic2_adc 3>, <&asic2_adc 4>;
+			io-channel-names = "x", "y";
+			touchscreen-size-x = <1024>;
+			touchscreen-size-y = <1024>;
+		};
+
+		/*
+		 * The 1-Wire master of the chip, with the tunables
+		 * drivers/mfd/asic2.c otherwise hardcodes: bus-shift 2, an
+		 * active-high interrupt (the h3800 firmware programs the IAS bit of
+		 * the interrupt enable register) and a 1 ms reset recovery delay.
+		 */
+		onewire {
+			compatible = "htc,asic2-onewire", "dallas,ds1wm";
+			dallas,bus-shift = <2>;
+			dallas,active-high;
+			dallas,reset-recover-delay-ms = <1>;
+		};
+
+		/*
 		 * The three status LEDs. The channel numbers follow the
 		 * handhelds.org 2.4 kernel's blue, green, yellow order, which is
 		 * the only source that ties a colour to a channel; the colour of
