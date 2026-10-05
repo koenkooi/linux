@@ -54,7 +54,7 @@
 #define ASIC2_GPIO2_IN_X0		BIT(1)	/* out: touchscreen X0 */
 #define ASIC2_GPIO2_IN_Y0		BIT(2)	/* out: touchscreen Y0 */
 #define ASIC2_GPIO2_IN_X1_N		BIT(3)	/* out: touchscreen X1 */
-#define ASIC2_GPIO2_BT_RST		BIT(4)	/* out: Bluetooth reset */
+#define ASIC2_GPIO2_BT_RST		BIT(4)	/* out: Bluetooth reset, never driven */
 #define ASIC2_GPIO2_PEN_IRQ		BIT(5)	/* in: pen down */
 #define ASIC2_GPIO2_SD_DETECT		BIT(6)	/* in: SD card detect */
 #define ASIC2_GPIO2_EAR_IN_N		BIT(7)	/* in: audio jack inserted */
@@ -65,7 +65,7 @@
 #define ASIC2_GPIO2_OPT_ON		BIT(12)	/* out: option jacket power */
 #define ASIC2_GPIO2_OPT_ON_NVRAM	BIT(13)	/* out: mux'd with PWM1 */
 #define ASIC2_GPIO2_UART0_RXD_ENABLE	BIT(14)	/* out */
-#define ASIC2_GPIO2_UART0_TXD_ENABLE	BIT(15)	/* out */
+#define ASIC2_GPIO2_UART0_TXD_ENABLE	BIT(15)	/* out, high is normal operation */
 
 /* ---------------------------------------------------------------------
  * KPIO: 12 keypad lines (bits 0-11) plus 8 special peripheral-IRQ bits
@@ -74,6 +74,12 @@
  * ---------------------------------------------------------------------
  */
 #define ASIC2_KPIO_KEY_ALL		GENMASK(11, 0)
+/*
+ * Bit 14, between the keypad and the peripheral interrupt groups. What it
+ * does is not known; the UART0 bring-up of the vendor software drives it as
+ * an output, high, together with GPIO2 bit 15.
+ */
+#define ASIC2_KPIO_BIT14		BIT(14)
 #define ASIC2_KPIO_SPI_INT		BIT(16)
 #define ASIC2_KPIO_OWM_INT		BIT(17)
 #define ASIC2_KPIO_ADC_INT		BIT(18)
@@ -153,10 +159,25 @@
 #define ASIC2_LED_AUTOSTOPCOUNT		0x000c	/* R/W 16 bits, not changeable */
 
 /* ---------------------------------------------------------------------
+ * UART0 and UART1: two 16550A-compatible register blocks with a 4-byte
+ * stride. UART0 is the Bluetooth transport of the h3870/h3875, UART1 has
+ * no known consumer. The standard 16550 registers need no names here, as
+ * the 8250 core reaches them through its own register shift. Only the one
+ * non-16550 register does: a write-only reset (write 1, then 0) that every
+ * known bring-up sequence performs first. It lies outside the span of
+ * eight registers the 8250 core maps, so the glue driver maps the whole
+ * 0x24 bytes itself.
+ * ---------------------------------------------------------------------
+ */
+#define ASIC2_UART0_BASE		0x0a00
+#define ASIC2_UART1_BASE		0x0c00
+#define ASIC2_UART_RESET		0x0020	/* W: pulse 1 then 0 */
+
+/* ---------------------------------------------------------------------
  * Clock enable: one flat 18-bit register, one CCF gate per bit exposed by
  * drivers/mfd/asic2.c. EX0 feeds the chip's interrupt controller and is
  * forced on at probe instead of being a consumer-facing gate. Bits without
- * a consumer (AUDIO_1-4, SLOW_UART_0/1) are defined for documentation only.
+ * a consumer (AUDIO_1-4, SLOW_UART_1) are defined for documentation only.
  *
  * SD_MASK is a 3-bit selector field, not four independent gates, and the
  * SD/MMC host card clock of the h39xx is sourced through it. The h3900
@@ -183,8 +204,8 @@
 #define ASIC2_CLOCK_EX0			BIT(13)	/* 32.768 kHz, forced on, not a gate */
 #define ASIC2_CLOCK_EX1			BIT(14)	/* 24.576 MHz: ADC/SPI/OWM/PWM/UART/SD */
 #define ASIC2_CLOCK_EX2			BIT(15)	/* 33.869 MHz, unused */
-#define ASIC2_CLOCK_SLOW_UART_0		BIT(16)
-#define ASIC2_CLOCK_SLOW_UART_1		BIT(17)
+#define ASIC2_CLOCK_SLOW_UART_0		BIT(16)	/* reference select of UART0 */
+#define ASIC2_CLOCK_SLOW_UART_1		BIT(17)	/* no consumer known */
 
 /* ---------------------------------------------------------------------
  * ADC + resistive touchscreen front-end: an interrupt-driven sample state
