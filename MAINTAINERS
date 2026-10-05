@@ -12058,6 +12058,7 @@ F:	Documentation/devicetree/bindings/pwm/htc,asic2-pwm.yaml
 F:	Documentation/devicetree/bindings/serial/htc,asic2-uart.yaml
 F:	drivers/leds/leds-asic*.c
 F:	drivers/mfd/asic*.c
+F:	drivers/spi/spi-asic2.c
 F:	include/dt-bindings/clock/htc,asic2.h
 F:	include/linux/mfd/asic*.h
 
