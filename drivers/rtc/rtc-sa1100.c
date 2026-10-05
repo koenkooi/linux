@@ -169,7 +169,8 @@ static const struct rtc_class_ops sa1100_rtc_ops = {
 	.alarm_irq_enable = sa1100_rtc_alarm_irq_enable,
 };
 
-int sa1100_rtc_init(struct platform_device *pdev, struct sa1100_rtc *info)
+static int sa1100_rtc_setup(struct platform_device *pdev,
+			    struct sa1100_rtc *info)
 {
 	int ret;
 
@@ -202,12 +203,6 @@ int sa1100_rtc_init(struct platform_device *pdev, struct sa1100_rtc *info)
 	info->rtc->ops = &sa1100_rtc_ops;
 	info->rtc->range_max = U32_MAX;
 
-	ret = devm_rtc_register_device(info->rtc);
-	if (ret) {
-		clk_disable_unprepare(info->clk);
-		return ret;
-	}
-
 	/* Fix for a nasty initialization problem the in SA11xx RTSR register.
 	 * See also the comments in sa1100_rtc_interrupt().
 	 *
@@ -234,6 +229,21 @@ int sa1100_rtc_init(struct platform_device *pdev, struct sa1100_rtc *info)
 
 	return 0;
 }
+
+int sa1100_rtc_init(struct platform_device *pdev, struct sa1100_rtc *info)
+{
+	int ret;
+
+	ret = sa1100_rtc_setup(pdev, info);
+	if (ret)
+		return ret;
+
+	ret = devm_rtc_register_device(info->rtc);
+	if (ret)
+		clk_disable_unprepare(info->clk);
+
+	return ret;
+}
 EXPORT_SYMBOL_GPL(sa1100_rtc_init);
 
 static int sa1100_rtc_probe(struct platform_device *pdev)
@@ -258,19 +268,6 @@ static int sa1100_rtc_probe(struct platform_device *pdev)
 	if (IS_ERR(info->rtc))
 		return PTR_ERR(info->rtc);
 
-	ret = devm_request_irq(&pdev->dev, irq_1hz, sa1100_rtc_interrupt, 0,
-			       "rtc 1Hz", &pdev->dev);
-	if (ret) {
-		dev_err(&pdev->dev, "IRQ %d already in use.\n", irq_1hz);
-		return ret;
-	}
-	ret = devm_request_irq(&pdev->dev, irq_alarm, sa1100_rtc_interrupt, 0,
-			       "rtc Alrm", &pdev->dev);
-	if (ret) {
-		dev_err(&pdev->dev, "IRQ %d already in use.\n", irq_alarm);
-		return ret;
-	}
-
 	base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
@@ -291,7 +288,44 @@ static int sa1100_rtc_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, info);
 	device_init_wakeup(&pdev->dev, true);
 
-	return sa1100_rtc_init(pdev, info);
+	ret = sa1100_rtc_setup(pdev, info);
+	if (ret)
+		return ret;
+
+	/*
+	 * The handler uses the driver data, the lock and the registers, and an
+	 * interrupt that is already pending runs it from inside
+	 * devm_request_irq(). Request the interrupts only now that
+	 * sa1100_rtc_setup() has set all of that up and cleared the pending
+	 * status, and register the device only once they are requested.
+	 */
+	ret = devm_request_irq(&pdev->dev, irq_1hz, sa1100_rtc_interrupt, 0,
+			       "rtc 1Hz", &pdev->dev);
+	if (ret) {
+		dev_err(&pdev->dev, "IRQ %d already in use.\n", irq_1hz);
+		goto err_disable_clk;
+	}
+	ret = devm_request_irq(&pdev->dev, irq_alarm, sa1100_rtc_interrupt, 0,
+			       "rtc Alrm", &pdev->dev);
+	if (ret) {
+		dev_err(&pdev->dev, "IRQ %d already in use.\n", irq_alarm);
+		goto err_free_1hz;
+	}
+
+	ret = devm_rtc_register_device(info->rtc);
+	if (ret)
+		goto err_free_alarm;
+
+	return 0;
+
+	/* The handlers must not stay registered once the clock is off. */
+err_free_alarm:
+	devm_free_irq(&pdev->dev, irq_alarm, &pdev->dev);
+err_free_1hz:
+	devm_free_irq(&pdev->dev, irq_1hz, &pdev->dev);
+err_disable_clk:
+	clk_disable_unprepare(info->clk);
+	return ret;
 }
 
 static void sa1100_rtc_remove(struct platform_device *pdev)
