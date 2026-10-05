@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/nxp,uda1380.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: NXP/Philips UDA1380 audio CODEC
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: |
+  UDA1380 is an I2C-controlled stereo audio CODEC with a separate I2S (or
+  MSB/LSB-justified) digital audio interface, found on the HP iPAQ h2200
+  and h39xx, the HTC Magician, and a number of other mid-2000s PDA/phone
+  designs. sound/soc/codecs/uda1380.c is I2C-only and gpiod-based: its
+  reset and power pins are each obtained via devm_gpiod_get_optional(),
+  so a board with neither GPIO wired to the codec (register-only
+  reset/power sequencing) can omit both properties.
+
+  The lpc3250-phy3250 and lpc3250-ea3250 devicetrees still use the legacy
+  singular "power-gpio" and "reset-gpio" property names, which the gpiod
+  core does not match to the "power" and "reset" connection ids of the
+  driver. This binding describes the "-gpios" form the driver consumes.
+
+properties:
+  compatible:
+    const: nxp,uda1380
+
+  reg:
+    maxItems: 1
+
+  reset-gpios:
+    maxItems: 1
+    description: |
+      Active-high hardware reset pin. When present, driven high then low
+      by the driver's own reset sequence (mdelay(1) between edges); when
+      absent, reset falls back to an I2C SW-reset register write instead.
+
+  power-gpios:
+    maxItems: 1
+    description: |
+      Active-high chip power-enable pin, if the board gates the codec's
+      supply through a discrete GPIO rather than a regulator or a
+      permanently-on rail. When present, driven high before the reset
+      pulse on power-up and low on power-down (SND_SOC_BIAS_OFF); when
+      absent, the driver assumes the chip is always powered and drives
+      the SW-reset sequence directly from component probe.
+
+  dac-clk:
+    description: |
+      Selects the codec's internal DAC clock source. Absent (the
+      driver's own default) means the DAC free-runs from the codec's
+      own system clock pin (SYSCLK); "wspll" switches it to lock the DAC
+      clock to the I2S word-select PLL instead -- useful when a board's
+      I2S bit/frame clocks are not derived from the same reference as
+      whatever drives the codec's SYSCLK pin.
+    const: wspll
+
+  "#sound-dai-cells":
+    description: |
+      The driver registers three snd_soc_dai_driver entries: a combined
+      full-duplex "uda1380-hifi" (index 0) plus split playback-only and
+      capture-only DAIs for boards with separate serial interfaces for
+      each direction. It implements no of_xlate_dai_name() hook, so a bare
+      phandle reference without an index cell resolves to the combined
+      interface; the split DAIs can only be selected by name.
+    const: 0
+
+required:
+  - compatible
+  - reg
+
+unevaluatedProperties: false
+
+allOf:
+  - $ref: dai-common.yaml#
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        codec@18 {
+            compatible = "nxp,uda1380";
+            reg = <0x18>;
+
+            reset-gpios = <&gpio 71 GPIO_ACTIVE_HIGH>;
+            power-gpios = <&gpio 70 GPIO_ACTIVE_HIGH>;
+
+            #sound-dai-cells = <0>;
+        };
+    };
