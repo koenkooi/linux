@@ -10,13 +10,18 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/irq.h>
+#include <linux/irqchip.h>
 #include <linux/irqdomain.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/syscore_ops.h>
 #include <linux/irqchip/irq-sa11x0.h>
 
 #include <soc/sa1100/pwer.h>
 
 #include <asm/exception.h>
+
+#include <mach/irqs.h>
 
 #define ICIP	0x00  /* IC IRQ Pending reg. */
 #define ICMR	0x04  /* IC Mask Reg.        */
@@ -172,3 +177,48 @@ void __init sa11x0_init_irq_nodt(int irq_start, resource_size_t io_start)
 
 	set_handle_irq(sa1100_handle_irq);
 }
+
+static int __init sa11x0_dt_init_irq(struct device_node *node,
+				     struct device_node *parent)
+{
+	struct resource res;
+	int ret;
+
+	ret = of_address_to_resource(node, 0, &res);
+	if (ret) {
+		pr_err("%pOFn: unable to parse reg property\n", node);
+		return ret;
+	}
+
+	iobase = ioremap(res.start, resource_size(&res));
+	if (WARN_ON(!iobase))
+		return -ENOMEM;
+
+	/* disable all IRQs */
+	writel_relaxed(0, iobase + ICMR);
+
+	/* all IRQs are IRQ, not FIQ */
+	writel_relaxed(0, iobase + ICLR);
+
+	/*
+	 * Whatever the doc says, this has to be set for the wait-on-irq
+	 * instruction to work... on a SA1100 rev 9 at least.
+	 */
+	writel_relaxed(1, iobase + ICCR);
+
+	/*
+	 * Keep the static IRQ_GPIO0_SC..IRQ_RTCAlrm virq numbering of the
+	 * non-DT boards (mach/irqs.h): gpio-sa1100.c chains its GPIO0-27
+	 * demultiplexer onto these same numbers through sa1100_gpio_irqs[].
+	 */
+	sa1100_normal_irqdomain = irq_domain_create_simple(of_fwnode_handle(node), 32,
+							   IRQ_GPIO0_SC,
+							   &sa1100_normal_irqdomain_ops,
+							   NULL);
+
+	set_handle_irq(sa1100_handle_irq);
+
+	return 0;
+}
+
+IRQCHIP_DECLARE(sa1100_intc, "intel,sa1100-intc", sa11x0_dt_init_irq);
