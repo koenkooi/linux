@@ -17,3 +17,5 @@ obj-$(CONFIG_SND_PXA2XX_LIB)   += snd-soc-pxa2xx-lib.o
 # PXA Machine Support
 snd-soc-spitz-y := spitz.o
 obj-$(CONFIG_SND_PXA2XX_SOC_SPITZ) += snd-soc-spitz.o
+snd-soc-h2200-y := h2200.o
+obj-$(CONFIG_SND_PXA2XX_SOC_H2200) += snd-soc-h2200.o
