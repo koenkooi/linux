@@ -21,6 +21,7 @@
 #include <linux/container_of.h>
 #include <linux/device.h>
 #include <linux/interrupt.h>
+#include <linux/notifier.h>
 #include <linux/pm.h>
 
 enum sleeve_vendor_id {
@@ -116,6 +117,7 @@ enum sleeve_device_id {
  * @dev: driver-core device
  * @vendor: vendor ID copied from the sleeve's ID EEPROM
  * @device: device ID copied from the sleeve's ID EEPROM
+ * @id_valid: the EEPROM reads completed and returned non-zero IDs
  *
  * The original also carried a @procent (/proc/bus/sleeve entry) --
  * dropped here, procfs is not part of this port (see
@@ -125,6 +127,7 @@ struct ipaq_sleeve_device {
 	struct device dev;
 	unsigned short vendor;
 	unsigned short device;
+	bool id_valid;
 };
 
 #define to_ipaq_sleeve_device(_dev) \
@@ -148,7 +151,12 @@ struct ipaq_sleeve_device_id {
  * @driver: driver-core driver
  * @id_table: vendor/device IDs this driver binds to; NULL matches
  *	every sleeve
- * @features: SLEEVE_HAS_* flags describing the sleeve's hardware
+ * @features: SLEEVE_HAS_* flags describing the sleeve's hardware.
+ *	Informational/self-description only -- the bus core does NOT
+ *	consult this field. Slot counts for consumers such as the CF
+ *	socket come from ipaq_sleeve_features() instead (one authority,
+ *	no duplication), so a jacket with no bound ipaq_sleeve_driver at
+ *	all still gets its CF/PC Card socket instantiated.
  * @probe: called with the bus already matched to a live sleeve device
  * @remove: called when the sleeve is unplugged or the driver unbinds
  * @suspend: called before suspending the host
@@ -174,12 +182,34 @@ int ipaq_sleeve_driver_register(struct ipaq_sleeve_driver *drv);
 void ipaq_sleeve_driver_unregister(struct ipaq_sleeve_driver *drv);
 
 /*
+ * Slot-consumer events. @data passed to the notifier callback is the
+ * struct ipaq_sleeve_device * that was just enumerated or is about to be
+ * torn down. ADD is notified after the sleeve's device_register() and
+ * after its jacket power is up, REMOVE before device_unregister().
+ * @id_valid distinguishes an identified sleeve from a physically present
+ * jacket whose EEPROM could not be read.
+ *
+ * The driver core binds at most one driver per device, but the CF or PC
+ * Card slots of a sleeve have to exist whether or not any
+ * ipaq_sleeve_driver binds to it, so slot consumers subscribe here instead
+ * of competing for the device. ipaq_sleeve_register_notifier() replays the
+ * current sleeve, if any, as an ADD event on registration, which makes the
+ * order of a consumer's initcall against the backend's work irrelevant.
+ */
+#define IPAQ_SLEEVE_EVENT_ADD		1
+#define IPAQ_SLEEVE_EVENT_REMOVE	2
+
+int ipaq_sleeve_register_notifier(struct notifier_block *nb);
+int ipaq_sleeve_unregister_notifier(struct notifier_block *nb);
+unsigned int ipaq_sleeve_features(const struct ipaq_sleeve_device *sdev);
+
+/*
  * Abstract sleeve power, reset and status lines, addressed by the bus core
  * and by slot consumers through a registered backend's
  * ops->control_egpio()/read_egpio()/egpio_irq().
  *
- * The first four are driven by the bus core itself: the NVRAM power on
- * insert and eject, and all four when a backend registers and
+ * The first four are driven by the bus core itself: the NVRAM power and the
+ * main power on insert and eject, and all four when a backend registers and
  * unregisters.
  *
  * The last four are read-only and used by consumers: the two card-detect
