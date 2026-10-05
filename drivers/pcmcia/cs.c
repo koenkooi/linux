@@ -205,13 +205,31 @@ EXPORT_SYMBOL(pcmcia_register_socket);
  */
 void pcmcia_unregister_socket(struct pcmcia_socket *socket)
 {
+	struct task_struct *thread;
+	unsigned long flags;
+
 	if (!socket)
 		return;
 
 	dev_dbg(&socket->dev, "pcmcia_unregister_socket(0x%p)\n", socket->ops);
 
-	if (socket->thread)
-		kthread_stop(socket->thread);
+	/*
+	 * Capture and clear before the stop, not after: kthread_stop()
+	 * consumes the reference kthread_run() returned, so once it has
+	 * returned the pointer names a reaped task_struct, and
+	 * pcmcia_parse_events() -- which socket drivers call from their
+	 * card-detect hardirq -- decides whether to wake_up_process() on
+	 * nothing but that pointer. Clearing it first means no wake can
+	 * find the task from the moment the stop begins, while the
+	 * reference held here keeps it valid for the stop itself.
+	 */
+	spin_lock_irqsave(&socket->thread_lock, flags);
+	thread = socket->thread;
+	socket->thread = NULL;
+	spin_unlock_irqrestore(&socket->thread_lock, flags);
+
+	if (thread)
+		kthread_stop(thread);
 
 	/* remove from our own list */
 	down_write(&pcmcia_socket_list_rwsem);
@@ -575,9 +593,20 @@ static void socket_detect_change(struct pcmcia_socket *skt)
 static int pccardd(void *__skt)
 {
 	struct pcmcia_socket *skt = __skt;
+	unsigned long flags;
 	int ret;
 
+	/*
+	 * The socket driver's status IRQ is already requested by the time
+	 * this thread starts -- soc_common, for one, does that in
+	 * soc_pcmcia_hw_init() before pcmcia_register_socket() -- so
+	 * pcmcia_parse_events() can be running in hardirq against this
+	 * store and against the NULL store below.
+	 */
+	spin_lock_irqsave(&skt->thread_lock, flags);
 	skt->thread = current;
+	spin_unlock_irqrestore(&skt->thread_lock, flags);
+
 	skt->socket = dead_socket;
 	skt->ops->init(skt);
 	skt->ops->set_socket(skt, &skt->socket);
@@ -586,7 +615,9 @@ static int pccardd(void *__skt)
 	ret = device_register(&skt->dev);
 	if (ret) {
 		dev_warn(&skt->dev, "PCMCIA: unable to register socket\n");
+		spin_lock_irqsave(&skt->thread_lock, flags);
 		skt->thread = NULL;
+		spin_unlock_irqrestore(&skt->thread_lock, flags);
 		complete(&skt->thread_done);
 		put_device(&skt->dev);
 		return 0;
@@ -602,7 +633,6 @@ static int pccardd(void *__skt)
 
 	set_freezable();
 	for (;;) {
-		unsigned long flags;
 		unsigned int events;
 		unsigned int sysfs_events;
 
@@ -683,13 +713,19 @@ void pcmcia_parse_events(struct pcmcia_socket *s, u_int events)
 {
 	unsigned long flags;
 	dev_dbg(&s->dev, "parse_events: events %08x\n", events);
-	if (s->thread) {
-		spin_lock_irqsave(&s->thread_lock, flags);
-		s->thread_events |= events;
-		spin_unlock_irqrestore(&s->thread_lock, flags);
 
+	/*
+	 * Both the test and the wake have to be inside thread_lock: this
+	 * runs in hardirq for most socket drivers, concurrently with
+	 * pcmcia_unregister_socket() clearing s->thread around its
+	 * kthread_stop().
+	 */
+	spin_lock_irqsave(&s->thread_lock, flags);
+	if (s->thread) {
+		s->thread_events |= events;
 		wake_up_process(s->thread);
 	}
+	spin_unlock_irqrestore(&s->thread_lock, flags);
 } /* pcmcia_parse_events */
 EXPORT_SYMBOL(pcmcia_parse_events);
 
@@ -708,13 +744,14 @@ void pcmcia_parse_uevents(struct pcmcia_socket *s, u_int events)
 {
 	unsigned long flags;
 	dev_dbg(&s->dev, "parse_uevents: events %08x\n", events);
-	if (s->thread) {
-		spin_lock_irqsave(&s->thread_lock, flags);
-		s->sysfs_events |= events;
-		spin_unlock_irqrestore(&s->thread_lock, flags);
 
+	/* Same teardown race as pcmcia_parse_events(), same rule. */
+	spin_lock_irqsave(&s->thread_lock, flags);
+	if (s->thread) {
+		s->sysfs_events |= events;
 		wake_up_process(s->thread);
 	}
+	spin_unlock_irqrestore(&s->thread_lock, flags);
 }
 EXPORT_SYMBOL(pcmcia_parse_uevents);
 
