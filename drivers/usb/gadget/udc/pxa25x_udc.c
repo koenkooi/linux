@@ -786,11 +786,18 @@ read_ep0_fifo (struct pxa25x_ep *ep, struct pxa25x_request *req)
 {
 	u8		*buf, byte;
 	unsigned	bufferspace;
+	unsigned int	avail = EP0_FIFO_SIZE;
 
 	buf = req->req.buf + req->req.actual;
 	bufferspace = req->req.length - req->req.actual;
 
-	while (udc_ep_get_UDCCS(ep) & UDCCS0_RNE) {
+	/*
+	 * Bounded by the FIFO size rather than by RNE alone: pxa210/250
+	 * erratum 131 says RNE lies. This runs in hardirq context, so a
+	 * stuck RNE would spin in the ISR with interrupts disabled. A
+	 * control-OUT data stage cannot exceed one FIFO load.
+	 */
+	while ((udc_ep_get_UDCCS(ep) & UDCCS0_RNE) && avail--) {
 		byte = (u8)udc_ep_get_UDDR(ep);
 
 		if (unlikely (bufferspace == 0)) {
@@ -807,6 +814,10 @@ read_ep0_fifo (struct pxa25x_ep *ep, struct pxa25x_request *req)
 			bufferspace--;
 		}
 	}
+
+	if (unlikely(udc_ep_get_UDCCS(ep) & UDCCS0_RNE))
+		DMSG("%s ep0 RNE stuck after %d bytes, erratum 131\n",
+		     ep->ep.name, EP0_FIFO_SIZE);
 
 	udc_ep_set_UDCCS(ep, UDCCS0_OPR | UDCCS0_IPR);
 
