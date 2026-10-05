@@ -46,6 +46,20 @@ config SND_PXA2XX_SOC_SPITZ
 	  Say Y if you want to add support for SoC audio on Sharp
 	  Zaurus SL-Cxx00 models (Spitz, Borzoi and Akita).
 
+config SND_PXA2XX_SOC_H2200
+	tristate "SoC Audio support for HP iPAQ h2200"
+	depends on SND_PXA2XX_SOC && ARCH_PXA && I2C
+	select SND_PXA2XX_SOC_I2S
+	select SND_SOC_UDA1380
+	help
+	  Say Y if you want to add support for SoC audio on the HP iPAQ
+	  h2200, using its onboard Philips/NXP UDA1380 codec over I2S
+	  (PXA-master) and I2C. The driver also handles the speaker
+	  amplifier, the microphone bias and the headphone jack detect.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called snd-soc-h2200.
+
 config SND_PXA910_SOC
 	tristate "SoC Audio for Marvell PXA910 chip"
 	depends on ARCH_MMP && SND
