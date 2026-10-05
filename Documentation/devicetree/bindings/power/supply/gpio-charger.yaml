@@ -39,6 +39,11 @@ properties:
     maxItems: 1
     description: GPIO indicating the charging status
 
+  charge-enable-gpios:
+    maxItems: 1
+    description: GPIO connected to the enable input of the charger
+      circuit.
+
   charge-current-limit-gpios:
     minItems: 1
     maxItems: 32
@@ -72,6 +77,8 @@ anyOf:
       - charge-status-gpios
   - required:
       - charge-current-limit-gpios
+  - required:
+      - charge-enable-gpios
 
 dependencies:
   charge-current-limit-gpios: [ charge-current-limit-mapping ]
