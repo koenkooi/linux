@@ -1081,7 +1081,7 @@ static int pxa25x_ep_fifo_status(struct usb_ep *_ep)
 	if ((ep->bEndpointAddress & USB_DIR_IN) != 0)
 		return -EOPNOTSUPP;
 	if (ep->dev->gadget.speed == USB_SPEED_UNKNOWN
-			|| (udc_ep_get_UDCCS(ep) & UDCCS_BO_RFS) == 0)
+			|| (udc_ep_get_UDCCS(ep) & UDCCS_BO_RPC) == 0)
 		return 0;
 	else
 		return (udc_ep_get_UBCR(ep) & 0xfff) + 1;
