@@ -9,6 +9,16 @@
 	model = "Marvell PXA25x family SoC";
 	compatible = "marvell,pxa250";
 
+	/*
+	 * Unlike PXA27x/PXA3xx, PXA25x has no power-I2C block, so the
+	 * "i2c0 = &pwri2c" alias inherited from pxa2xx.dtsi points at a
+	 * node this variant never defines. Drop it here rather than in
+	 * the shared file so PXA27x/PXA3xx keep it.
+	 */
+	aliases {
+		/delete-property/ i2c0;
+	};
+
 	clocks {
 	       /*
 		* The muxing of external clocks/internal dividers for osc* clock
