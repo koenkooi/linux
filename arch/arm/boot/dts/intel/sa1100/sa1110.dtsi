@@ -124,6 +124,18 @@
 		};
 
 		/*
+		 * Disabled until a board provides a panel behind an OF graph
+		 * port. The pixel clock divides the core clock.
+		 */
+		lcdc: lcd-controller@b0100000 {
+			compatible = "intel,sa1110-lcdc", "intel,sa1100-lcdc";
+			reg = <0xb0100000 0x2c>;
+			interrupts = <12>;
+			clocks = <&clks SA1100_CLK_CPU>;
+			status = "disabled";
+		};
+
+		/*
 		 * MSC0/MSC1/MSC2, the static memory half of the memory
 		 * controller, with one 16-bit timing half per chip select. The
 		 * three "reg" entries are separate because the registers are not
