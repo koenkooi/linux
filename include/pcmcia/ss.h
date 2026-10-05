@@ -253,5 +253,8 @@ extern void pcmcia_parse_events(struct pcmcia_socket *socket,
 extern int pcmcia_register_socket(struct pcmcia_socket *socket);
 extern void pcmcia_unregister_socket(struct pcmcia_socket *socket);
 
+/* every registered socket is a device of this class (its .dev member) */
+extern const struct class pcmcia_socket_class;
+
 
 #endif /* _LINUX_SS_H */
