@@ -11,6 +11,7 @@ obj-$(CONFIG_SA1100_ASSABET)		+= assabet.o
 obj-$(CONFIG_ASSABET_NEPONSET)		+= neponset.o
 obj-$(CONFIG_SA1100_COLLIE)		+= collie.o
 obj-$(CONFIG_SA1100_H3600)		+= h3600.o h3xxx.o
+obj-$(CONFIG_SA1100_H3800)		+= h3800.o h3xxx.o
 obj-$(CONFIG_SA1100_JORNADA720)		+= jornada720.o
 obj-$(CONFIG_SA1100_JORNADA720_SSP)	+= jornada720_ssp.o
 
