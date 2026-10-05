@@ -4099,6 +4099,10 @@ unlock:
 #define HCI_CC_STATUS(_op, _func) \
 	HCI_CC(_op, _func, sizeof(struct hci_ev_status))
 
+/* HCI_OP_NOP (0x0000) is deliberately not listed below: it is not a real
+ * command's Command Complete (no status byte, nothing to complete) and is
+ * handled by hci_cmd_complete_evt() before it ever reaches this table.
+ */
 static const struct hci_cc {
 	u16  op;
 	u8 (*func)(struct hci_dev *hdev, void *data, struct sk_buff *skb);
@@ -4309,6 +4313,23 @@ static void hci_cmd_complete_evt(struct hci_dev *hdev, void *data,
 	*opcode = __le16_to_cpu(ev->opcode);
 
 	bt_dev_dbg(hdev, "opcode 0x%4.4x", *opcode);
+
+	/* Opcode 0x0000 (No Operation) is not a command being completed; a
+	 * Controller sends it purely to grant extra Number_of_HCI_Command_Packets
+	 * credit, and unlike every real command's Command Complete it carries
+	 * no status byte at all. It cannot go through hci_cc_table (there is
+	 * no command to complete) or through hci_req_cmd_complete()'s pending-
+	 * request matching below (hci_sent_cmd_data() never has an opcode of
+	 * 0x0000 to match, and HCI_CMD_PENDING commonly is set at the moment
+	 * one of these arrives, which would otherwise print a second, equally
+	 * misleading "unexpected event" for the same legitimate event). Credit
+	 * it and stop here.
+	 */
+	if (*opcode == HCI_OP_NOP) {
+		*status = 0;
+		handle_cmd_cnt_and_timer(hdev, ev->ncmd);
+		return;
+	}
 
 	for (i = 0; i < ARRAY_SIZE(hci_cc_table); i++) {
 		if (hci_cc_table[i].op == *opcode) {
