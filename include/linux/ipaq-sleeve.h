@@ -324,6 +324,17 @@ unsigned int ipaq_sleeve_features(const struct ipaq_sleeve_device *sdev);
  * interrupt source, so there it is the same line as the card interrupt and a
  * consumer has to be prepared to share it.
  *
+ * IPAQ_EGPIO_OPT_BAT_FAULT is the connector's jacket-battery fault line,
+ * read by the bus core only, and unlike the four PCMCIA ids above,
+ * read_egpio() returns it as a logical value: 1 while the fault is
+ * asserted, 0 while it is not, and -ENXIO from a backend whose board
+ * does not wire it, in which case the bus core behaves as if the line
+ * did not exist. Each backend resolves the polarity from its own board
+ * description. Its interrupt is not handed out through egpio_irq(): the
+ * backend requests it itself, both edges, with
+ * ipaq_sleeve_bat_fault_interrupt() as the handler, as it does for
+ * option detect with ipaq_sleeve_presence_interrupt().
+ *
  * The numeric values are opaque line identifiers private to this bus; each
  * backend's ops implementation maps them onto its own registers or GPIOs.
  * A backend may switch() on them, so new identifiers must be appended,
@@ -339,6 +350,7 @@ enum ipaq_sleeve_egpio {
 	IPAQ_EGPIO_PCMCIA_IRQ0,
 	IPAQ_EGPIO_PCMCIA_IRQ1,
 	IPAQ_EGPIO_OPT_INT,
+	IPAQ_EGPIO_OPT_BAT_FAULT,
 };
 
 void ipaq_sleeve_write_egpio(int nr, int state);
@@ -385,6 +397,7 @@ struct ipaq_sleeve_ops {
 int ipaq_sleeve_register(struct ipaq_sleeve_ops *ops, void *dev);
 int ipaq_sleeve_unregister(void);
 irqreturn_t ipaq_sleeve_presence_interrupt(int irq, void *dev_id);
+irqreturn_t ipaq_sleeve_bat_fault_interrupt(int irq, void *dev_id);
 int ipaq_sleeve_rearm_cd_edge(int nr, bool card_present);
 
 int ipaq_sleeve_get_version(struct ipaq_sleeve_version *ver);
