@@ -54,6 +54,12 @@
  * palette is bypassed. A C8 frame halves the bytes each update puts on the
  * host bus. RGB565 remains the preferred format and fbdev's.
  *
+ * Chips that double pixels at scanout also take a half-size framebuffer
+ * (120x160 on a 240x320 panel) scaled up exactly 2x in both axes, through
+ * the standard plane scaling UAPI. The chip repeats every pixel and line
+ * of the whole window, so the doubled plane always covers the full screen,
+ * and each update puts a quarter of the bytes on the host bus.
+ *
  * The init sequence (supply power-up, endianness quirk, oscillator enable,
  * CC-module power-up, register table load with verify-and-retry, then
  * enabling scanout). Two caveats apply:
@@ -276,6 +282,8 @@ MODULE_PARM_DESC(engine, "Clear video memory and draw solid damage with the 2D e
 #define MQ11XX_GC_DEPTH_16BPP		0xc	/* RGB565, palette bypassed */
 #define MQ11XX_GC_CONTROL_X_DECREMENT	BIT(12)	/* GC.control */
 #define MQ11XX_GC_CONTROL_COLUMN_SCAN	BIT(13)	/* GC.control */
+#define MQ11XX_GC_CONTROL_DOUBLE_H	BIT(14)	/* GC.control */
+#define MQ11XX_GC_CONTROL_DOUBLE_V	BIT(15)	/* GC.control */
 #define MQ11XX_GC_STRIDE		GENMASK(15, 0)	/* gc0e, two's complement */
 /*
  * Colour palette, one 32-bit word per index. Only the top six bits of
@@ -367,6 +375,7 @@ struct mq11xx_chip {
 	u8 transforms;		/* with MQ11XX_CAP_ROTATION */
 	u8 transforms_8bpp;	/* of those, the ones offered at 8 bpp */
 	bool ge_8bpp;		/* the engine draws 8 bpp surfaces */
+	bool double_8bpp;	/* with MQ11XX_CAP_PIXEL_DOUBLE, also at 8 bpp */
 };
 
 /*
@@ -390,6 +399,7 @@ static const struct mq11xx_chip mq11xx_chips[] = {
 		.transforms = MQ11XX_SCAN_ALL,
 		.transforms_8bpp = MQ11XX_SCAN_ROWS,
 		.ge_8bpp = true,
+		.double_8bpp = true,
 	}, {
 		/* Covered by the same datasheet as the MQ1132. */
 		.device_id = MQ11XX_PCI_DEVICE_1100,
@@ -399,6 +409,7 @@ static const struct mq11xx_chip mq11xx_chips[] = {
 		.transforms = MQ11XX_SCAN_ALL,
 		.transforms_8bpp = MQ11XX_SCAN_ROWS,
 		.ge_8bpp = true,
+		.double_8bpp = true,
 	}, {
 		/*
 		 * Measured on an h2200: engine fill and copy (including
@@ -418,7 +429,7 @@ static const struct mq11xx_chip mq11xx_chips[] = {
 				   MQ11XX_SCAN_X_DECREMENT),
 		/*
 		 * 8 bpp was fetched only from an upright frame, and the
-		 * engine was only run at 16 bpp.
+		 * engine and pixel doubling were only run at 16 bpp.
 		 */
 		.transforms_8bpp = BIT(0),
 	}, {
@@ -576,6 +587,10 @@ struct mq11xx_device {
 	phys_addr_t vram_phys;
 	bool vram_wc;
 	void __iomem *regs;
+	/*
+	 * Whether GC00[15:14] double the frame; bring-up leaves them clear.
+	 */
+	bool scan_double;
 	/*
 	 * Bytes per pixel of the depth the registers hold, and whether the
 	 * palette has lost its contents since it was last loaded; bring-up
@@ -1846,11 +1861,12 @@ static int mq11xx_hw_init(struct mq11xx_device *mq)
 	mq11xx_ge_bring_up(mq, ge_clear);
 
 	/*
-	 * Both register tables clear GC00[13:12] and start the window at the
+	 * Both register tables clear GC00[15:12] and start the window at the
 	 * frame at 16 bpp, and mq11xx_chip_init() set the row pitch as the
 	 * stride.
 	 */
 	mq->scan_transform = 0;
+	mq->scan_double = false;
 	mq->scan_cpp = 2;
 	mq->palette_stale = true;
 	mq->powered = true;
@@ -2166,17 +2182,18 @@ static unsigned int mq11xx_supported_rotations(struct mq11xx_device *mq)
  * requires a column scan's stride to be 8n + 2 bytes, so there each row is
  * padded past its 8-byte-aligned length: 642 bytes for a 320-pixel row,
  * 154,080 bytes for the frame, 480 more than an unpadded one. Column
- * scans are offered at 16 bpp only.
+ * scans are offered at 16 bpp only. A doubled frame (@dbl) is half the
+ * display's width and height, and only ever scanned upright.
  */
 static unsigned int mq11xx_scan_pitch(struct mq11xx_device *mq, unsigned int t,
-				      unsigned int cpp)
+				      unsigned int cpp, bool dbl)
 {
 	const struct drm_display_mode *mode = mq->mode;
 
 	if (t & MQ11XX_SCAN_COLUMNS)
 		return ALIGN(mode->vdisplay * 2, 8) + 2;
 
-	return mode->hdisplay * cpp;
+	return (mode->hdisplay >> dbl) * cpp;
 }
 
 /*
@@ -2195,26 +2212,32 @@ static void mq11xx_wait_blank(struct mq11xx_device *mq)
 
 /*
  * Points the scan at the stored frame for transform @t at @cpp bytes per
- * pixel. The window starts at the stored pixel shown top left: the last
- * pixel of a row for an x decrement, the first of the last row for a y
- * decrement. For the column
- * scans that is where an MQ1188's fetch was measured to begin, and where
- * the h5550's WinCE driver starts the one it calls 90 degrees (it starts
- * the other one a byte further on); the start corners that Table 4-7 of the
- * datasheet gives for those two would run the fetch outside the frame.
+ * pixel, doubled when @dbl is set. The window starts at the stored pixel
+ * shown top left: the last pixel of a row for an x decrement, the first of
+ * the last row for a y decrement. For the column scans that is where an
+ * MQ1188's fetch was measured to begin, and where the h5550's WinCE driver
+ * starts the one it calls 90 degrees (it starts the other one a byte
+ * further on); the start corners that Table 4-7 of the datasheet gives for
+ * those two would run the fetch outside the frame.
+ *
+ * Doubling leaves the window registers GC08/GC09 at the display's size:
+ * with both GC00[15:14] set, an MQ1188 was measured to fetch 120 pixels
+ * per line and each stored line for two display lines, reading exactly a
+ * 120x160 frame for its 240x320 window. Only the stride follows the
+ * smaller frame.
  *
  * Only GC0C is known to take effect at a frame boundary, so all three
  * registers are written once the beam has left the window, as the WinCE
  * driver does.
  */
 static void mq11xx_scan_program(struct mq11xx_device *mq, unsigned int t,
-				unsigned int cpp)
+				unsigned int cpp, bool dbl)
 {
 	const struct drm_display_mode *mode = mq->mode;
 	bool columns = t & MQ11XX_SCAN_COLUMNS;
-	unsigned int width = columns ? mode->vdisplay : mode->hdisplay;
-	unsigned int rows = columns ? mode->hdisplay : mode->vdisplay;
-	unsigned int pitch = mq11xx_scan_pitch(mq, t, cpp);
+	unsigned int width = (columns ? mode->vdisplay : mode->hdisplay) >> dbl;
+	unsigned int rows = (columns ? mode->hdisplay : mode->vdisplay) >> dbl;
+	unsigned int pitch = mq11xx_scan_pitch(mq, t, cpp, dbl);
 	u32 start = MQ11XX_SRAM_FRAME, stride = pitch, control;
 
 	if (t & MQ11XX_SCAN_X_DECREMENT)
@@ -2226,6 +2249,7 @@ static void mq11xx_scan_program(struct mq11xx_device *mq, unsigned int t,
 
 	control = readl(mq->regs + MQ11XX_GC_CONTROL) &
 		  ~(MQ11XX_GC_CONTROL_COLUMN_SCAN | MQ11XX_GC_CONTROL_X_DECREMENT |
+		    MQ11XX_GC_CONTROL_DOUBLE_H | MQ11XX_GC_CONTROL_DOUBLE_V |
 		    MQ11XX_GC_CONTROL_DEPTH);
 	control |= FIELD_PREP(MQ11XX_GC_CONTROL_DEPTH,
 			      cpp == 1 ? MQ11XX_GC_DEPTH_8BPP : MQ11XX_GC_DEPTH_16BPP);
@@ -2233,6 +2257,8 @@ static void mq11xx_scan_program(struct mq11xx_device *mq, unsigned int t,
 		control |= MQ11XX_GC_CONTROL_COLUMN_SCAN;
 	if (t & MQ11XX_SCAN_X_DECREMENT)
 		control |= MQ11XX_GC_CONTROL_X_DECREMENT;
+	if (dbl)
+		control |= MQ11XX_GC_CONTROL_DOUBLE_H | MQ11XX_GC_CONTROL_DOUBLE_V;
 
 	mq11xx_wait_blank(mq);
 
@@ -2242,6 +2268,7 @@ static void mq11xx_scan_program(struct mq11xx_device *mq, unsigned int t,
 
 	mq->scan_transform = t;
 	mq->scan_cpp = cpp;
+	mq->scan_double = dbl;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2574,6 +2601,23 @@ static int mq11xx_present_dma_rect(struct mq11xx_device *mq,
 	return ret;
 }
 
+/* src:dst of a doubled plane, in 16.16 fixed point */
+#define MQ11XX_DOUBLE_SCALE	(DRM_PLANE_NO_SCALING / 2)
+
+/*
+ * atomic_check only lets a plane's source be smaller than its full-screen
+ * destination when it is exactly half of it in both axes. The source stays
+ * in framebuffer coordinates, so a quarter turn pairs its width with the
+ * destination's height.
+ */
+static bool mq11xx_plane_doubled(const struct drm_plane_state *state)
+{
+	unsigned int w = drm_rotation_90_or_270(state->rotation) ? state->crtc_h :
+								    state->crtc_w;
+
+	return state->src_w >> 16 != w;
+}
+
 static int mq11xx_primary_plane_helper_atomic_check(struct drm_plane *plane,
 						    struct drm_atomic_commit *state)
 {
@@ -2585,7 +2629,9 @@ static int mq11xx_primary_plane_helper_atomic_check(struct drm_plane *plane,
 	const struct drm_display_mode *mode = mq->mode;
 	unsigned int rotation = new_plane_state->rotation;
 	struct drm_framebuffer *fb = new_plane_state->fb;
+	bool can_double = mq->chip->caps & MQ11XX_CAP_PIXEL_DOUBLE;
 	unsigned int t, width, height;
+	bool dbl;
 	int ret;
 
 	if (READ_ONCE(mq11xx_present_dma) && !mq->present_dma.tried)
@@ -2594,14 +2640,43 @@ static int mq11xx_primary_plane_helper_atomic_check(struct drm_plane *plane,
 	if (new_crtc)
 		new_crtc_state = drm_atomic_get_new_crtc_state(state, new_crtc);
 
+	/* GC00[15:14] double the whole window, so the plane stays full screen. */
 	ret = drm_atomic_helper_check_plane_state(new_plane_state, new_crtc_state,
-						  DRM_PLANE_NO_SCALING,
+						  can_double ? MQ11XX_DOUBLE_SCALE :
+							       DRM_PLANE_NO_SCALING,
 						  DRM_PLANE_NO_SCALING,
 						  false, false);
 	if (ret || !new_plane_state->visible)
 		return ret;
 
+	/*
+	 * The helper admits any ratio in between; only 1:1 or 2x in both axes
+	 * are real. A column scan shows the framebuffer's rows as display
+	 * columns, so its source is the display turned a quarter.
+	 */
 	t = mq11xx_scan_transform(rotation);
+	dbl = mq11xx_plane_doubled(new_plane_state);
+	width = t & MQ11XX_SCAN_COLUMNS ? mode->vdisplay : mode->hdisplay;
+	height = t & MQ11XX_SCAN_COLUMNS ? mode->hdisplay : mode->vdisplay;
+	if (new_plane_state->src_w != (width >> dbl) << 16 ||
+	    new_plane_state->src_h != (height >> dbl) << 16 ||
+	    (dbl && (width % 2 || height % 2))) {
+		drm_dbg_atomic(plane->dev, "source 0x%x x 0x%x, scaling is 1:1 or exactly 2x\n",
+			       new_plane_state->src_w, new_plane_state->src_h);
+		return -EINVAL;
+	}
+
+	/* Doubling was never measured together with a rotated or reflected scan. */
+	if (dbl && t) {
+		drm_dbg_atomic(plane->dev, "pixel doubling with rotation 0x%x not supported\n",
+			       rotation);
+		return -EINVAL;
+	}
+	if (dbl && fb->format->cpp[0] == 1 && !mq->chip->double_8bpp) {
+		drm_dbg_atomic(plane->dev, "pixel doubling at 8 bpp not supported on the %s\n",
+			       mq->chip->name);
+		return -EINVAL;
+	}
 	if (!mq11xx_scan_supported(mq, t)) {
 		drm_dbg_atomic(plane->dev, "rotation 0x%x not supported on the %s\n",
 			       rotation, mq->chip->name);
@@ -2614,8 +2689,8 @@ static int mq11xx_primary_plane_helper_atomic_check(struct drm_plane *plane,
 	}
 
 	/* The frame is stored whole at the start of video memory. */
-	width = t & MQ11XX_SCAN_COLUMNS ? mode->vdisplay : mode->hdisplay;
-	height = t & MQ11XX_SCAN_COLUMNS ? mode->hdisplay : mode->vdisplay;
+	width >>= dbl;
+	height >>= dbl;
 	if (fb->width != width || fb->height != height) {
 		drm_dbg_atomic(plane->dev, "framebuffer %ux%u, rotation 0x%x needs %ux%u\n",
 			       fb->width, fb->height, rotation, width, height);
@@ -2665,13 +2740,14 @@ static void mq11xx_primary_plane_helper_atomic_update(struct drm_plane *plane,
 	unsigned int t = mq11xx_scan_transform(plane_state->rotation);
 	unsigned int vram_pitch[DRM_FORMAT_MAX_PLANES] = { };
 	struct drm_rect damage;
-	bool dma;
+	bool dma, dbl;
 	int idx;
 
 	if (!fb)
 		return;
 
-	vram_pitch[0] = mq11xx_scan_pitch(mq, t, fb->format->cpp[0]);
+	dbl = mq11xx_plane_doubled(plane_state);
+	vram_pitch[0] = mq11xx_scan_pitch(mq, t, fb->format->cpp[0], dbl);
 
 	if (!drm_dev_enter(&mq->drm, &idx))
 		return;
@@ -2689,8 +2765,9 @@ static void mq11xx_primary_plane_helper_atomic_update(struct drm_plane *plane,
 	 * A new transform is scanned from the old picture until the full
 	 * upload that atomic_check asked for replaces it.
 	 */
-	if (t != mq->scan_transform || fb->format->cpp[0] != mq->scan_cpp)
-		mq11xx_scan_program(mq, t, fb->format->cpp[0]);
+	if (t != mq->scan_transform || fb->format->cpp[0] != mq->scan_cpp ||
+	    dbl != mq->scan_double)
+		mq11xx_scan_program(mq, t, fb->format->cpp[0], dbl);
 
 	/*
 	 * Read once: every rectangle of this commit is finished before it
@@ -2979,16 +3056,17 @@ static int mq11xx_mode_config_init(struct mq11xx_device *mq)
 	if (ret)
 		return ret;
 
-	dev->mode_config.min_width = mq->mode->hdisplay;
+	/*
+	 * No minimum: a pixel-doubled plane takes a framebuffer of half the
+	 * screen's size, and the primary plane's atomic_check requires the
+	 * exact size for each layout anyway.
+	 */
 	dev->mode_config.max_width = mq->mode->hdisplay;
-	dev->mode_config.min_height = mq->mode->vdisplay;
 	dev->mode_config.max_height = mq->mode->vdisplay;
 
 	/* A quarter turn scans a framebuffer of the transposed size. */
 	if (mq->chip->caps & MQ11XX_CAP_ROTATION) {
-		dev->mode_config.min_width = min(mq->mode->hdisplay, mq->mode->vdisplay);
 		dev->mode_config.max_width = max(mq->mode->hdisplay, mq->mode->vdisplay);
-		dev->mode_config.min_height = dev->mode_config.min_width;
 		dev->mode_config.max_height = dev->mode_config.max_width;
 	}
 	dev->mode_config.preferred_depth = 16;
