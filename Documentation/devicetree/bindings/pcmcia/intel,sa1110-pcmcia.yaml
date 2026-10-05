@@ -1,0 +1,95 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/pcmcia/intel,sa1110-pcmcia.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Intel SA-1110 PC Card / CompactFlash socket
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: |
+  One of the two PC Card sockets the SA-1110's expansion memory bus
+  decodes. Each socket has a fixed 256 MiB window -- socket 0 at
+  0x20000000, socket 1 at 0x30000000 -- split into four equal 64 MiB
+  partitions: I/O, reserved, attribute memory, common memory. The window
+  is the socket's identity: the unit address says which socket a node is.
+
+  Access timing for both sockets lives in a single register, MECR, in the
+  memory controller's register block, as two sets of per-socket bit
+  fields in one shared word rather than one register per socket. It is
+  not described here, for the same reason the static memory controller
+  binding (intel,sa1110-smc.yaml) excludes it from its own
+  reg list: it belongs to neither node exclusively.
+
+  Card detect, ready/IRQ, the battery-voltage-detect pair and the
+  per-card reset, bus-enable and Vcc controls are board wiring, described
+  as GPIOs and a supply. A socket with no detect line reports a
+  permanently absent card, so that one is required.
+
+properties:
+  $nodename:
+    pattern: "^pcmcia@[23]0000000$"
+
+  compatible:
+    const: intel,sa1110-pcmcia
+
+  reg:
+    maxItems: 1
+    description: the socket's 256 MiB card window
+
+  clocks:
+    maxItems: 1
+    description:
+      The core clock (CCLK), which the MECR access timing counts in.
+
+  detect-gpios:
+    maxItems: 1
+    description: card detect (nCD), asserted while a card is seated
+
+  ready-gpios:
+    maxItems: 1
+    description: RDY/nIREQ
+
+  bvd1-gpios:
+    maxItems: 1
+
+  bvd2-gpios:
+    maxItems: 1
+
+  reset-gpios:
+    maxItems: 1
+    description: the per-card RESET pin, deasserted at idle
+
+  bus-enable-gpios:
+    maxItems: 1
+    description: buffer/bus enable for the socket's data path
+
+  vcc-supply:
+    description: the card's Vcc rail, switched between off and 3.3 V
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - detect-gpios
+  - reset-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/intel,sa1100-clocks.h>
+    #include <dt-bindings/gpio/gpio.h>
+
+    pcmcia@20000000 {
+        compatible = "intel,sa1110-pcmcia";
+        reg = <0x20000000 0x10000000>;
+        clocks = <&clks SA1100_CLK_CPU>;
+        detect-gpios = <&gpio 17 GPIO_ACTIVE_LOW>;
+        ready-gpios = <&gpio 21 GPIO_ACTIVE_HIGH>;
+        reset-gpios = <&asic2 8 GPIO_ACTIVE_HIGH>;
+        vcc-supply = <&cf_vcc>;
+    };
+...
