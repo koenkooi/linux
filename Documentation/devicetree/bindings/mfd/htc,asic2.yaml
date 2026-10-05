@@ -1,0 +1,414 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/mfd/htc,asic2.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Compaq/HTC ASIC2 companion ASIC
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  ASIC2 is a companion ASIC found on the HP/Compaq iPAQ h38xx/h39xx family,
+  hanging off a static-memory chip select as a flat 32-bit MMIO device. It
+  bundles a keypad interrupt block (12 keypad lines plus 8 unrelated
+  peripheral interrupt bits, not exposed as GPIO), a 16-line GPIO bank that
+  is both a gpio-controller and an interrupt-controller for 5 of its lines
+  (pen contact, SD detect, ear-in, USB detect, SD connector slot), a
+  DS1WM-compatible 1-Wire master, an SPI block, a PWM block, an ADC that
+  also drives a bit-banged resistive touchscreen and a 3-channel LED block,
+  behind one flat clock-gate register and a single upstream interrupt line
+  demultiplexing 16 hardware interrupts.
+
+  This binding covers the chip core, that is register access, interrupt
+  demultiplexing, the GPIO bank and the clocks, and the child nodes of its
+  sub-blocks. The MFD driver instantiates every sub-block itself and hands
+  it its share of the register window, so a child node carries a
+  compatible and no reg. The child node is the firmware node of its block:
+  a phandle target for other devices, a place for board-specific
+  properties, and for some blocks the condition for instantiating them at
+  all. The "sleeve" child takes its power, reset and presence lines as
+  GPIO phandles, and it finds the SPI controller it talks over through the
+  "spi" child, which therefore has to exist as a node.
+
+  The "touchscreen" child is required for the touchscreen to work: the
+  generic resistive-adc-touch driver refuses to probe without an
+  "io-channel-names" property, so the node carries it together with the
+  "io-channels" phandles into the "adc" child. The phandle also turns a
+  probe-ordering race against the ADC driver into an ordinary
+  -EPROBE_DEFER instead of a permanent failure.
+
+  The "onewire" child is optional: the 1-Wire driver falls back to the
+  compiled-in platform data, and the node only exists so a board can
+  override the DS1WM tunables described in
+  Documentation/devicetree/bindings/w1/dallas,ds1wm.yaml.
+
+  On the h38xx family the same window also carries ASIC1, a physically
+  separate companion chip with no chip select of its own whose bus cycles
+  ASIC2 forwards (offsets 0x1c00-0x1eff). Its blocks are children of this
+  node, and the driver instantiates each of them only when its child node
+  is present. h39xx, where ASIC3 replaced ASIC1, has none.
+
+  The "serial" child is the h3870/h3875 Bluetooth transport. Unlike the
+  board independent phandle targets above, adding its cell also performs
+  hardware bring-up, a few writes to the GPIO and keypad registers of this
+  chip, so the driver does that only when the child node is present and
+  available. A board with no radio wired to this block must not have those
+  writes run.
+
+properties:
+  compatible:
+    const: htc,asic2
+
+  reg:
+    maxItems: 1
+    description:
+      The chip's single flat register window.
+
+  interrupts:
+    maxItems: 1
+    description:
+      The chip's single upstream interrupt line, chained through this
+      node's interrupt controller. It is active-high edge-rising. The
+      driver falls back to rising edge when the line carries no trigger
+      type of its own.
+
+  interrupt-controller: true
+
+  '#interrupt-cells':
+    const: 2
+    description:
+      Cell 1 is the hardware interrupt number, 0-8 for the keypad block and
+      9-13 for the GPIO bank. Cell 2 is a standard IRQ_TYPE_* flag.
+
+  gpio-controller: true
+
+  '#gpio-cells':
+    const: 2
+    description:
+      Describes the 16-line GPIO bank, where offset N is bit N of its data
+      register, plus one extra offset 16 on h3800 only for the Vpp and
+      write-protect enable of the on-board NOR flash (a dedicated
+      always-output register with no data or direction bit in the bank).
+      The keypad lines are interrupt sources and are not addressable as
+      GPIO.
+
+  '#clock-cells':
+    const: 1
+    description: >-
+      The clock specifier is one of the ASIC2_CLK_* constants of
+      include/dt-bindings/clock/htc,asic2.h: the ADC, SPI, PWM and UART0
+      block gates, the EX1 and EX2 crystal gates, the shared SD card clock
+      selector and, as index 0, the audio clock tap selector (the low four
+      bits of the clock enable register, used by the UDA1341TS audio path
+      of h38xx), for example "clocks = <&asic2 0>;". Optional: a board with
+      no consumer for an index never references it.
+
+  htc,sd-clock-hz:
+    enum: [16934000, 24576000, 33869000, 49152000]
+    description:
+      Which of the four fixed SD clock taps of this chip the SD/MMC host of
+      the board, ASIC1's on h38xx and ASIC3's on h39xx, runs its card clock
+      from. When absent, 24576000 is used, which is what h39xx needs. h38xx
+      uses 33869000.
+
+  gpio:
+    $ref: /schemas/gpio/htc,asic1-gpio.yaml
+    description:
+      ASIC1's own 15-line GPIO block (h38xx only), the power-rail and routing
+      outputs for the IR module, SD slot, RS232 transceiver, charger, LCD,
+      frontlight, Bluetooth and audio. It has no reg, because it sits at a
+      fixed offset inside this node's window and the driver hands the cell
+      that sub-range.
+
+  mmc:
+    $ref: /schemas/mmc/htc,asic1-mmc.yaml
+    description:
+      ASIC1's SD/MMC host block (h38xx only). It has no reg, for the same
+      reason as the "gpio" child, but unlike that child it has an
+      "interrupts" property of its own, against the interrupt controller
+      of the SoC rather than that of this node.
+
+  serial:
+    $ref: /schemas/serial/htc,asic2-uart.yaml
+    description:
+      The UART0 and UART1 blocks of the chip, of which UART0 is the
+      Bluetooth transport of the h3870/h3875. It has no reg, for the same
+      reason as the "gpio" and "mmc" children. The cell is added only when
+      this child node is present and available.
+
+  touchscreen:
+    type: object
+    $ref: /schemas/input/touchscreen/resistive-adc-touch.yaml#
+    unevaluatedProperties: false
+    description: >-
+      The resistive touchscreen panel wired to the x/y channels of the
+      "adc" block. Required for the touchscreen to work at all: without
+      this node the cell has no "io-channel-names" property and
+      drivers/input/touchscreen/resistive-adc-touch.c refuses to probe.
+      The "io-channels" phandles also make the consumer defer, rather than
+      fail permanently, when the ADC driver has not registered yet.
+
+  led-controller:
+    $ref: /schemas/leds/htc,asic2-leds.yaml
+    description:
+      The 3-channel LED timer block of the chip. h3800 has its status LEDs
+      wired to it.
+
+  keys:
+    $ref: /schemas/input/htc,asic2-keys.yaml
+    description:
+      The 12-line keypad of the chip. Its register window and interrupt come
+      from the mfd cell of the parent driver, not from this node. The node
+      exists so that each board can supply its own mask, match and keycode
+      for every key.
+
+  pwm:
+    $ref: /schemas/pwm/htc,asic2-pwm.yaml
+    description:
+      The PWM0/PWM1 block of the chip, which drives the LCD frontlight on
+      PWM0. Its register window comes from the mfd cell of the parent
+      driver, not from this node. The node exists so that the "pwms"
+      phandle of a pwm-backlight consumer has a device node to resolve
+      against, and so that a board can supply its own divider and period.
+
+  onewire:
+    type: object
+    $ref: /schemas/w1/dallas,ds1wm.yaml#
+    unevaluatedProperties: false
+    description: >-
+      The chip's own DS1WM-compatible 1-Wire master
+      (drivers/w1/masters/ds1wm.c). Its register window and interrupt
+      come from drivers/mfd/asic2.c's own mfd_cell, not from this node;
+      the node exists so a board can override this chip's compiled-in
+      bus-shift/active-high/reset-recover-delay tunables (see that
+      binding's own description) instead of the driver falling back to
+      drivers/mfd/asic2.c's own static asic2_ds1wm_pdata.
+
+  spi:
+    type: object
+    $ref: /schemas/spi/spi-controller.yaml#
+    unevaluatedProperties: false
+    description: >-
+      The chip's byte-at-a-time SPI block, with two on-chip chip selects and
+      no chip-select GPIOs. Its register window and interrupt are provided
+      by the MFD driver, not by this node, which exists so that other
+      drivers can look the controller up by its device node.
+    properties:
+      compatible:
+        const: htc,asic2-spi
+      clocks:
+        items:
+          - description: The parent's SPI clock gate
+          - description: The parent's EX1 crystal gate
+      clock-names:
+        items:
+          - const: ref
+          - const: ex1
+    required:
+      - compatible
+      - clocks
+      - clock-names
+
+  adc:
+    type: object
+    additionalProperties: false
+    description: >-
+      The chip's ADC, as the provider of IIO channels for consumers such as
+      a battery node. The channel specifier is the index of the channel in
+      the order of the driver, where 2 is the main battery voltage.
+    properties:
+      compatible:
+        const: htc,asic2-adc
+
+      '#io-channel-cells':
+        const: 1
+
+      clocks:
+        items:
+          - description: The parent's ADC clock gate
+          - description: The parent's EX1 crystal gate
+
+      clock-names:
+        items:
+          - const: ref
+          - const: ex1
+
+    required:
+      - compatible
+      - '#io-channel-cells'
+      - clocks
+      - clock-names
+
+  sleeve:
+    type: object
+    additionalProperties: false
+    description: >-
+      The control glue of the expansion pack ("sleeve" or "option jacket")
+      connector, the ASIC2 backend of the generic iPAQ sleeve bus.
+    properties:
+      compatible:
+        const: htc,asic2-sleeve
+
+      status: true
+
+      bat-fault-gpios:
+        maxItems: 1
+        description: >-
+          Jacket battery fault line (OPT_BAT_FAULT), a bare SoC GPIO on
+          the board, asserted by a battery-carrying jacket whose battery
+          can no longer supply it. Both edges must be able to interrupt.
+          The GPIO flag gives the polarity, asserted meaning a fault.
+          Optional: a board that does not describe it enumerates and
+          powers jackets without regard to their battery.
+
+      detect-gpios:
+        maxItems: 1
+        description: >-
+          Jacket-presence line (OPT_IND_N), a bare SoC GPIO on the board
+          rather than an ASIC2 line, and the interrupt source the bus
+          core's insert/eject debounce runs from. Active-low: asserted
+          means a jacket is physically attached.
+
+      nvram-gpios:
+        maxItems: 1
+        description: >-
+          Enable for the jacket's NVRAM/ID-EEPROM supply rail
+          (ASIC2_GPIO2_OPT_ON_NVRAM). Powered on its own, ahead of the
+          main rail, so the sleeve's ID EEPROM can be read before
+          anything decides what the sleeve is.
+
+      opt-int-gpios:
+        maxItems: 1
+        description: >-
+          The sleeve-device interrupt (OPT_INT) of the connector, the
+          line a sleeve asserts to get the attention of the host, for
+          example the receive interrupt of the GPS UART inside a Navman
+          GPS/CF jacket. It is a bare SoC GPIO and distinct from the PC
+          Card interrupt of a card in the jacket's socket, which belongs
+          to the PCMCIA socket driver of the board. Optional, a board
+          that does not route it still enumerates jackets normally, and
+          a sleeve driver that wants it degrades to polling.
+
+      power-gpios:
+        maxItems: 1
+        description: >-
+          Enable for the jacket's main supply rail (ASIC2_GPIO2_OPT_ON).
+          The sleeve bus core asserts it after it has read the ID EEPROM
+          and registered the jacket, whether or not the jacket could be
+          identified, and deasserts it when the jacket is removed.
+
+      reset-gpios:
+        maxItems: 1
+        description: >-
+          Whole-jacket reset (ASIC2_GPIO2_OPT_RESET). Distinct from the
+          per-card PCMCIA reset (ASIC2_GPIO2_OPT_PCM_RESET), which
+          belongs to the board's PCMCIA socket driver and is
+          deliberately not described here.
+    required:
+      - compatible
+      - detect-gpios
+      - nvram-gpios
+      - power-gpios
+      - reset-gpios
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - gpio-controller
+  - '#gpio-cells'
+
+allOf:
+  - $ref: /schemas/memory-controllers/mc-peripheral-props.yaml#
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/htc,asic2.h>
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+    #include <dt-bindings/leds/common.h>
+
+    asic2: companion-chip@c000000 {
+        compatible = "htc,asic2";
+        reg = <0x0c000000 0x2000>;
+
+        interrupt-parent = <&gpio>;
+        interrupts = <10 IRQ_TYPE_EDGE_RISING>;
+        interrupt-controller;
+        #interrupt-cells = <2>;
+
+        gpio-controller;
+        #gpio-cells = <2>;
+        #clock-cells = <1>;
+
+        adc: adc {
+            compatible = "htc,asic2-adc";
+            #io-channel-cells = <1>;
+            clocks = <&asic2 ASIC2_CLK_ADC>, <&asic2 ASIC2_CLK_EX1>;
+            clock-names = "ref", "ex1";
+        };
+
+        touchscreen {
+            compatible = "resistive-adc-touch";
+            io-channels = <&adc 3>, <&adc 4>;
+            io-channel-names = "x", "y";
+            touchscreen-size-x = <1024>;
+            touchscreen-size-y = <1024>;
+        };
+
+        keys {
+            compatible = "htc,asic2-keys";
+
+            button-record {
+                label = "Record";
+                linux,code = <128>; /* KEY_RECORD */
+                htc,key-mask = <0x001>;
+                htc,key-match = <0x001>;
+            };
+        };
+
+        led-controller {
+            compatible = "htc,asic2-leds";
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            led@1 {
+                reg = <1>;
+                color = <LED_COLOR_ID_GREEN>;
+                function = LED_FUNCTION_STATUS;
+            };
+        };
+
+        onewire {
+            compatible = "htc,asic2-onewire", "dallas,ds1wm";
+            dallas,bus-shift = <2>;
+            dallas,active-high;
+            dallas,reset-recover-delay-ms = <1>;
+        };
+
+        spi {
+            compatible = "htc,asic2-spi";
+            clocks = <&asic2 ASIC2_CLK_SPI>, <&asic2 ASIC2_CLK_EX1>;
+            clock-names = "ref", "ex1";
+        };
+
+        pwm {
+            compatible = "htc,asic2-pwm";
+            #pwm-cells = <2>;
+            clocks = <&asic2 ASIC2_CLK_PWM>, <&asic2 ASIC2_CLK_EX1>;
+            clock-names = "ref", "ex1";
+        };
+
+        sleeve {
+            compatible = "htc,asic2-sleeve";
+            detect-gpios = <&gpio 5 GPIO_ACTIVE_LOW>;
+            nvram-gpios = <&asic2 13 GPIO_ACTIVE_HIGH>;
+            opt-int-gpios = <&gpio 9 GPIO_ACTIVE_HIGH>;
+            power-gpios = <&asic2 12 GPIO_ACTIVE_HIGH>;
+            reset-gpios = <&asic2 9 GPIO_ACTIVE_HIGH>;
+        };
+    };
