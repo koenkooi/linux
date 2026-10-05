@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/serial/htc,asic2-uart.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HTC ASIC2 companion ASIC UART block
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  ASIC2 is a companion ASIC found on the HP/Compaq iPAQ h38xx/h39xx family
+  (see htc,asic2.yaml). Its UART0 and UART1 blocks are a pair of
+  16550A-compatible register windows with a 4-byte stride. UART0 is the
+  Bluetooth transport of the h3870/h3875, a CSR BlueCore radio attached
+  from userspace with hciattach, so no child node is described for it.
+
+  This node is always a child of an htc,asic2 node and has no reg of its
+  own. The parent driver hands the cell its register sub-window and its
+  demultiplexed interrupt.
+
+  The block is bound by a thin glue driver for the stock 8250 core, not by
+  the generic 8250 platform binding: the parent driver maps its window
+  non-exclusively so that this cell can take the only exclusive claim on
+  its own disjoint sub-range, which a stock 8250 platform device sharing
+  ASIC2's window could not do.
+
+allOf:
+  - $ref: /schemas/serial/serial.yaml#
+
+properties:
+  compatible:
+    const: htc,asic2-uart
+
+  clock-frequency:
+    description:
+      The reference clock of the block. It is not the 24.576 MHz crystal of
+      ASIC2 but a 3.6864 MHz tap that the SA-1110 supplies on GPIO27, gated
+      on the ASIC2 side by the UART0 reference clock gate of the parent
+      driver. Defaults to 3686400 when absent, the only value any known
+      board needs.
+
+  clocks:
+    items:
+      - description: The parent's UART0 reference clock select gate
+      - description: The parent's EX1 crystal gate
+
+  clock-names:
+    items:
+      - const: sel
+      - const: ex1
+
+required:
+  - compatible
+  - clocks
+  - clock-names
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/htc,asic2.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    asic2: companion-chip@49000000 {
+        compatible = "htc,asic2";
+        reg = <0x49000000 0x2000>;
+        interrupt-parent = <&gpio>;
+        interrupts = <1 IRQ_TYPE_EDGE_RISING>;
+        gpio-controller;
+        #gpio-cells = <2>;
+        #clock-cells = <1>;
+
+        serial {
+            compatible = "htc,asic2-uart";
+            clock-frequency = <3686400>;
+            clocks = <&asic2 ASIC2_CLK_SLOW_UART_0>, <&asic2 ASIC2_CLK_EX1>;
+            clock-names = "sel", "ex1";
+        };
+    };
+
+...
