@@ -98,6 +98,25 @@
 	};
 
 	/*
+	 * MediaQ 1178 (MQ1188 on some units) on nCS_1: 256 KiB of video
+	 * memory at the chip-select base, the 8 KiB register window right
+	 * after it. h2200.c's fix_msc() programs the CS1 timing at
+	 * arch_initcall, before the display driver can bind. MQ1178_IRQ_N
+	 * (GPIO14) is the chip's active-low interrupt output, held low
+	 * until the source is acknowledged; PXA GPIOs only detect edges, so
+	 * it is described by its falling edge.
+	 */
+	display@4000000 {
+		compatible = "mediaq,mq1178";
+		reg = <0x04000000 0x40000>, <0x04040000 0x2000>;
+		interrupt-parent = <&gpio>;
+		interrupts = <14 IRQ_TYPE_EDGE_FALLING>;
+		vdd-supply = <&mq_vdd>;
+		power-supply = <&mq_power>;
+		reset-gpios = <&gpio 68 GPIO_ACTIVE_LOW>;
+	};
+
+	/*
 	 * CompactFlash socket. The shared PXA PCMCIA driver is matched by
 	 * name and needs board callbacks that no property can express, so
 	 * the board code registers the platform device and merely looks this
