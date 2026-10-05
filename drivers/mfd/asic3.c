@@ -51,16 +51,20 @@
  * (Documentation/devicetree/bindings/mfd/htc,asic3.yaml). An optional
  * "reset-gpios" is pulsed at probe before any register access. Board
  * policy (LED names and triggers, keys, socket GPIOs) stays out of this
- * file. Sub-devices are matched to child device tree nodes by
- * of_compatible; the one so far is "leds-asic3"
- * (drivers/leds/leds-asic3.c). This file is the MFD core: register access,
- * IRQ demux, gpio_chip, clocks, plus the devm_mfd_add_devices() call that
- * lets DT-described sub-devices attach.
+ * file. "leds-asic3" (drivers/leds/leds-asic3.c) is matched to a child
+ * device tree node by of_compatible. The SD/MMC host
+ * (drivers/mmc/host/tmio_mmc.c, "tmio-mmc") is registered from the second
+ * "sd" window through a second devm_mfd_add_devices() call and is matched
+ * to an optional "mmc" child node by of_compatible, which only supplies
+ * generic MMC properties such as cd-gpios. This file is the MFD core:
+ * register access, IRQ demux, gpio_chip, clocks, plus the sub-device
+ * registration.
  *
  * Copyright (C) 2026 Koen Kooi
  */
 
 #include <linux/bitops.h>
+#include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/clkdev.h>
 #include <linux/delay.h>
@@ -70,13 +74,16 @@
 #include <linux/gpio/driver.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/ioport.h>
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
 #include <linux/kernel.h>
 #include <linux/mfd/asic3.h>
 #include <linux/mfd/core.h>
+#include <linux/mmc/host.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/platform_data/tmio.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
 #include <linux/spinlock.h>
@@ -135,6 +142,19 @@ struct asic3 {
 	void __iomem *regs;
 	unsigned int bus_shift;
 	int irq;
+
+	/* SD_CONFIG sub-window inside the "sd" chip-select resource -- only
+	 * mapped when a board wires up ASIC3's SD/MMC host (the "sd" MEM
+	 * resource and a named "sd" IRQ both present). NULL otherwise;
+	 * asic3_sd_set_clock_mode() is only ever reached through a probed
+	 * tmio-mmc cell, which only exists when this is non-NULL.
+	 */
+	void __iomem *sd_config;
+
+	/* Set once the card-detect debounce wait has been done; see
+	 * asic3_sd_wait_card_detect_settle().
+	 */
+	bool sd_settled;
 
 	/* Guards every register read-modify-write below (GPIO bank
 	 * MASK, DIRECTION, OUT and the *_TRIGGER registers, CLOCK_CDEX,
@@ -907,9 +927,25 @@ static int asic3_irq_init(struct asic3 *asic)
  * ---------------------------------------------------------------------
  */
 
+/*
+ * CLOCK_CDEX_SD_BUS selects the rate of the SD bus interface: set for
+ * 24.576 MHz, clear for 12.288 MHz. The h3900 runs it clear, as its WinCE
+ * driver does, while the hx4700 runs it set. The enable path of the gate
+ * and the rate the gate reports have to agree, because the tmio-mmc driver
+ * derives its card clock divisor from clk_get_rate(), so both use this one
+ * predicate.
+ */
+static bool asic3_sd_bus_is_fast(void)
+{
+	return !of_machine_is_compatible("hp,ipaq-h3900");
+}
+
 static int asic3_clk_gate_enable(struct clk_hw *hw)
 {
 	struct asic3_clk_gate *gate = container_of(hw, struct asic3_clk_gate, hw);
+
+	if (gate->cdex_bit == CLOCK_CDEX_SD_BUS && !asic3_sd_bus_is_fast())
+		return 0;
 
 	asic3_rmw(gate->asic, ASIC3_CLOCK_BASE + ASIC3_CLOCK_CDEX,
 		  gate->cdex_bit, gate->cdex_bit);
@@ -959,8 +995,6 @@ static const struct {
 	[ASIC3_GATE_LED0]    = { "asic3-led0",    CLOCK_CDEX_LED0,    0, 0 },
 	[ASIC3_GATE_LED1]    = { "asic3-led1",    CLOCK_CDEX_LED1,    0, 0 },
 	[ASIC3_GATE_LED2]    = { "asic3-led2",    CLOCK_CDEX_LED2,    0, 0 },
-	[ASIC3_GATE_SD_HOST] = { "asic3-sd-host", CLOCK_CDEX_SD_HOST, 24576000, 0 },
-	[ASIC3_GATE_SD_BUS]  = { "asic3-sd-bus",  CLOCK_CDEX_SD_BUS,  12288000, 0 },
 	[ASIC3_GATE_SMBUS]   = { "asic3-smbus",   CLOCK_CDEX_SMBUS,   0, 0 },
 	/*
 	 * EX0/EX1: the 32.768 kHz and 24.576 MHz crystal enables. Both are
@@ -970,6 +1004,19 @@ static const struct {
 	 */
 	[ASIC3_GATE_EX0]     = { "asic3-ex0", CLOCK_CDEX_EX0, 32768, CLK_IS_CRITICAL },
 	[ASIC3_GATE_EX1]     = { "asic3-ex1", CLOCK_CDEX_EX1, 24576000, CLK_IS_CRITICAL },
+	/*
+	 * SD_HOST/SD_BUS are CLK_IS_CRITICAL for ordering rather than for lack
+	 * of a consumer: asic3_sd_host_init() writes the SD_CONFIG block
+	 * synchronously from probe, while the tmio-mmc cell probes
+	 * asynchronously. Registering the gates as critical turns them on
+	 * before that sequence runs; the driver's own devm_clk_get_enabled()
+	 * then layers a balanced enable/disable pair on top for runtime PM.
+	 * The cost is that both gates stay enabled on a board that does not
+	 * wire up SD, which is only an internal divider tap.
+	 */
+	[ASIC3_GATE_SD_HOST] = { "asic3-sd-host", CLOCK_CDEX_SD_HOST, 24576000, CLK_IS_CRITICAL },
+	/* The SD_BUS rate is board dependent, see asic3_sd_bus_is_fast(). */
+	[ASIC3_GATE_SD_BUS]  = { "asic3-sd-bus",  CLOCK_CDEX_SD_BUS,  12288000, CLK_IS_CRITICAL },
 };
 
 static int asic3_clocks_register(struct asic3 *asic)
@@ -986,6 +1033,8 @@ static int asic3_clocks_register(struct asic3 *asic)
 		asic->gates[i].asic = asic;
 		asic->gates[i].cdex_bit = asic3_clk_defs[i].cdex_bit;
 		asic->gates[i].rate = asic3_clk_defs[i].rate;
+		if (i == ASIC3_GATE_SD_BUS && asic3_sd_bus_is_fast())
+			asic->gates[i].rate = 24576000;
 		asic->gates[i].hw.init = &init;
 
 		ret = devm_clk_hw_register(asic->dev, &asic->gates[i].hw);
@@ -995,10 +1044,28 @@ static int asic3_clocks_register(struct asic3 *asic)
 
 	/*
 	 * "ds1wm": drivers/w1/masters/ds1wm.c calls devm_clk_get(dev, NULL).
-	 * The SD host gates get no alias until its cell driver exists.
+	 * The alias is registered ahead of the cell that will use it.
 	 */
 	ret = devm_clk_hw_register_clkdev(asic->dev, &asic->gates[ASIC3_GATE_OWM].hw,
 					  NULL, "ds1wm");
+	if (ret)
+		return ret;
+
+	/*
+	 * "sd_host"/"sd_bus" against dev_name "tmio-mmc" (the SD mfd_cell
+	 * below): drivers/mmc/host/tmio_mmc.c acquires both with
+	 * devm_clk_get_enabled() before touching the SD_CTRL registers. Both
+	 * gates are already CLK_IS_CRITICAL, so these aliases give the
+	 * driver a balanced enable/disable handle rather than being what
+	 * first turns the hardware on.
+	 */
+	ret = devm_clk_hw_register_clkdev(asic->dev, &asic->gates[ASIC3_GATE_SD_HOST].hw,
+					  "sd_host", "tmio-mmc");
+	if (ret)
+		return ret;
+
+	ret = devm_clk_hw_register_clkdev(asic->dev, &asic->gates[ASIC3_GATE_SD_BUS].hw,
+					  "sd_bus", "tmio-mmc");
 	if (ret)
 		return ret;
 
@@ -1023,10 +1090,223 @@ static int asic3_clocks_register(struct asic3 *asic)
 }
 
 /* ---------------------------------------------------------------------
- * Sub-devices. So far only the LED blink controller
- * (drivers/leds/leds-asic3.c), matched by of_compatible against a child
- * device tree node so that board policy (LED names and triggers) stays in
- * the device tree rather than in this file.
+ * SD/MMC host bring-up, for the "sd" resource window (a second, physically
+ * disjoint window from the "core" one everything above uses). Neither the
+ * mfd_cell .enable/.disable hooks nor tmio_core.c exist any more, so the
+ * chip-level setup is done here unconditionally from asic3_probe() rather
+ * than from the child cell's probe: the tmio-mmc cell probes
+ * asynchronously, so there is no guarantee it has probed before this
+ * returns. That is also why SD_HOST/SD_BUS are CLK_IS_CRITICAL in the
+ * table above.
+ * ---------------------------------------------------------------------
+ */
+
+static void asic3_sd_config_write8(struct asic3 *asic, unsigned int reg, u8 value)
+{
+	/*
+	 * The shift is 1 - bus_shift rather than bus_shift: the SD_CONFIG
+	 * offsets are expressed in "32 bit addressing", one step coarser than
+	 * the 16-bit VLIO offsets of the "core" window, so with bus_shift = 1
+	 * they are plain byte offsets.
+	 */
+	iowrite8(value, asic->sd_config + (reg << (1 - asic->bus_shift)));
+}
+
+static void asic3_sd_config_write16(struct asic3 *asic, unsigned int reg, u16 value)
+{
+	iowrite16(value, asic->sd_config + (reg << (1 - asic->bus_shift)));
+}
+
+/* CTL_BASE is a 32-bit register accessed as two 16-bit halves */
+static void asic3_sd_config_write32(struct asic3 *asic, unsigned int reg, u32 value)
+{
+	unsigned int shift = 1 - asic->bus_shift;
+
+	iowrite16(value, asic->sd_config + (reg << shift));
+	iowrite16(value >> 16, asic->sd_config + ((reg + 2) << shift));
+}
+
+void asic3_sd_set_clock_mode(struct asic3 *asic, bool gated)
+{
+	asic3_sd_config_write8(asic, ASIC3_SD_CONFIG_CLOCK_MODE, gated ? 1 : 0);
+}
+EXPORT_SYMBOL_GPL(asic3_sd_set_clock_mode);
+
+/*
+ * Power the SD slot's 3.3V rail (SDHWCTRL.SDPWR). This cannot be done from
+ * asic3_sd_host_init(), which runs from probe before the tmio-mmc cell
+ * resets the SD_CTRL block; the rail has to come up after that reset, so
+ * the tmio-mmc reset hook calls this instead.
+ */
+void asic3_sd_set_power(struct asic3 *asic, bool on)
+{
+	asic3_rmw(asic, ASIC3_SDHWCTRL_BASE + ASIC3_SDHWCTRL_SDCONF,
+		  ASIC3_SDHWCTRL_SDPWR, on ? ASIC3_SDHWCTRL_SDPWR : 0);
+}
+EXPORT_SYMBOL_GPL(asic3_sd_set_power);
+
+/*
+ * Power the SD bus (SD_CONFIG.PWR2), which is separate from the slot rail
+ * above. PWR2 is an internal TMIO bus power bit, not a regulator. It is
+ * left off by asic3_sd_host_init(), switched on from the tmio-mmc reset
+ * hook, which also runs again on runtime PM resume, and cycled with
+ * MMC_POWER_UP and MMC_POWER_OFF by the set_pwr callback of the tmio-mmc
+ * host.
+ */
+void asic3_sd_set_bus_power(struct asic3 *asic, bool on)
+{
+	asic3_sd_config_write8(asic, ASIC3_SD_CONFIG_PWR2, on ? 0x02 : 0x00);
+}
+EXPORT_SYMBOL_GPL(asic3_sd_set_bus_power);
+
+/*
+ * Power the SD slot of the h3900 through SD_CONFIG.PWR1 and PWR2. The
+ * WinCE SD driver writes the two as one native 32-bit register, 0 before
+ * power-down and 0x00000200 after power-up, and never addresses PWR2 on its
+ * own, so do the same instead of using asic3_sd_set_bus_power().
+ */
+void asic3_sd_set_slot_voltage(struct asic3 *asic, bool on)
+{
+	iowrite32(on ? 0x00000200 : 0x00000000,
+		  asic->sd_config +
+		  (ASIC3_SD_CONFIG_PWR1 << (1 - asic->bus_shift)));
+}
+EXPORT_SYMBOL_GPL(asic3_sd_set_slot_voltage);
+
+/*
+ * SDHC_CardDetect mode 2 samples the card-detect pin with a debounce of
+ * about 512 ms, so the status read in the first card scan right after probe
+ * would report an empty slot. Wait it out once, from the reset hook, which
+ * runs before mmc_add_host() can start that scan. Later resets (error
+ * recovery, runtime PM resume) do not need to wait again.
+ */
+void asic3_sd_wait_card_detect_settle(struct asic3 *asic)
+{
+	if (asic->sd_settled)
+		return;
+
+	msleep(600);
+	asic->sd_settled = true;
+}
+EXPORT_SYMBOL_GPL(asic3_sd_wait_card_detect_settle);
+
+/*
+ * SD_CTRL_BASE right-shifted by bus_shift is both the resource offset the
+ * "sd" tmio-mmc cell gets and the base address written to the CTL_BASE
+ * register of SD_CONFIG. The cell gets a per-probe copy of the resource,
+ * see asic3_probe(), so a re-probe does not shift it twice.
+ */
+static const struct tmio_mmc_data asic3_sd_cell_data = {
+	/*
+	 * Fallback only: tmio_mmc_probe() replaces its copy of this with the
+	 * rate of the "sd_bus" clock, which depends on the board.
+	 */
+	.hclk		= 24576000,
+	.ocr_mask	= MMC_VDD_32_33 | MMC_VDD_33_34,
+	/* SD_CTRL reports the slot in the "_A" status bits only. */
+	.flags		= TMIO_MMC_CD_IN_ALT_BITS,
+};
+
+static int asic3_sd_host_init(struct asic3 *asic, struct resource *sd_mem)
+{
+	u32 ctl_base;
+
+	asic->sd_config = devm_ioremap(asic->dev,
+				       sd_mem->start + (ASIC3_SD_CONFIG_BASE >> asic->bus_shift),
+					ASIC3_SD_CONFIG_SIZE >> asic->bus_shift);
+	if (!asic->sd_config)
+		return -ENOMEM;
+
+	/*
+	 * SDHWCTRL, CLOCK_SEL and EXTCF setup. CLOCK_SEL is overwritten
+	 * rather than modified: its only earlier writer is asic3_irq_init(),
+	 * always called first from probe, which sets CLOCK_SEL_CX, so
+	 * re-asserting that bit along with CLOCK_SEL_SD_HCLK_SEL is safe.
+	 */
+	asic3_rmw(asic, ASIC3_SDHWCTRL_BASE + ASIC3_SDHWCTRL_SDCONF,
+		  ASIC3_SDHWCTRL_LEVCD, ASIC3_SDHWCTRL_LEVCD);
+	asic3_rmw(asic, ASIC3_SDHWCTRL_BASE + ASIC3_SDHWCTRL_SDCONF,
+		  ASIC3_SDHWCTRL_LEVWP, ASIC3_SDHWCTRL_LEVWP);
+	asic3_rmw(asic, ASIC3_SDHWCTRL_BASE + ASIC3_SDHWCTRL_SDCONF,
+		  ASIC3_SDHWCTRL_SUSPEND, 0);
+	asic3_rmw(asic, ASIC3_SDHWCTRL_BASE + ASIC3_SDHWCTRL_SDCONF,
+		  ASIC3_SDHWCTRL_PCLR, 0);
+
+	/*
+	 * The vendor firmware enables the two clock stages in a fixed order
+	 * with 1 ms settle delays: EX0/EX1, then CLOCK_SEL, then SD_HOST/
+	 * SD_BUS, then the SD memory enable. Do the same, even though the
+	 * gates are already kept on, so the hardware sees that sequence.
+	 */
+	asic3_rmw(asic, ASIC3_CLOCK_BASE + ASIC3_CLOCK_CDEX,
+		  CLOCK_CDEX_EX0 | CLOCK_CDEX_EX1,
+		  CLOCK_CDEX_EX0 | CLOCK_CDEX_EX1);
+	usleep_range(1000, 2000);
+
+	asic3_write_register(asic, ASIC3_CLOCK_BASE + ASIC3_CLOCK_SEL,
+			     CLOCK_SEL_CX | CLOCK_SEL_SD_HCLK_SEL);
+
+	asic3_rmw(asic, ASIC3_CLOCK_BASE + ASIC3_CLOCK_CDEX,
+		  CLOCK_CDEX_SD_HOST | CLOCK_CDEX_SD_BUS,
+		  CLOCK_CDEX_SD_HOST |
+		  (asic3_sd_bus_is_fast() ? CLOCK_CDEX_SD_BUS : 0));
+	usleep_range(1000, 2000);
+
+	asic3_rmw(asic, ASIC3_EXTCF_BASE + ASIC3_EXTCF_SELECT,
+		  ASIC3_EXTCF_SD_MEM_ENABLE, ASIC3_EXTCF_SD_MEM_ENABLE);
+
+	/*
+	 * SD_CONFIG bring-up: enable access to the SD_CTRL registers, tell
+	 * SD_CONFIG where SD_CTRL sits, then the power and clock housekeeping
+	 * writes, including the STOP_CLK_CTL one whose purpose is unknown but
+	 * which the removed driver also made. SDHC_CardDetect routes the
+	 * physical card-detect pin into the SD_CTRL card status bits; without
+	 * it the slot always looks empty. The slot rail and the bus power
+	 * are switched on later, see asic3_sd_set_power() and
+	 * asic3_sd_set_bus_power().
+	 *
+	 * CTL_BASE holds the position of the SD_CTRL window in units of
+	 * 16-bit words, whatever the wiring: 0x0800 words for the window at
+	 * byte offset 0x1000, which is the value the h3900 reads under
+	 * WinCE. It is therefore shifted by a fixed 1, as in the removed
+	 * driver, and not by bus_shift like the cell resource, which is the
+	 * address at which the CPU sees the window and does depend on the
+	 * wiring. Scaling it by bus_shift puts the window at the wrong place
+	 * where bus_shift is 0.
+	 */
+	ctl_base = (ASIC3_SD_CTRL_BASE >> 1) & 0xfffe;
+	asic3_sd_config_write16(asic, ASIC3_SD_CONFIG_COMMAND, ASIC3_SD_CONFIG_COMMAND_MAE);
+	asic3_sd_config_write32(asic, ASIC3_SD_CONFIG_CTL_BASE, ctl_base);
+	/*
+	 * PWR3 and PWR1/PWR2 differ between the boards. The hx4700 stack
+	 * writes PWR3 = 0x01 and a bus power byte of 0x00 to PWR2. On the
+	 * h3900, whose ASIC3 is an older revision, the working WinCE state
+	 * reads PWR3 = 0x00 and PWR1 = 0x0200 (bit 9) with a card inserted,
+	 * which is what the WinCE SD driver's power-up leaves set. That
+	 * driver writes PWR1 and PWR2 as one 32-bit register, so the slot
+	 * voltage helper does too and PWR2 is not written on its own.
+	 */
+	if (of_machine_is_compatible("hp,ipaq-h3900")) {
+		asic3_sd_config_write8(asic, ASIC3_SD_CONFIG_PWR3, 0x00);
+		asic3_sd_set_slot_voltage(asic, true);
+	} else {
+		asic3_sd_config_write8(asic, ASIC3_SD_CONFIG_PWR3, 0x01);
+	}
+	asic3_sd_config_write8(asic, ASIC3_SD_CONFIG_CLK_STOP, 0x1f);
+	if (!of_machine_is_compatible("hp,ipaq-h3900"))
+		asic3_sd_config_write8(asic, ASIC3_SD_CONFIG_PWR2, 0x00);
+	asic3_sd_config_write16(asic, ASIC3_SD_CONFIG_SDHC_CARDDETECT, 2);
+
+	return 0;
+}
+
+/* ---------------------------------------------------------------------
+ * Sub-devices. The LED blink controller (drivers/leds/leds-asic3.c) is
+ * matched by of_compatible against a child device tree node, so that board
+ * policy (LED names and triggers) stays in the device tree. The SD/MMC
+ * host (drivers/mmc/host/tmio_mmc.c) gets an .of_compatible only when the
+ * board describes it, so that mfd-core does not warn on a board that does
+ * not.
  * ---------------------------------------------------------------------
  */
 
@@ -1065,7 +1345,8 @@ static int asic3_probe(struct platform_device *pdev)
 	struct asic3 *asic;
 	struct resource *mem, *sd_mem;
 	struct gpio_desc *reset;
-	int irq, ret;
+	struct clk *sd_clk;
+	int irq, sd_irq, ret;
 
 	asic = devm_kzalloc(dev, sizeof(*asic), GFP_KERNEL);
 	if (!asic)
@@ -1090,13 +1371,19 @@ static int asic3_probe(struct platform_device *pdev)
 	asic->bus_shift = 2 - (resource_size(mem) >> 12);
 
 	/*
-	 * "sd" is a second, physically disjoint window for the SD host block.
-	 * The MFD core does not touch it; the SD host cell maps it itself.
-	 * Only its presence is checked here.
+	 * "sd" is a second, physically disjoint window for the SD host block,
+	 * with its own interrupt, which is not part of this chip's chained
+	 * GPIO IRQ domain but a raw SoC GPIO interrupt requested directly by
+	 * the tmio-mmc cell. Both are optional, as ASIC3 is also used on
+	 * boards that do not wire up SD.
 	 */
 	sd_mem = platform_get_resource_byname(pdev, IORESOURCE_MEM, "sd");
 	if (!sd_mem)
 		dev_dbg(dev, "no \"sd\" MEM resource\n");
+
+	sd_irq = platform_get_irq_byname_optional(pdev, "sd");
+	if (sd_irq < 0)
+		dev_dbg(dev, "no \"sd\" IRQ resource\n");
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
@@ -1115,6 +1402,19 @@ static int asic3_probe(struct platform_device *pdev)
 		usleep_range(10000, 20000);
 		gpiod_set_value_cansleep(reset, 0);
 		usleep_range(10000, 20000);
+	}
+
+	/*
+	 * The SD card clock can come from outside the chip and must be
+	 * running before asic3_sd_host_init(). It is taken before anything is
+	 * registered, so that a deferral while its provider is missing leaves
+	 * no sub-device or gpio_chip behind to be torn down again.
+	 */
+	if (sd_mem && sd_irq >= 0) {
+		sd_clk = devm_clk_get_optional_enabled(dev, NULL);
+		if (IS_ERR(sd_clk))
+			return dev_err_probe(dev, PTR_ERR(sd_clk),
+					     "failed to get SD clock\n");
 	}
 
 	/* CLOCK_SEL reset to a known state before anything else touches it. */
@@ -1145,6 +1445,47 @@ static int asic3_probe(struct platform_device *pdev)
 					   asic->domain);
 		if (ret)
 			return dev_err_probe(dev, ret, "failed to add sub-devices\n");
+	}
+
+	/*
+	 * SD/MMC: a second devm_mfd_add_devices() call with its own mem_base,
+	 * since mfd_add_device() applies a single mem_base to all the memory
+	 * resources of a call and the "sd" window is physically disjoint from
+	 * "core". There is no irq_domain: the SDIO interrupt is a raw SoC
+	 * interrupt, not a hwirq of this chip.
+	 */
+	if (sd_mem && sd_irq >= 0) {
+		struct resource sd_res[] = {
+			DEFINE_RES_MEM(ASIC3_SD_CTRL_BASE, 0x400),
+			DEFINE_RES_IRQ(0),
+		};
+		struct mfd_cell sd_cell = {
+			.name		= "tmio-mmc",
+			.id		= PLATFORM_DEVID_NONE,
+			.platform_data	= &asic3_sd_cell_data,
+			.pdata_size	= sizeof(asic3_sd_cell_data),
+			.resources	= sd_res,
+			.num_resources	= ARRAY_SIZE(sd_res),
+		};
+
+		ret = asic3_sd_host_init(asic, sd_mem);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to set up SD/MMC host\n");
+
+		sd_res[0].start >>= asic->bus_shift;
+		sd_res[0].end >>= asic->bus_shift;
+
+		/*
+		 * Lets a board give the host a firmware node, from which
+		 * mmc_of_parse() picks up properties such as cd-gpios. A
+		 * board that has no such child gets none.
+		 */
+		if (asic3_has_child(dev, "htc,asic3-sd"))
+			sd_cell.of_compatible = "htc,asic3-sd";
+
+		ret = devm_mfd_add_devices(dev, 0, &sd_cell, 1, sd_mem, sd_irq, NULL);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to add SD/MMC sub-device\n");
 	}
 
 	dev_dbg(dev, "ASIC3 companion ASIC ready, chained on IRQ %d\n", irq);
