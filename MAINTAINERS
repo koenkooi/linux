@@ -2989,6 +2989,7 @@ F:	Documentation/devicetree/bindings/memory-controllers/intel,sa1110-smc*.yaml
 F:	arch/arm/boot/dts/intel/sa1100/
 F:	arch/arm/mach-sa1100/h3800.c
 F:	drivers/gpio/gpio-asic1.c
+F:	drivers/gpio/gpio-sa1100-ppc.c
 F:	drivers/memory/sa1110-smc.c
 
 ARM/HP JORNADA 7XX MACHINE SUPPORT

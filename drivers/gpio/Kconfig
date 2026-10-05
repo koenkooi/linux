@@ -677,6 +677,21 @@ config GPIO_RTD1625
 	  Say yes here to support both basic GPIO line functionality
 	  and GPIO interrupt handling capabilities for this platform.
 
+config GPIO_SA1100_PPC
+	tristate "Intel SA-1100/SA-1110 Peripheral Pin Controller GPIO support"
+	depends on ARCH_SA1100 || COMPILE_TEST
+	select GPIO_GENERIC
+	help
+	  Support for the SA-1100/SA-1110 Peripheral Pin Controller (PPC), a
+	  handful of SoC pins that can be detached one at a time from the
+	  on-chip peripheral (LCD controller, Ser1-Ser4) that otherwise
+	  drives them and used as plain GPIO instead, for example the HP
+	  iPAQ h3800's Ser1 TXD1 and RXD1 pins, which are the RS232
+	  transceiver's DTR line and the SD card's write-protect sense.
+
+	  This driver can also be built as a module. If so, the module
+	  will be called gpio-sa1100-ppc.
+
 config GPIO_SAMA5D2_PIOBU
 	tristate "SAMA5D2 PIOBU GPIO support"
 	depends on OF
