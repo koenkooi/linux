@@ -12,6 +12,7 @@
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/leds/common.h>
 #include "sa1110.dtsi"
 
 / {
@@ -431,6 +432,55 @@
 			clock-names = "ref", "ex1";
 			htc,pwm-divider = <8>;
 			htc,pwm-period = <64>;
+		};
+
+		/*
+		 * The three status LEDs. The channel numbers follow the
+		 * handhelds.org 2.4 kernel's blue, green, yellow order, which is
+		 * the only source that ties a colour to a channel; the colour of
+		 * channel 2 is inferred from its "yellow" name, hence amber.
+		 *
+		 * Channel 0 (Bluetooth) has no default trigger, userspace and
+		 * rfkill drive it. Channel 1 (status) runs "heartbeat", which is
+		 * the only diagnostic on a board whose console is serial.
+		 * Channel 2 (charging) has no default trigger on purpose. The
+		 * power supply trigger for it would be
+		 * "ds2760-battery.0-charging-blink-full-solid", but a devicetree
+		 * default trigger is resolved synchronously inside
+		 * led_classdev_register_ext(), and that trigger cannot exist yet
+		 * this early in boot because the ds2760-battery device has not
+		 * registered. The fallback, request_module_nowait(), still waits
+		 * for the modprobe helper to be exec'd, which cannot happen
+		 * before usermode helpers are enabled, so the probe hangs and
+		 * takes the rest of asic2_probe() with it. Assign the trigger
+		 * from userspace once the gauge is ready.
+		 *
+		 * Solid on is a period equal to the duty cycle, so there is no
+		 * separate bit for it.
+		 */
+		led-controller {
+			compatible = "htc,asic2-leds";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			led@0 {
+				reg = <0>;
+				function = LED_FUNCTION_BLUETOOTH;
+				color = <LED_COLOR_ID_BLUE>;
+			};
+
+			led@1 {
+				reg = <1>;
+				function = LED_FUNCTION_STATUS;
+				color = <LED_COLOR_ID_GREEN>;
+				linux,default-trigger = "heartbeat";
+			};
+
+			led@2 {
+				reg = <2>;
+				function = LED_FUNCTION_CHARGING;
+				color = <LED_COLOR_ID_AMBER>;
+			};
 		};
 
 		/*
