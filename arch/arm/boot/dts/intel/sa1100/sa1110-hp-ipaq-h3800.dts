@@ -10,6 +10,7 @@
 
 #include <dt-bindings/clock/htc,asic2.h>
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include "sa1110.dtsi"
 
@@ -23,6 +24,24 @@
 
 	chosen {
 		stdout-path = &uart3;
+	};
+
+	/*
+	 * The power button is on GPIO0, active low, and wakes the system on
+	 * both edges. It is not the gpio-keys that h3xxx_mach_init() would
+	 * register: that one sits on GPIO18, which is the MMC_INT line of this
+	 * board, and reusing it would take the completion interrupt of the SD
+	 * host.
+	 */
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		power-button {
+			label = "Power Button";
+			linux,code = <KEY_POWER>;
+			gpios = <&gpio 0 GPIO_ACTIVE_LOW>;
+			wakeup-source;
+		};
 	};
 
 	/*
@@ -412,6 +431,86 @@
 			clock-names = "ref", "ex1";
 			htc,pwm-divider = <8>;
 			htc,pwm-period = <64>;
+		};
+
+		/*
+		 * The KPIO keypad. A key is pressed when
+		 * (~Data & htc,key-mask) == htc,key-match, which is why each key
+		 * has its own child node: the bits of the 5-way pad
+		 * combine, and a matrix "linux,keymap" cannot express that.
+		 */
+		keys {
+			compatible = "htc,asic2-keys";
+
+			button-record {
+				label = "Record";
+				linux,code = <KEY_RECORD>;
+				htc,key-mask = <0x001>;
+				htc,key-match = <0x001>;
+			};
+
+			button-calendar {
+				label = "Calendar";
+				linux,code = <KEY_CALENDAR>;
+				htc,key-mask = <0x040>;
+				htc,key-match = <0x040>;
+			};
+
+			button-contacts {
+				label = "Contacts";
+				linux,code = <KEY_ADDRESSBOOK>;
+				htc,key-mask = <0x080>;
+				htc,key-match = <0x080>;
+			};
+
+			button-ap1 {
+				label = "Envelope (AP1)";
+				linux,code = <KEY_MAIL>;
+				htc,key-mask = <0x100>;
+				htc,key-match = <0x100>;
+			};
+
+			button-ap2 {
+				label = "Start (AP2)";
+				linux,code = <KEY_HOMEPAGE>;
+				htc,key-mask = <0x200>;
+				htc,key-match = <0x200>;
+			};
+
+			button-nav-left {
+				label = "5-way left (AP3)";
+				linux,code = <KEY_LEFT>;
+				htc,key-mask = <0x400>;
+				htc,key-match = <0x400>;
+			};
+
+			button-nav-right {
+				label = "5-way right (AP4)";
+				linux,code = <KEY_RIGHT>;
+				htc,key-mask = <0x800>;
+				htc,key-match = <0x800>;
+			};
+
+			button-nav-up {
+				label = "5-way up";
+				linux,code = <KEY_UP>;
+				htc,key-mask = <0x03e>;
+				htc,key-match = <0x032>;
+			};
+
+			button-nav-down {
+				label = "5-way down";
+				linux,code = <KEY_DOWN>;
+				htc,key-mask = <0x03e>;
+				htc,key-match = <0x02c>;
+			};
+
+			button-nav-center {
+				label = "5-way centre";
+				linux,code = <KEY_ENTER>;
+				htc,key-mask = <0x03e>;
+				htc,key-match = <0x020>;
+			};
 		};
 	};
 };
