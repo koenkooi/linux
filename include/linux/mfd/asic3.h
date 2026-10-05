@@ -79,8 +79,10 @@
 	| (((init) & 0x1) << 15))
 
 /*
- * Alternate functions used for the LED and CompactFlash lines. The MFD
- * core does not program these.
+ * Alternate functions used for the LED and CompactFlash lines.
+ * ASIC3_GPIOC0_LED0 to ASIC3_GPIOC2_LED2 are consumed directly by
+ * drivers/leds/leds-asic3.c, as that routing is chip-internal rather than
+ * board policy. The MFD core does not program any of these.
  */
 #define ASIC3_GPIOC0_LED0		ASIC3_CONFIG_GPIO(32, 1, 0, 0)
 #define ASIC3_GPIOC1_LED1		ASIC3_CONFIG_GPIO(33, 1, 0, 0)
@@ -103,6 +105,20 @@
 #define ASIC3_GPIOD15_nPIOW		ASIC3_CONFIG_GPIO(63, 1, 0, 0)
 
 #define ASIC3_NUM_LEDS			3
+
+/*
+ * LED blink-timer block, one per channel at a 0x0100 stride. GPIOC0/1/2
+ * are hardwired to these three channels' alternate function
+ * (ASIC3_GPIOC0_LED0 and siblings above), so drivers/leds/leds-asic3.c
+ * switches that routing itself.
+ */
+#define ASIC3_LED0_BASE			0x0700
+#define ASIC3_LED1_BASE			0x0800
+#define ASIC3_LED2_BASE			0x0900
+#define ASIC3_LED_TIMEBASE		0x0000	/* R/W  7 bits */
+#define ASIC3_LED_PERIODTIME		0x0004	/* R/W 12 bits */
+#define ASIC3_LED_DUTYTIME		0x0008	/* R/W 12 bits */
+#define ASIC3_LED_AUTOSTOPCOUNT		0x000c	/* R/W 16 bits */
 
 #define ASIC3_CLOCK_BASE	0x0A00
 #define ASIC3_CLOCK_CDEX	0x00
@@ -199,10 +215,11 @@
 #define ASIC3_MAP_SIZE_16BIT	0x1000
 
 /*
- * Register access for sub-device drivers that need direct access to blocks
- * the gpio_chip/clk_hw API does not cover, such as the LED PWM timers.
- * "reg" is a byte offset in the chip's own 32-bit-addressed map, as for
- * the ASIC3_* macros above; the bus_shift adjustment happens inside.
+ * Register access for sub-device drivers (such as drivers/leds/leds-asic3.c)
+ * that need direct access to blocks the gpio_chip/clk_hw API does not cover,
+ * such as the LED PWM timers. "reg" is a byte offset in the chip's own
+ * 32-bit-addressed map, as for the ASIC3_* macros above; the bus_shift
+ * adjustment happens inside.
  */
 struct asic3;
 u32 asic3_read_register(struct asic3 *asic, unsigned int reg);

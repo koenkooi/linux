@@ -12051,6 +12051,7 @@ L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
 S:	Maintained
 F:	Documentation/devicetree/bindings/leds/htc,asic*-leds.yaml
 F:	Documentation/devicetree/bindings/mfd/htc,asic*.yaml
+F:	drivers/leds/leds-asic*.c
 F:	drivers/mfd/asic*.c
 F:	include/linux/mfd/asic*.h
 
