@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/nxp,uda1341.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: NXP/Philips UDA1341TS audio CODEC
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: |
+  UDA1341TS is a stereo audio CODEC controlled over L3, a 3-wire
+  bit-banged control bus (DATA/MODE/CLOCK) entirely distinct from its
+  digital audio interface (I2S or MSB/LSB-justified), found on the
+  HP/Compaq iPAQ h38xx family. L3 has no register readback of any kind,
+  so this binding carries no "reg". The three L3 lines are wired to plain
+  GPIO lines; there is no L3 bus controller.
+
+properties:
+  compatible:
+    const: nxp,uda1341ts
+
+  l3-data-gpios:
+    maxItems: 1
+    description: L3 DATA line.
+
+  l3-mode-gpios:
+    maxItems: 1
+    description: L3 MODE line.
+
+  l3-clock-gpios:
+    maxItems: 1
+    description: L3 CLOCK line.
+
+  "#sound-dai-cells":
+    const: 0
+
+required:
+  - compatible
+  - l3-data-gpios
+  - l3-mode-gpios
+  - l3-clock-gpios
+  - "#sound-dai-cells"
+
+unevaluatedProperties: false
+
+allOf:
+  - $ref: dai-common.yaml#
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    codec {
+        compatible = "nxp,uda1341ts";
+
+        l3-data-gpios = <&gpio 14 GPIO_ACTIVE_HIGH>;
+        l3-mode-gpios = <&gpio 15 GPIO_ACTIVE_HIGH>;
+        l3-clock-gpios = <&gpio 16 GPIO_ACTIVE_HIGH>;
+
+        #sound-dai-cells = <0>;
+    };
+
+...
