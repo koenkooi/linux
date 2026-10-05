@@ -142,14 +142,29 @@ void soc_common_pcmcia_get_timing(struct soc_pcmcia_socket *skt,
 }
 EXPORT_SYMBOL(soc_common_pcmcia_get_timing);
 
-static void __soc_pcmcia_hw_shutdown(struct soc_pcmcia_socket *skt,
-	unsigned int nr)
+/*
+ * Zeroing skt->stat[i].irq as it is freed is what makes this safe to call
+ * from the teardown path before the rest of hw_shutdown: the later
+ * __soc_pcmcia_hw_shutdown() then skips an already-freed IRQ, and so do
+ * soc_pcmcia_hw_enable()/_disable(), which cs.c's socket_shutdown() still
+ * reaches through ops->init() while pccardd is winding down.
+ */
+static void soc_pcmcia_free_stat_irqs(struct soc_pcmcia_socket *skt,
+				      unsigned int nr)
 {
 	unsigned int i;
 
 	for (i = 0; i < nr; i++)
-		if (skt->stat[i].irq)
+		if (skt->stat[i].irq) {
 			free_irq(skt->stat[i].irq, skt);
+			skt->stat[i].irq = 0;
+		}
+}
+
+static void __soc_pcmcia_hw_shutdown(struct soc_pcmcia_socket *skt,
+				     unsigned int nr)
+{
+	soc_pcmcia_free_stat_irqs(skt, nr);
 
 	if (skt->ops->hw_shutdown)
 		skt->ops->hw_shutdown(skt);
@@ -775,6 +790,21 @@ void soc_pcmcia_remove_one(struct soc_pcmcia_socket *skt)
 {
 	timer_delete_sync(&skt->poll_timer);
 
+	/*
+	 * Free the status IRQs before pcmcia_unregister_socket(). The
+	 * socket_shutdown() run as pccardd winds down still reaches
+	 * ops->init() -> soc_pcmcia_hw_enable(), which would call
+	 * irq_set_irq_type() on an interrupt that is about to be freed.
+	 * Sockets are destroyed on every physical eject of a sleeve, and the
+	 * contact bounce of the eject itself is what fires those interrupts.
+	 *
+	 * Only the status IRQs move: ops->hw_shutdown() and the clock must
+	 * stay alive until the thread is gone, because its exit path still
+	 * runs socket_shutdown(), which drives the board's configure_socket()
+	 * and touches the socket controller.
+	 */
+	soc_pcmcia_free_stat_irqs(skt, ARRAY_SIZE(skt->stat));
+
 	pcmcia_unregister_socket(&skt->socket);
 
 #ifdef CONFIG_CPU_FREQ
@@ -875,6 +905,8 @@ int soc_pcmcia_add_one(struct soc_pcmcia_socket *skt)
 
  out_err_8:
 	timer_delete_sync(&skt->poll_timer);
+	/* Same pccardd-teardown window as soc_pcmcia_remove_one(). */
+	soc_pcmcia_free_stat_irqs(skt, ARRAY_SIZE(skt->stat));
 	pcmcia_unregister_socket(&skt->socket);
 
  out_err_7:
