@@ -124,6 +124,23 @@
 		};
 
 		/*
+		 * The six-channel DMA controller. Each channel is wired to a
+		 * fixed peripheral, so "#dma-cells" is the 4-bit DDAR device
+		 * select field, which the driver's chan_desc[] table is indexed
+		 * by (0 = Ser0UDCTr ... 14 = Ser4SSPTr, 15 = Ser4SSPRc), not a
+		 * channel number. The node is only for the devicetree probe
+		 * path: mach-sa1100 registers the same hardware as a legacy
+		 * platform device on a non-devicetree boot and skips it on a
+		 * devicetree one.
+		 */
+		dma: dma-controller@b0000000 {
+			compatible = "intel,sa1110-dma", "intel,sa1100-dma";
+			reg = <0xb0000000 0xc0>;
+			interrupts = <20>, <21>, <22>, <23>, <24>, <25>;
+			#dma-cells = <1>;
+		};
+
+		/*
 		 * Disabled until a board provides a panel behind an OF graph
 		 * port. The pixel clock divides the core clock.
 		 */
