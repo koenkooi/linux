@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/bluetooth/hp,ipaq-h2200-bt.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HP iPAQ h2200 Bluetooth module power control
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  The HP iPAQ h2200 carries a Zeevo Bluetooth module whose HCI transport
+  is a plain H4 UART driven from userspace. This node describes only the
+  board's power, reset and wake lines to the module and the strap that
+  identifies which module is fitted; the host exposes them as a Bluetooth
+  rfkill switch whose unblock runs the module's power-on sequence.
+
+properties:
+  compatible:
+    const: hp,ipaq-h2200-bt
+
+  reset-gpios:
+    maxItems: 1
+    description: The module's active-low reset input.
+
+  power-gpios:
+    maxItems: 1
+    description: Switches the module's power on when asserted.
+
+  device-wakeup-gpios:
+    maxItems: 1
+    description: Host-to-module wakeup signal.
+
+  ident-gpios:
+    maxItems: 1
+    description:
+      Module identification strap, asserted when the Zeevo module is
+      fitted.
+
+required:
+  - compatible
+  - reset-gpios
+  - power-gpios
+  - device-wakeup-gpios
+  - ident-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    bluetooth {
+        compatible = "hp,ipaq-h2200-bt";
+        reset-gpios = <&gpio 74 GPIO_ACTIVE_LOW>;
+        power-gpios = <&gpio 76 GPIO_ACTIVE_HIGH>;
+        device-wakeup-gpios = <&gpio 10 GPIO_ACTIVE_HIGH>;
+        ident-gpios = <&gpio 75 GPIO_ACTIVE_HIGH>;
+    };
+
+...
