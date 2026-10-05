@@ -914,8 +914,13 @@ static const struct resource hamcop_nand_resources[] = {
 	DEFINE_RES_MEM(HAMCOP_NF_BASE, HAMCOP_NF_SIZE),
 };
 
+/*
+ * Two memory windows, in this order: the SDI block itself, then the DMA
+ * engine, which sits at HAMCOP_DMA_BASE nowhere near the SDI block.
+ */
 static const struct resource hamcop_sdi_resources[] = {
 	DEFINE_RES_MEM(HAMCOP_SDI_BASE, HAMCOP_SDI_SIZE),
+	DEFINE_RES_MEM(HAMCOP_DMA_BASE, HAMCOP_DMA_SIZE),
 	DEFINE_RES_IRQ(HAMCOP_IRQ_SDHC),
 	DEFINE_RES_IRQ(HAMCOP_IRQ_DMA),
 };
