@@ -3000,6 +3000,7 @@ F:	drivers/gpu/drm/panel/panel-ipaq-h3800.c
 F:	drivers/gpu/drm/tiny/sa1100-lcdc.c
 F:	drivers/memory/sa1110-smc.c
 F:	drivers/mmc/host/asic1-mmc.c
+F:	drivers/tty/serial/8250/8250_asic2.c
 F:	include/dt-bindings/clock/intel,sa1100-clocks.h
 
 ARM/HP JORNADA 7XX MACHINE SUPPORT
