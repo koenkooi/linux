@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/memory-controllers/intel,sa1110-smc-peripheral-props.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Peripheral properties for the Intel SA-1110 static memory controller
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: |
+  Properties of a device attached to one of the SA-1110's six static
+  memory chip selects, describing the access cycle the controller must
+  run for it. Each maps onto a field of the 16-bit MSC half-register that
+  configures that chip select.
+
+  Timings are given in memory clock cycles rather than nanoseconds: the
+  hardware fields count memory cycles directly, and this SoC's memory
+  clock is not modelled as a device tree clock any driver could convert
+  against.
+
+  The properties are all-or-nothing per device. A device that carries
+  none of them leaves its chip select exactly as firmware programmed it;
+  a device that carries any of them must carry all of them, plus the
+  generic bank-width property, so that the controller writes a complete
+  and self-consistent timing word rather than a mixture of device tree
+  and firmware values.
+
+properties:
+  intel,sa1110-smc-type:
+    description: |
+      The bus protocol the controller runs on this chip select (the RT
+      field).
+
+      nonburst-rom, burst4-rom and burst8-rom are the fixed-latency
+      modes: the controller drives a cycle of exactly the programmed
+      length and ignores RDY.
+
+      sram and vlio are the same hardware encoding, whose meaning depends
+      on which chip select carries it: on nCS0 to nCS2 it selects 32-bit
+      byte-writable SRAM, on nCS3 to nCS5 it selects variable latency
+      I/O, where the cycle is extended until the slave asserts RDY and
+      has no timeout. The two are named separately so that a device tree
+      cannot silently ask for one and get the other, and so that a device
+      placed on a chip select where its mode does not exist is rejected.
+    $ref: /schemas/types.yaml#/definitions/string
+    enum: [nonburst-rom, sram, vlio, burst4-rom, burst8-rom]
+
+  intel,sa1110-smc-first-access-cycles:
+    description: |
+      Length of the first access of a transfer, in memory clock cycles
+      (the RDF field, which encodes this value minus one). For the two
+      burst modes the hardware inserts a further half cycle, so the real
+      first access is half a memory cycle longer than requested.
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 1
+    maximum: 32
+
+  intel,sa1110-smc-next-access-cycles:
+    description: |
+      Length of every access after the first, in memory clock cycles (the
+      RDN field, which encodes this value minus one). The same field also
+      sets the length of a non-burst write access.
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 1
+    maximum: 32
+
+  intel,sa1110-smc-recovery-cycles:
+    description: |
+      Bus recovery time inserted after a transfer before the next chip
+      select may be driven, in memory clock cycles (the RRR field, which
+      counts pairs of cycles, so an odd value is rounded up).
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 0
+    maximum: 14
+
+dependencies:
+  intel,sa1110-smc-type:
+    - bank-width
+    - intel,sa1110-smc-first-access-cycles
+    - intel,sa1110-smc-next-access-cycles
+    - intel,sa1110-smc-recovery-cycles
+  intel,sa1110-smc-first-access-cycles:
+    - intel,sa1110-smc-type
+  intel,sa1110-smc-next-access-cycles:
+    - intel,sa1110-smc-type
+  intel,sa1110-smc-recovery-cycles:
+    - intel,sa1110-smc-type
+
+additionalProperties: true
+...
