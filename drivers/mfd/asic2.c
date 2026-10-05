@@ -45,6 +45,9 @@
  *    for them. "leds-asic2" covers the three-channel status LED blink-timer
  *    block, which drives the status LEDs of the h3800; it is added only
  *    when the board has a "led-controller" child.
+ *    "iio_hwmon" exposes the main-battery voltage channel of the
+ *    ADC, and "asic2-sleeve" (drivers/misc/asic2-sleeve.c) is the backend
+ *    of the expansion-pack bus.
  *
  * KPIO's InterruptEnable register (offset 0x001c) must not be read back,
  * so this driver keeps a software shadow of its state instead of doing
@@ -1218,6 +1221,7 @@ enum {
 	ASIC2_CELL_KEYS,
 	ASIC2_CELL_ADC,
 	ASIC2_CELL_HWMON,
+	ASIC2_CELL_SLEEVE,
 	ASIC2_NR_CELLS,
 };
 
@@ -1239,9 +1243,15 @@ static struct mfd_cell asic2_cells[ASIC2_NR_CELLS] = {
 		.num_resources	= ARRAY_SIZE(asic2_ds1wm_resources),
 	},
 	[ASIC2_CELL_SPI] = {
-		/* drivers/spi/spi-asic2.c */
+		/*
+		 * drivers/spi/spi-asic2.c. The driver does not need the
+		 * of_compatible, it gives the controller a device_node that
+		 * drivers/misc/asic2-sleeve.c uses to look it up without
+		 * depending on a fixed bus number.
+		 */
 		.name		= "asic2-spi",
 		.id		= PLATFORM_DEVID_NONE,
+		.of_compatible	= "htc,asic2-spi",
 		.resources	= asic2_spi_resources,
 		.num_resources	= ARRAY_SIZE(asic2_spi_resources),
 	},
@@ -1299,6 +1309,23 @@ static struct mfd_cell asic2_cells[ASIC2_NR_CELLS] = {
 		 */
 		.name		= "iio_hwmon",
 		.id		= PLATFORM_DEVID_NONE,
+	},
+	[ASIC2_CELL_SLEEVE] = {
+		/*
+		 * drivers/misc/asic2-sleeve.c, the expansion-pack backend for
+		 * the bus of drivers/misc/ipaq-sleeve.c. It has no resources:
+		 * its SPI transport is the controller of the cell above,
+		 * found through the devicetree, and its GPIOs come from its
+		 * own node. Nothing is created unless that node exists and
+		 * is enabled.
+		 *
+		 * It is last on purpose. mfd_add_device() probes each cell
+		 * synchronously, and the SPI controller must exist by the
+		 * time this one probes.
+		 */
+		.name		= "asic2-sleeve",
+		.id		= PLATFORM_DEVID_NONE,
+		.of_compatible	= "htc,asic2-sleeve",
 	},
 };
 
