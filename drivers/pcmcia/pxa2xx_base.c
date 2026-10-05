@@ -234,7 +234,11 @@ pxa2xx_pcmcia_frequency_change(struct soc_pcmcia_socket *skt,
 
 void pxa2xx_configure_sockets(struct device *dev, struct pcmcia_low_level *ops)
 {
-	pxa_smemc_set_pcmcia_socket(1);
+	/*
+	 * MECR:NOS tells the controller a second socket exists. Without it
+	 * socket 1 is never selected, so its windows read as an undriven bus.
+	 */
+	pxa_smemc_set_pcmcia_socket((ops->first + ops->nr) > 1 ? 2 : 1);
 }
 EXPORT_SYMBOL(pxa2xx_configure_sockets);
 
