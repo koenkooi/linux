@@ -2827,6 +2827,52 @@ static void ata_dev_config_chs(struct ata_device *dev)
 			     dev->heads, dev->sectors);
 }
 
+static void ata_dev_config_multi(struct ata_device *dev)
+{
+	struct ata_port *ap = dev->link->ap;
+	struct ata_taskfile tf;
+	unsigned int err_mask;
+	u8 max;
+
+	/*
+	 * READ/WRITE MULTIPLE only pays off where the CPU moves the data.
+	 * Such a host takes one interrupt and one HSM round per DRQ block,
+	 * so with the default block size of a single sector the per-block
+	 * overhead, not the bus, sets the transfer rate -- measured on a
+	 * PXA255 CompactFlash socket at roughly 250us per sector against
+	 * 80us of actual 16-bit bus traffic.  Raising the block size to the
+	 * device maximum divides that overhead by the same factor.
+	 *
+	 * A host with any DMA capability already moves a whole request per
+	 * interrupt and gains nothing here, so leave those alone.
+	 */
+	if (ap->mwdma_mask || ap->udma_mask)
+		return;
+
+	/* Word 47 carries a maximum block count only if its high byte is 0x80. */
+	if ((dev->id[47] >> 8) != 0x80)
+		return;
+
+	max = dev->id[47] & 0xff;
+	if (max <= 1 || !is_power_of_2(max) || dev->multi_count >= max)
+		return;
+
+	ata_tf_init(dev, &tf);
+	tf.command = ATA_CMD_SET_MULTI;
+	tf.nsect = max;
+	tf.flags |= ATA_TFLAG_ISADDR | ATA_TFLAG_DEVICE;
+	tf.protocol = ATA_PROT_NODATA;
+
+	err_mask = ata_exec_internal(dev, &tf, NULL, DMA_NONE, NULL, 0, 0);
+	if (err_mask) {
+		ata_dev_warn(dev, "SET MULTIPLE MODE %u failed (Emask 0x%x)\n",
+			     max, err_mask);
+		return;
+	}
+
+	dev->multi_count = max;
+}
+
 static void ata_dev_config_fua(struct ata_device *dev)
 {
 	/* Ignore FUA support if its use is disabled globally */
@@ -3161,6 +3207,13 @@ int ata_dev_configure(struct ata_device *dev)
 				if (cnt <= max)
 					dev->multi_count = cnt;
 		}
+
+		/*
+		 * Devices come up with multi-block transfers disabled, and
+		 * nothing else turns them on.  Do it before the capabilities
+		 * are printed below, so the reported count is the live one.
+		 */
+		ata_dev_config_multi(dev);
 
 		/* print device info to dmesg */
 		if (print_info)
