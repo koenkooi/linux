@@ -147,6 +147,19 @@ config BATTERY_DS2760
 	help
 	  Say Y here to enable support for batteries with ds2760 chip.
 
+config BATTERY_IPAQ_SLEEVE
+	tristate "HP iPAQ expansion pack (sleeve) battery"
+	depends on IPAQ_SLEEVE_BUS
+	help
+	  Say Y here to report the battery carried by an HP iPAQ expansion
+	  pack, such as the CompactFlash Plus and PC Card Plus jackets, as a
+	  power supply. The battery is reported only when the pack's ID
+	  EEPROM record declares one; its state is read every five seconds
+	  from the pack's own microcontroller.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called ipaq-sleeve-battery.
+
 config BATTERY_DS2780
 	tristate "DS2780 battery driver"
 	depends on HAS_IOMEM
