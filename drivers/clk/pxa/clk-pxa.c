@@ -8,6 +8,7 @@
  */
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
+#include <linux/clk/pxa.h>
 #include <linux/clkdev.h>
 #include <linux/io.h>
 #include <linux/of.h>
@@ -37,6 +38,19 @@
 #define MDREFR_DRI_MASK	0xFFF
 
 static DEFINE_SPINLOCK(pxa_clk_lock);
+
+/*
+ * MDREFR bits that a board has excluded from the DB2 write of a frequency
+ * change. K1DB2 and K2DB2 move together as one field (div2) in every
+ * pxa2xx_freq row, so rate math cannot tell them apart. Only the board
+ * knows which SDCLK output its companion ASIC is sensitive to.
+ */
+static u32 pxa2xx_mdrefr_db2_keepout;
+
+void __init pxa2xx_clk_exclude_mdrefr_db2(u32 mask)
+{
+	pxa2xx_mdrefr_db2_keepout |= mask;
+}
 
 static struct clk *pxa_clocks[CLK_MAX];
 static struct clk_onecell_data onecell_data = {
@@ -184,10 +198,10 @@ void pxa2xx_cpll_change(struct pxa2xx_freq *freq,
 	 * after the change.
 	 */
 	if (freq->div2) {
-		preset_mdrefr  |= MDREFR_DB2_MASK;
-		postset_mdrefr |= MDREFR_DB2_MASK;
+		preset_mdrefr  |= MDREFR_DB2_MASK & ~pxa2xx_mdrefr_db2_keepout;
+		postset_mdrefr |= MDREFR_DB2_MASK & ~pxa2xx_mdrefr_db2_keepout;
 	} else {
-		postset_mdrefr &= ~MDREFR_DB2_MASK;
+		postset_mdrefr &= ~(MDREFR_DB2_MASK & ~pxa2xx_mdrefr_db2_keepout);
 	}
 
 	/* Set new the CCCR and prepare CLKCFG */
