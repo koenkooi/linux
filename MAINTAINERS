@@ -3008,6 +3008,7 @@ F:	drivers/pinctrl/pinctrl-sa1100.c
 F:	drivers/tty/serial/8250/8250_asic2.c
 F:	drivers/usb/gadget/udc/sa1100_udc.c
 F:	include/dt-bindings/clock/intel,sa1100-clocks.h
+F:	sound/soc/codecs/uda1341.c
 
 ARM/HP JORNADA 7XX MACHINE SUPPORT
 M:	Kristoffer Ericson <kristoffer.ericson@gmail.com>
