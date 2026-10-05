@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/usb/intel,sa1100-udc.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Intel SA-1100/SA-1110 USB Device Controller (UDC)
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  The integrated full-speed USB device controller of the SA-1100 and
+  SA-1110 (Ser0UDCCR to Ser0UDCSR). It has fixed three-endpoint hardware:
+  ep0 control (an 8-byte FIFO shared between OUT and IN) plus one bulk-OUT
+  and one bulk-IN endpoint, with no interrupt endpoint of any kind. A
+  gadget function that needs an interrupt or notification endpoint, such
+  as ACM or CDC-ECM, therefore cannot be used.
+
+properties:
+  compatible:
+    oneOf:
+      - const: intel,sa1100-udc
+      - items:
+          - const: intel,sa1110-udc
+          - const: intel,sa1100-udc
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+  - interrupts
+
+additionalProperties: false
+
+examples:
+  - |
+    usb@80000000 {
+        compatible = "intel,sa1110-udc", "intel,sa1100-udc";
+        reg = <0x80000000 0x34>;
+        interrupts = <13>;
+    };
+
+...
