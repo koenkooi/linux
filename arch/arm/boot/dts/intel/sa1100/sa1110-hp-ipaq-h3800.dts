@@ -8,6 +8,7 @@
 
 /dts-v1/;
 
+#include <dt-bindings/interrupt-controller/irq.h>
 #include "sa1110.dtsi"
 
 / {
@@ -22,5 +23,78 @@
 		 * merged by ARM_ATAG_DTB_COMPAT into an appended DTB.
 		 */
 		reg = <0xc0000000 0x04000000>;
+	};
+};
+
+&smc {
+	status = "okay";
+
+	/*
+	 * ASIC2 companion chip on nCS5 + 0x01000000, interrupting the SoC on
+	 * GPIO1 (rising edge). Its register map is the same as the h39xx's.
+	 *
+	 * The node sits under the static memory controller because the
+	 * variable-latency I/O timing of nCS5 has to be right before the first
+	 * access into this window: that chip select has no bus error timeout,
+	 * so a stuck cycle hangs the core and starves DRAM refresh with it. The
+	 * driver of the controller guarantees the order by writing the timing
+	 * of every child before it instantiates the children.
+	 *
+	 * The four timing properties are the nCS5 half of MSC2, 0xe451, that
+	 * the original firmware programs, split into the fields the controller
+	 * driver writes back:
+	 *   RT  = 1  -> "vlio"             0x0001
+	 *   RBW = 0  -> bank-width = <4>   0x0000
+	 *   RDF = 10 -> first access 11    0x0050
+	 *   RDN = 4  -> next access 5      0x0400
+	 *   RRR = 7  -> recovery 14        0xe000
+	 * RDF and RDN encode cycles minus one and RRR counts cycle pairs, so
+	 * these numbers reassemble to exactly 0xe451.
+	 *
+	 * "interrupts" is the only source of the interrupt for asic2_probe().
+	 * A probe that finds the SoC GPIO interrupt controller not yet up is
+	 * deferred and retried by the driver core.
+	 */
+	asic2: companion-chip@5,1000000 {
+		compatible = "htc,asic2";
+		reg = <5 0x01000000 0x2000>;
+
+		interrupt-parent = <&gpio>;
+		interrupts = <1 IRQ_TYPE_EDGE_RISING>;
+
+		bank-width = <4>;
+		intel,sa1110-smc-type = "vlio";
+		intel,sa1110-smc-first-access-cycles = <11>;
+		intel,sa1110-smc-next-access-cycles = <5>;
+		intel,sa1110-smc-recovery-cycles = <14>;
+
+		gpio-controller;
+		#gpio-cells = <2>;
+
+		/*
+		 * Every clock gate of the chip is exposed here, indexed by the
+		 * ASIC2_CLK_* constants. That includes ASIC2_CLK_AUDIO, the
+		 * audio-clock tap selector (CLOCK_Enable[3:0]), which the
+		 * "sound" node below switches among its four fixed
+		 * EX1/EX2-derived rates.
+		 */
+		#clock-cells = <1>;
+
+		/*
+		 * ASIC1's 15-line GPIO block. ASIC1 is a separate chip without
+		 * a chip select of its own, reached through the window of this
+		 * node, and the MFD core only adds the cell when this child
+		 * exists. Every line is a power-rail or routing output.
+		 */
+		asic1: gpio {
+			compatible = "htc,asic1-gpio";
+			gpio-controller;
+			#gpio-cells = <2>;
+			gpio-line-names = "IR_ON_N", "SD_PWR_ON", "RS232_ON",
+					  "PULSE_GEN", "CH_TIMER", "LCD_5V_ON",
+					  "LCD_ON", "LCD_PCI", "VGH_ON", "VGL_ON",
+					  "FL_PWR_ON", "BT_PWR_ON", "SPK_ON",
+					  "EAR_ON_N", "AUD_PWR_ON";
+		};
 	};
 };
