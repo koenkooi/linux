@@ -159,6 +159,23 @@
 		};
 
 		/*
+		 * The SA-1110 SSP, Ser4SSCR0/1, Ser4SSDR and Ser4SSSR, used as
+		 * the audio CPU DAI of the h38xx. A board that uses the external
+		 * serial clock selects the SSP_CLK function of GPIO19 with a
+		 * pinctrl consumer group. It is disabled until a board wires
+		 * something to it.
+		 */
+		ssp: ssp@80070060 {
+			compatible = "intel,sa1110-ssp", "intel,sa1100-ssp";
+			reg = <0x80070060 0x18>;
+			interrupts = <19>;
+			dmas = <&dma 14>, <&dma 15>;
+			dma-names = "tx", "rx";
+			#sound-dai-cells = <0>;
+			status = "disabled";
+		};
+
+		/*
 		 * Disabled until a board provides a panel behind an OF graph
 		 * port. The pixel clock divides the core clock.
 		 */
