@@ -597,12 +597,36 @@ static int asic2_irq_set_type(struct irq_data *d, unsigned int type)
 	}
 }
 
+/*
+ * ASIC2 has no wake-configuration register of its own: any enabled,
+ * unmasked source that fires in sleep pulls ASIC2_INT. Arming a hwirq for
+ * wakeup therefore means arming the chained parent, which irq_set_irq_wake()
+ * refcounts so that several children arming and disarming independently
+ * balance out.
+ *
+ * This only makes enable_irq_wake() succeed. Whether the parent GPIO can
+ * actually wake the SoC depends on the board marking it as a wakeup source.
+ */
+static int asic2_irq_set_wake(struct irq_data *d, unsigned int on)
+{
+	struct asic2 *asic = irq_data_get_irq_chip_data(d);
+
+	return irq_set_irq_wake(asic->irq, on);
+}
+
 static struct irq_chip asic2_irq_chip = {
 	.name		= "asic2",
 	.irq_ack	= asic2_irq_ack,
 	.irq_mask	= asic2_irq_mask,
 	.irq_unmask	= asic2_irq_unmask,
 	.irq_set_type	= asic2_irq_set_type,
+	.irq_set_wake	= asic2_irq_set_wake,
+	/*
+	 * With no per-source wake register every unmasked source pulls
+	 * ASIC2_INT, so mask the non-wake sources at suspend and leave the
+	 * one flagged for wakeup asserting.
+	 */
+	.flags		= IRQCHIP_MASK_ON_SUSPEND,
 };
 
 static int asic2_irq_domain_map(struct irq_domain *d, unsigned int virq,
