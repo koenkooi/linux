@@ -531,6 +531,18 @@ config PINCTRL_ROCKCHIP
 	help
           This support pinctrl and GPIO driver for Rockchip SoCs.
 
+config PINCTRL_SA1100
+	tristate "Intel SA-1100/SA-1110 pinctrl driver"
+	depends on ARCH_SA1100 || COMPILE_TEST
+	depends on OF
+	select PINMUX
+	select GENERIC_PINCONF
+	help
+	  This is the pinctrl, pinmux driver for the Intel/StrongARM
+	  SA-1100/SA-1110 GAFR/GPDR pin-multiplexing block. It lets a
+	  devicetree select the alternate function and direction of each
+	  GPIO pad instead of the board code writing the registers directly.
+
 config PINCTRL_SCMI
 	tristate "Pinctrl driver using SCMI protocol interface"
 	depends on ARM_SCMI_PROTOCOL || COMPILE_TEST
