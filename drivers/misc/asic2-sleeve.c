@@ -25,7 +25,12 @@
  *
  * This driver is the only owner of the power, nvram and presence lines,
  * and so of the jacket's power. The CF or PC Card socket of a jacket does
- * not request them.
+ * not request them. It is created on demand as a slot consumer of the bus
+ * core, through its IPAQ_SLEEVE_EVENT_ADD and _REMOVE notifications and
+ * ipaq_sleeve_features(), once the ID EEPROM has identified a jacket that
+ * has a slot. That is a notification and not a second ipaq_sleeve_driver
+ * because the driver core binds one driver per device, and a Navman GPS
+ * and CF sleeve is already bound to its GPS driver.
  *
  * The four PCMCIA status lines of enum ipaq_sleeve_egpio (card detect and
  * interrupt of each socket) are not implemented here. On the h39xx they
