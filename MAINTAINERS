@@ -12056,6 +12056,7 @@ F:	Documentation/devicetree/bindings/mfd/htc,asic*.yaml
 F:	Documentation/devicetree/bindings/mmc/htc,asic*.yaml
 F:	Documentation/devicetree/bindings/pwm/htc,asic2-pwm.yaml
 F:	Documentation/devicetree/bindings/serial/htc,asic2-uart.yaml
+F:	drivers/input/keyboard/asic2-keys.c
 F:	drivers/leds/leds-asic*.c
 F:	drivers/mfd/asic*.c
 F:	drivers/pwm/pwm-asic2.c
