@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-2.0-only
+menu "SA11x0"
+
+config SND_SA11X0_SOC
+	tristate "SoC Audio for the Intel/StrongARM SA-1100/SA-1110 chip"
+	depends on ARCH_SA1100 || COMPILE_TEST
+	help
+	  Say Y or M if you want to add support for codecs attached to the
+	  SA-1100/SA-1110 SSP interface. You will also need to select the
+	  audio interfaces to support below. The SA-1100 and SA-1110 are
+	  the StrongARM based SoCs found, for example, in the HP iPAQ h3800
+	  family of handheld computers.
+
+config SND_SA11X0_SOC_SSP
+	tristate "SoC Audio via SA-1110 SSP ports"
+	depends on SND_SA11X0_SOC
+	select SND_SOC_GENERIC_DMAENGINE_PCM
+	help
+	  Say Y or M here to build the CPU DAI driver for the Ser4 SSP port of
+	  the SA-1110. It transfers audio samples to the codec by DMA, in the
+	  16-bit TI synchronous serial frame format. The SSP drives the bit
+	  clock and the frame, dividing the bit clock from a reference clock
+	  on GPIO19. Only playback is supported.
+
+endmenu
