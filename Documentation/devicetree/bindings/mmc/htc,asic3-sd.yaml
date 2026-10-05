@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/mmc/htc,asic3-sd.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: SD/MMC host cell of the Compaq/HTC ASIC3 companion ASIC
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description:
+  The SD/MMC host is part of the ASIC3 MFD device, see
+  Documentation/devicetree/bindings/mfd/htc,asic3.yaml, and is represented
+  as a sub-node of the ASIC3 node.
+
+  The host is a TMIO-style controller that is instantiated by the MFD
+  driver with its registers and interrupt taken from the parent, so this
+  node carries no "reg" or "interrupts" of its own. It exists to give the
+  host a firmware node, from which the generic MMC properties such as
+  "cd-gpios" are parsed. That matters on boards where the card-detect bits
+  of the controller itself cannot be used and a GPIO of another chip has to
+  report card presence.
+
+allOf:
+  - $ref: /schemas/mmc/mmc-controller.yaml#
+
+properties:
+  compatible:
+    const: htc,asic3-sd
+
+required:
+  - compatible
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    companion-chip {
+        mmc {
+            compatible = "htc,asic3-sd";
+            cd-gpios = <&asic2 6 GPIO_ACTIVE_LOW>;
+        };
+    };
