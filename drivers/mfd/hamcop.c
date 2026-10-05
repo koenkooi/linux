@@ -869,6 +869,17 @@ static int hamcop_clocks_register(struct hamcop *hamcop)
 		return ret;
 
 	/*
+	 * "hamcop-dma" gets an alias the same way: the DMA engine has no
+	 * cell of its own, so the hamcop-sdi driver claims the gate by name
+	 * when its SRAM bounce path is available. Without this alias that
+	 * lookup returns -EPROBE_DEFER.
+	 */
+	ret = devm_clk_hw_register_clkdev(hamcop->dev, &hamcop->gates[HAMCOP_GATE_DMA].hw,
+					  NULL, "hamcop-dma");
+	if (ret)
+		return ret;
+
+	/*
 	 * Only "hamcop-adc" (drivers/iio/adc/hamcop-adc.c) gets an alias:
 	 * mainline's generic resistive-adc-touch consumer cell has no
 	 * chip-specific code at all -- it never calls clk_get() itself, the
