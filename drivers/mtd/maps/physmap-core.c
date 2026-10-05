@@ -60,6 +60,7 @@ struct physmap_flash_info {
 	struct gpio_descs	*gpios;
 	unsigned int		gpio_values;
 	unsigned int		win_order;
+	struct gpio_desc	*vpp_gpiod;
 };
 
 static void physmap_flash_remove(struct platform_device *dev)
@@ -90,6 +91,13 @@ static void physmap_flash_remove(struct platform_device *dev)
 	pm_runtime_disable(&dev->dev);
 }
 
+/*
+ * Two independent sources of a Vpp/write-protect enable: the legacy
+ * platform_data callback and an optional "vpp-gpios" devicetree property.
+ * Never both, since a DT-probed device has no platform_data, so
+ * physmap_data can be NULL here. The caller may be in atomic context, so the
+ * GPIO must not sleep; physmap_flash_probe() checks that.
+ */
 static void physmap_set_vpp(struct map_info *map, int state)
 {
 	struct platform_device *pdev;
@@ -99,19 +107,26 @@ static void physmap_set_vpp(struct map_info *map, int state)
 
 	pdev = (struct platform_device *)map->map_priv_1;
 	physmap_data = dev_get_platdata(&pdev->dev);
-
-	if (!physmap_data->set_vpp)
-		return;
-
 	info = platform_get_drvdata(pdev);
+
+	if (!info->vpp_gpiod && !(physmap_data && physmap_data->set_vpp))
+		return;
 
 	spin_lock_irqsave(&info->vpp_lock, flags);
 	if (state) {
-		if (++info->vpp_refcnt == 1)    /* first nested 'on' */
-			physmap_data->set_vpp(pdev, 1);
+		if (++info->vpp_refcnt == 1) {   /* first nested 'on' */
+			if (info->vpp_gpiod)
+				gpiod_set_value(info->vpp_gpiod, 1);
+			else
+				physmap_data->set_vpp(pdev, 1);
+		}
 	} else {
-		if (--info->vpp_refcnt == 0)    /* last nested 'off' */
-			physmap_data->set_vpp(pdev, 0);
+		if (--info->vpp_refcnt == 0) {   /* last nested 'off' */
+			if (info->vpp_gpiod)
+				gpiod_set_value(info->vpp_gpiod, 0);
+			else
+				physmap_data->set_vpp(pdev, 0);
+		}
 	}
 	spin_unlock_irqrestore(&info->vpp_lock, flags);
 }
@@ -364,6 +379,14 @@ static int physmap_flash_of_init(struct platform_device *dev)
 		info->maps[i].bankwidth = bankwidth;
 		info->maps[i].device_node = dp;
 
+		/*
+		 * Only wired up when a "vpp-gpios" was found, so that
+		 * physmap_set_vpp() does not take the lock for a board with
+		 * no Vpp control.
+		 */
+		if (info->vpp_gpiod)
+			info->maps[i].set_vpp = physmap_set_vpp;
+
 		err = of_flash_probe_gemini(dev, dp, &info->maps[i]);
 		if (err)
 			return err;
@@ -480,6 +503,20 @@ static int physmap_flash_probe(struct platform_device *dev)
 		dev_err(&dev->dev, "addr-gpios only supported for nmaps == 1\n");
 		return -EINVAL;
 	}
+
+	/*
+	 * Optional Vpp/write-protect enable, driven only around an erase or
+	 * program operation. It starts low so that a board wiring an
+	 * active-high enable through it boots with the flash write-protected.
+	 */
+	info->vpp_gpiod = devm_gpiod_get_optional(&dev->dev, "vpp", GPIOD_OUT_LOW);
+	if (IS_ERR(info->vpp_gpiod))
+		return PTR_ERR(info->vpp_gpiod);
+
+	/* set_vpp() runs in atomic context, under vpp_lock */
+	if (info->vpp_gpiod && gpiod_cansleep(info->vpp_gpiod))
+		return dev_err_probe(&dev->dev, -EINVAL,
+				     "vpp-gpios must be a GPIO that cannot sleep\n");
 
 	pm_runtime_enable(&dev->dev);
 	pm_runtime_get_sync(&dev->dev);
