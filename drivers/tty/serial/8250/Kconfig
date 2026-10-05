@@ -347,6 +347,21 @@ config SERIAL_8250_ACORN
 	  system, say Y to this option.  The driver can handle 1, 2, or 3 port
 	  cards.  If unsure, say N.
 
+config SERIAL_8250_ASIC2
+	tristate "HTC ASIC2 UART support"
+	depends on SERIAL_8250 && MFD_ASIC2
+	help
+	  Support for the 16550A-compatible UART0/UART1 blocks inside the
+	  Compaq/HTC ASIC2 companion ASIC found on the HP/Compaq iPAQ
+	  h38xx/h39xx family, registered as an mfd_cell of the ASIC2 core
+	  driver rather than through the generic 8250-platform binding
+	  (this block sits inside ASIC2's own shared register window and
+	  needs the core driver's own non-exclusive mapping to be reached
+	  at all). On the h3870/h3875 handheld, UART0 is the on-board
+	  Bluetooth radio's transport.
+
+	  If unsure, say N.
+
 config SERIAL_8250_BCM2835AUX
 	tristate "BCM2835 auxiliar mini UART support"
 	depends on ARCH_BCM2835 || COMPILE_TEST
