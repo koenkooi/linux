@@ -114,6 +114,7 @@
 		vdd-supply = <&mq_vdd>;
 		power-supply = <&mq_power>;
 		reset-gpios = <&gpio 68 GPIO_ACTIVE_LOW>;
+		backlight = <&backlight>;
 	};
 
 	/*
