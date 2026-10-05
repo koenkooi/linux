@@ -22,4 +22,16 @@ config SND_SA11X0_SOC_SSP
 	  clock and the frame, dividing the bit clock from a reference clock
 	  on GPIO19. Only playback is supported.
 
+config SND_SA11X0_SOC_IPAQ_H3800
+	tristate "SoC Audio support for HP iPAQ h3800 (UDA1341TS)"
+	depends on SND_SA11X0_SOC_SSP && (SA1100_H3800 || COMPILE_TEST)
+	select SND_SOC_UDA1341
+	help
+	  Say Y or M here to support the UDA1341TS audio codec on the
+	  HP/Compaq iPAQ h38xx family, wired to the SA-1110 Ser4 SSP with a
+	  bit-banged L3 control bus. This machine driver also owns ASIC1's
+	  speaker/headphone routing and jack detect, and synchronizes the
+	  ASIC2 audio-clock tap, the SSP's SerClkDiv and the codec's own
+	  sample-rate divider on every rate change.
+
 endmenu
