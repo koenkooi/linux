@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/marvell,pxa2xx-i2s.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Marvell/Intel PXA2xx I2S controller
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: |
+  The I2S serial audio controller integrated into the PXA25x and PXA27x
+  SoC family. The block is identical across both SoCs in register layout,
+  interrupt, clock id and DMA request line numbering, so one family-wide
+  compatible string covers it.
+
+  The DMA channels are resolved through the dmas and dma-names properties
+  of this node; without them the PCM open of a DT boot fails with
+  -ENXIO.
+
+properties:
+  compatible:
+    const: marvell,pxa2xx-i2s
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+    description: |
+      IRQ_I2S. Informational only, the driver does not request it.
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: I2SCLK
+    description: |
+      Required: the driver looks the clock up by the connection id
+      "I2SCLK", which on a DT-probed device is matched against this
+      property.
+
+  dmas:
+    minItems: 2
+    maxItems: 2
+
+  dma-names:
+    items:
+      - const: rx
+      - const: tx
+
+  "#sound-dai-cells":
+    const: 0
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - clock-names
+  - "#sound-dai-cells"
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/pxa-clock.h>
+
+    i2s: i2s@40400000 {
+        compatible = "marvell,pxa2xx-i2s";
+        reg = <0x40400000 0x100>;
+        interrupts = <13>;
+        clocks = <&clks CLK_I2S>;
+        clock-names = "I2SCLK";
+        dmas = <&pdma 2 3
+                &pdma 3 3>;
+        dma-names = "rx", "tx";
+        #sound-dai-cells = <0>;
+    };
