@@ -42,6 +42,21 @@
 	};
 
 	/*
+	 * SD_PWR_ON, the supply of the SD slot, is a GPIO-backed fixed
+	 * regulator that the "mmc" node consumes as its vmmc-supply. It has no
+	 * regulator-boot-on because nothing needs it before the SD host driver
+	 * powers it up.
+	 */
+	sd_vcc: regulator-vcc-sd {
+		compatible = "regulator-fixed";
+		regulator-name = "SD_PWR_ON";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&asic1 1 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	/*
 	 * Ser3 is the only UART of this board that is a tty and its console;
 	 * Ser1 is used for plain GPIO (see &ppc below) and Ser2 is IrDA only.
 	 * The modem control lines are active low because the RS232
@@ -195,6 +210,14 @@
 		#clock-cells = <1>;
 
 		/*
+		 * The SD card clock is the shared SD selector of ASIC2. The tap
+		 * of this board is 33.869 MHz, which is shared with 44.1 kHz
+		 * audio; without this property the selector keeps its default,
+		 * which is the tap the h39xx uses.
+		 */
+		htc,sd-clock-hz = <33869000>;
+
+		/*
 		 * ASIC1's 15-line GPIO block. ASIC1 is a separate chip without
 		 * a chip select of its own, reached through the window of this
 		 * node, and the MFD core only adds the cell when this child
@@ -209,6 +232,36 @@
 					  "LCD_ON", "LCD_PCI", "VGH_ON", "VGL_ON",
 					  "FL_PWR_ON", "BT_PWR_ON", "SPK_ON",
 					  "EAR_ON_N", "AUD_PWR_ON";
+		};
+
+		/*
+		 * ASIC1's SD/MMC host. It has no reg for the same reason as
+		 * "asic1" above. Unlike that block its completion interrupt
+		 * is a dedicated SoC GPIO (MMC_INT) instead of anything in the
+		 * demultiplexer of ASIC2, so it has its own "interrupts" against
+		 * "&gpio", edge-rising like the interrupt of ASIC2.
+		 *
+		 * Card detect is bit 6 of the GPIO bank of ASIC2, active low, as
+		 * on the h39xx. Write protect is the PPC_RXD1 line (NSD_WP on
+		 * "&ppc"), active high despite its name. The factory firmware
+		 * reads the SD_CON_SLT strap (ASIC2 GPIO bank bit 11) at boot and
+		 * takes both polarities from it: a card is present when bit 6
+		 * differs from the strap, and write protected when NSD_WP equals
+		 * it. Card detect works active low on the h3870, which implies a
+		 * strap reading 1 there and so an active-high write protect. With
+		 * the line described active low, the h3870 registered the one
+		 * card tried as read-only and listed NSD_WP as low, and that
+		 * card's CSD write-protect bits were clear. The strap and the
+		 * card's lock tab were not read.
+		 */
+		mmc {
+			compatible = "htc,asic1-mmc";
+			interrupt-parent = <&gpio>;
+			interrupts = <18 IRQ_TYPE_EDGE_RISING>;
+			clocks = <&asic2 ASIC2_CLK_SD>;
+			cd-gpios = <&asic2 6 GPIO_ACTIVE_LOW>;
+			wp-gpios = <&ppc 13 GPIO_ACTIVE_HIGH>;
+			vmmc-supply = <&sd_vcc>;
 		};
 
 		/*
