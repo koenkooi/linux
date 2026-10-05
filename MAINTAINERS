@@ -12045,6 +12045,13 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/auxdisplay/holtek,ht16k33.yaml
 F:	drivers/auxdisplay/ht16k33.c
 
+HTC ASIC2 AND ASIC3 COMPANION ASIC DRIVERS
+M:	Koen Kooi <koen@dominion.thruhere.net>
+L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
+S:	Maintained
+F:	Documentation/devicetree/bindings/leds/htc,asic*-leds.yaml
+F:	Documentation/devicetree/bindings/mfd/htc,asic*.yaml
+
 HTCPEN TOUCHSCREEN DRIVER
 M:	Pau Oliva Fora <pof@eslack.org>
 L:	linux-input@vger.kernel.org
