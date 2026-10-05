@@ -121,8 +121,10 @@ struct asic2_sleeve {
 	struct gpio_desc	*power_gpio;
 	struct gpio_desc	*reset_gpio;
 	struct gpio_desc	*opt_int_gpio;
+	struct gpio_desc	*bat_fault_gpio;
 	int			irq_detect;
 	int			irq_opt_int;
+	int			irq_bat_fault;
 	/* Serialises whole multi-message transactions, not single transfers:
 	 * the EEPROM path is an RDSR poll followed by a separate read, which
 	 * must not interleave with the jacket microcontroller's own
@@ -373,15 +375,27 @@ static int asic2_sleeve_control_egpio(void *dev, int egpio, int state)
 }
 
 /*
- * ipaq_sleeve_ops::read_egpio -- no line of enum ipaq_sleeve_egpio is
- * readable on this backend. The four power and reset lines are GPIO
- * outputs, and the four PCMCIA status lines belong to the socket driver,
- * see the header comment. It is a stub instead of a NULL slot because the
+ * ipaq_sleeve_ops::read_egpio -- only IPAQ_EGPIO_OPT_BAT_FAULT is readable
+ * on this backend. The four power and reset lines are GPIO outputs, and
+ * the four PCMCIA status lines belong to the socket driver, see the
+ * header comment. It is a function instead of a NULL slot because the
  * bus core calls through the pointer without checking it.
+ *
+ * The polarity of the fault line is the "bat-fault-gpios" flag in the
+ * devicetree, so gpiod_get_value_cansleep() already returns 1 for an
+ * asserted fault.
  */
 static int asic2_sleeve_read_egpio(void *dev, int nr)
 {
-	return -EINVAL;
+	struct asic2_sleeve *sleeve = dev;
+
+	if (nr != IPAQ_EGPIO_OPT_BAT_FAULT)
+		return -EINVAL;
+
+	if (!sleeve->bat_fault_gpio)
+		return -ENXIO;
+
+	return gpiod_get_value_cansleep(sleeve->bat_fault_gpio);
 }
 
 /*
@@ -593,6 +607,25 @@ static int asic2_sleeve_probe(struct platform_device *pdev)
 	}
 opt_int_done:
 
+	/*
+	 * The jacket battery fault line (OPT_BAT_FAULT), optional on the
+	 * same terms as "opt-int" above: a board that does not describe it,
+	 * or whose description cannot be resolved, keeps enumerating
+	 * jackets exactly as it does without one. Its interrupt is taken
+	 * below, after the backend is registered.
+	 */
+	sleeve->bat_fault_gpio = devm_gpiod_get_optional(dev, "bat-fault",
+							 GPIOD_IN);
+	if (IS_ERR(sleeve->bat_fault_gpio)) {
+		ret = PTR_ERR(sleeve->bat_fault_gpio);
+		if (ret == -EPROBE_DEFER)
+			return ret;
+		dev_warn(dev,
+			 "failed to get bat-fault gpio (%d); continuing with no battery fault line\n",
+			 ret);
+		sleeve->bat_fault_gpio = NULL;
+	}
+
 	ret = asic2_sleeve_add_spi_devices(sleeve);
 	if (ret)
 		return ret;
@@ -623,6 +656,34 @@ opt_int_done:
 				     "failed to request option-detect irq\n");
 	}
 
+	/*
+	 * Both edges, for the same reason as option detect: the bus core
+	 * acts on an asserted fault and on its clearing. Without the
+	 * interrupt the insertion-time check still runs, from the level
+	 * read_egpio() returns; only a fault arising on an already
+	 * enumerated jacket goes unseen, so its absence is a warning, not a
+	 * failed probe. Freed before ipaq_sleeve_unregister() in .remove(),
+	 * like the option-detect interrupt.
+	 */
+	sleeve->irq_bat_fault = -ENXIO;
+	if (sleeve->bat_fault_gpio) {
+		int irq = gpiod_to_irq(sleeve->bat_fault_gpio);
+
+		if (irq >= 0)
+			ret = request_irq(irq, ipaq_sleeve_bat_fault_interrupt,
+					  IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING,
+					  "asic2-sleeve-bat-fault", NULL);
+		else
+			ret = irq;
+
+		if (ret)
+			dev_warn(dev,
+				 "no bat-fault interrupt (%d); battery fault checked at insertion only\n",
+				 ret);
+		else
+			sleeve->irq_bat_fault = irq;
+	}
+
 	return 0;
 }
 
@@ -630,6 +691,8 @@ static void asic2_sleeve_remove(struct platform_device *pdev)
 {
 	struct asic2_sleeve *sleeve = platform_get_drvdata(pdev);
 
+	if (sleeve->irq_bat_fault >= 0)
+		free_irq(sleeve->irq_bat_fault, NULL);
 	free_irq(sleeve->irq_detect, NULL);
 	ipaq_sleeve_unregister();
 	asic2_sleeve_remove_spi_devices(sleeve);
