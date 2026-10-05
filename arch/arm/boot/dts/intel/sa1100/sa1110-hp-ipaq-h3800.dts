@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Device tree for the HP iPAQ h3800 (h38xx) family handheld
+ * (h3815/h3830/h3835/h3845/h3850/h3870/h3875).
+ *
+ * Copyright (C) 2026 Koen Kooi
+ */
+
+/dts-v1/;
+
+#include "sa1110.dtsi"
+
+/ {
+	model = "HP iPAQ h3800";
+	compatible = "hp,ipaq-h3800", "intel,sa1110";
+
+	memory@c0000000 {
+		device_type = "memory";
+		/*
+		 * 64 MiB. The h3830 has 32 MiB and needs its size from the boot
+		 * loader: a DTB the boot loader edits, or the ATAG memory size
+		 * merged by ARM_ATAG_DTB_COMPAT into an appended DTB.
+		 */
+		reg = <0xc0000000 0x04000000>;
+	};
+};
