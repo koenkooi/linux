@@ -59,6 +59,17 @@ static unsigned long h2200_pin_config[] __initdata = {
 	GPIO13_GPIO | WAKEUP_ON_EDGE_BOTH,	/* H2200_GPIO_POWER_ON_N */
 
 	/*
+	 * ASIC_INT_N is a wakeup source for whatever is routed through the
+	 * HAMCOP: hamcop_irq_set_wake() propagates the wake request of a
+	 * HAMCOP interrupt to this GPIO. No node asks for it yet, the power
+	 * key being on PXA GPIO13. gpio_set_wake() arms PWER/PFER from this
+	 * static table, independent of the edge the hwirq is configured for
+	 * at runtime, so the falling edge has to match the HAMCOP node's
+	 * interrupt specifier by hand.
+	 */
+	GPIO5_GPIO | WAKEUP_ON_EDGE_FALL,	/* ASIC_INT_N, HAMCOP's upstream IRQ */
+
+	/*
 	 * GPIO1 is kept as plain input (AF0) rather than the GPIO1_RST
 	 * hardware-reset alternate function; it is not known whether the
 	 * reset alternate function is wired on this board.
@@ -69,7 +80,6 @@ static unsigned long h2200_pin_config[] __initdata = {
 	GPIO2_GPIO,	/* BATT_DOOR_N */
 	GPIO3_GPIO,	/* USB_DETECT_N, vbus sense */
 	GPIO4_GPIO,	/* RS232_DCD (parallel path, active even w/ RS232 off) */
-	GPIO5_GPIO,	/* ASIC_INT_N, HAMCOP's upstream IRQ */
 	MFP_CFG_IN(GPIO6, AF1),	/* NAND flash size strap, despite its
 				 * CIR_SIR_N signal name, not CIR/SIR
 				 */
