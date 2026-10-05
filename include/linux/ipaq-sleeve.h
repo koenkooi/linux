@@ -198,6 +198,15 @@ void ipaq_sleeve_driver_unregister(struct ipaq_sleeve_driver *drv);
  * are active low; consumers use them without inversion for the ready
  * state.
  *
+ * IPAQ_EGPIO_OPT_INT is the sleeve-device interrupt of the connector, the
+ * line a sleeve asserts to get the attention of the host, distinct from the
+ * PC Card interrupt of a card in the jacket's socket. It is an interrupt
+ * source only and has no control_egpio() or read_egpio() meaning; only
+ * egpio_irq() resolves it. On the h39xx it is a bare SoC pin, separate from
+ * the PC Card interrupt pin. The SAMCOP of the h5xxx has no separate option
+ * interrupt source, so there it is the same line as the card interrupt and a
+ * consumer has to be prepared to share it.
+ *
  * The numeric values are opaque line identifiers private to this bus; each
  * backend's ops implementation maps them onto its own registers or GPIOs.
  * A backend may switch() on them, so new identifiers must be appended to
@@ -212,6 +221,7 @@ enum ipaq_sleeve_egpio {
 	IPAQ_EGPIO_PCMCIA_CD1_N,
 	IPAQ_EGPIO_PCMCIA_IRQ0,
 	IPAQ_EGPIO_PCMCIA_IRQ1,
+	IPAQ_EGPIO_OPT_INT,
 };
 
 void ipaq_sleeve_write_egpio(int nr, int state);
