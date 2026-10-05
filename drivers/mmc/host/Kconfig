@@ -64,6 +64,21 @@ config MMC_PXA
 
 	  If unsure, say N.
 
+config MMC_ASIC1
+	tristate "HTC ASIC1 SD/MMC host (HP iPAQ h38xx)"
+	depends on MFD_ASIC2
+	help
+	  This selects the SD/MMC host block on the HTC ASIC1 companion
+	  chip found on the HP/Compaq iPAQ h38xx family (h3815/h3830/
+	  h3835/h3845/h3850/h3870/h3875). This is the SD card slot of
+	  that hardware. ASIC1 has no chip select of its own and is
+	  reached through ASIC2's register window, so this driver also
+	  depends on MFD_ASIC2.
+
+	  PIO only; say Y or M if you have an h38xx.
+
+	  If unsure, say N.
+
 config MMC_HAMCOP
 	tristate "Samsung HAMCOP SD/MMC Card Interface support (HP iPAQ h2200)"
 	depends on MFD_HAMCOP
