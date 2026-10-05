@@ -47,9 +47,10 @@
  *    when the board has a "led-controller" child.
  *    "iio_hwmon" exposes the main-battery voltage channel of the
  *    ADC, and "asic2-sleeve" (drivers/misc/asic2-sleeve.c) is the backend
- *    of the expansion-pack bus. One more cell exists only on h38xx:
- *    ASIC1's GPIO block ("asic1-gpio", for the gpio-asic1 driver), a
- *    separate chip reached through this window, added by
+ *    of the expansion-pack bus. Two more cells exist only on h38xx, a
+ *    separate chip (ASIC1) reached through this window: its GPIO block
+ *    ("asic1-gpio", for the gpio-asic1 driver) and its SD/MMC host
+ *    ("asic1-mmc", for the asic1-mmc driver), each added by
  *    asic2_add_asic1_cells() only when the devicetree describes it.
  *
  * KPIO's InterruptEnable register (offset 0x001c) must not be read back,
@@ -122,6 +123,10 @@ enum {
 	ASIC2_GATE_PWM,
 	ASIC2_GATE_UART_0,
 	ASIC2_GATE_UART_1,
+	/*
+	 * Before SD, like EX1: asic2_clocks_register() parents
+	 * ASIC2_GATE_SD on EX1 or EX2 depending on the board's SD tap.
+	 */
 	ASIC2_GATE_EX2,
 	ASIC2_GATE_SD,
 	ASIC2_NR_CLK_GATES,
@@ -141,7 +146,8 @@ struct asic2_clk_gate {
 	u32 bit;
 	u32 mask;
 	/*
-	 * Set only on the gates that something asks a rate of, EX1 and OWM.
+	 * Set only on the gates that something asks a rate of: EX1, EX2, OWM
+	 * and SD.
 	 * Everything else leaves it 0 and falls back to the parent rate in
 	 * asic2_clk_gate_recalc_rate().
 	 */
@@ -1038,12 +1044,12 @@ static int asic2_clk_gate_is_enabled(struct clk_hw *hw)
 }
 
 /*
- * The rate of a gate is its own .rate when it has one, EX1 the crystal and
- * OWM the one divided output with a consumer, and otherwise whatever the
- * parent reports. That is right for SD, whose selector is pinned to
- * ASIC2_CLOCK_SD_2, EX1's own 24.576 MHz. ADC, SPI and PWM have neither a
- * parent nor a rate and report 0, "unknown", which is correct for a bare
- * gate that nothing queries.
+ * The rate of a gate is its own .rate when it has one (EX1 and EX2 the
+ * crystals, OWM the one divided output with a consumer, and SD the rate of
+ * the selected tap, which is not that of its crystal) and otherwise whatever
+ * the parent reports. ADC, SPI and PWM have neither a parent nor a rate and
+ * report 0, "unknown", which is correct for a bare gate that nothing
+ * queries.
  */
 static unsigned long asic2_clk_gate_recalc_rate(struct clk_hw *hw, unsigned long parent_rate)
 {
@@ -1064,8 +1070,9 @@ static const struct clk_ops asic2_clk_gate_ops = {
  *
  * SD is not critical: on the h39xx the card clock of the ASIC3 SD host is
  * sourced from this chip, so the host has to claim the gate itself and
- * nothing keeps the SD clock, and through its parent the EX1 crystal,
- * running while no host uses it.
+ * nothing keeps the SD clock, and through its parent the crystal of the
+ * selected tap (EX1 on h39xx, EX2 on h38xx), running while no host uses
+ * it.
  */
 
 /*
@@ -1084,6 +1091,12 @@ static const struct clk_ops asic2_clk_gate_ops = {
 #define ASIC2_EX1_RATE		24576000UL
 #define ASIC2_OWM_RATE		4096000UL
 
+/*
+ * EX2 is the crystal of the 44.1 kHz family, 33.8688 MHz, which is 768 x
+ * 44.1 kHz.
+ */
+#define ASIC2_EX2_RATE		33868800UL
+
 static const struct {
 	const char *name;
 	const char *alias;
@@ -1101,18 +1114,75 @@ static const struct {
 	[ASIC2_GATE_PWM]	= { "asic2-pwm",	"asic2-pwm",	ASIC2_CLOCK_PWM },
 	[ASIC2_GATE_UART_0]	= { "asic2-uart0",	NULL,		ASIC2_CLOCK_UART_0 },
 	[ASIC2_GATE_UART_1]	= { "asic2-uart1",	NULL,		ASIC2_CLOCK_UART_1 },
-	[ASIC2_GATE_EX2]	= { "asic2-ex2",	NULL,		ASIC2_CLOCK_EX2 },
-	[ASIC2_GATE_SD]		= { "asic2-sd",		NULL,		ASIC2_CLOCK_SD_2,
+	[ASIC2_GATE_EX2]	= { "asic2-ex2",	NULL,		ASIC2_CLOCK_EX2,
+				    0, 0, ASIC2_EX2_RATE },
+	/* .bit and .rate come from asic2_sd_tap() at registration */
+	[ASIC2_GATE_SD]		= { "asic2-sd",		"asic1-mmc",	0,
 				    ASIC2_CLOCK_SD_MASK },
 };
 
+/*
+ * Which SD tap the card clock runs at is board policy: the SD host of
+ * h39xx (ASIC3's) and that of h38xx (ASIC1's) both take their card clock
+ * from this one shared selector, and they need different taps. The
+ * optional "htc,sd-clock-hz" property of this chip's node selects it and
+ * defaults to ASIC2_CLOCK_SD_2, which is what h39xx needs. h38xx needs
+ * SD_3, 33.869 MHz.
+ *
+ * A tap only selects: its crystal has to run too, and the taps are fed by
+ * two different ones. SD_1 and SD_3 are the EX2 family (33.8688 MHz divided
+ * by 2 and by 1), SD_2 and SD_4 the EX1 family (24.576 MHz times 1 and 2).
+ * The WinCE SD driver of the h3870 enables CLOCK_Enable bit 15 (EX2) for
+ * taps 1 and 3 and bit 14 (EX1) for taps 2 and 4 before it writes the SD
+ * field. @ex_gate becomes the CCF parent of the SD gate, so that enabling
+ * the gate brings the right crystal up with it. @dt_hz is the value of the
+ * binding's selector and @rate the real rate of the tap, which the gate
+ * reports instead of that of its crystal.
+ */
+struct asic2_sd_tap {
+	u32 dt_hz;
+	unsigned long rate;
+	u32 bit;
+	unsigned int ex_gate;
+};
+
+static const struct asic2_sd_tap asic2_sd_taps[] = {
+	{ 16934000, ASIC2_EX2_RATE / 2,	ASIC2_CLOCK_SD_1, ASIC2_GATE_EX2 },
+	{ 24576000, ASIC2_EX1_RATE,	ASIC2_CLOCK_SD_2, ASIC2_GATE_EX1 },
+	{ 33869000, ASIC2_EX2_RATE,	ASIC2_CLOCK_SD_3, ASIC2_GATE_EX2 },
+	{ 49152000, ASIC2_EX1_RATE * 2,	ASIC2_CLOCK_SD_4, ASIC2_GATE_EX1 },
+};
+
+#define ASIC2_SD_TAP_DEFAULT	(&asic2_sd_taps[1])	/* SD_2 */
+
+static const struct asic2_sd_tap *asic2_sd_tap(struct asic2 *asic)
+{
+	unsigned int i;
+	u32 hz;
+
+	if (of_property_read_u32(asic->dev->of_node, "htc,sd-clock-hz", &hz))
+		return ASIC2_SD_TAP_DEFAULT;
+
+	for (i = 0; i < ARRAY_SIZE(asic2_sd_taps); i++)
+		if (asic2_sd_taps[i].dt_hz == hz)
+			return &asic2_sd_taps[i];
+
+	dev_err(asic->dev, "unknown htc,sd-clock-hz %u\n", hz);
+	return ERR_PTR(-EINVAL);
+}
+
 static int asic2_clocks_register(struct asic2 *asic)
 {
+	const struct asic2_sd_tap *sd_tap = asic2_sd_tap(asic);
 	unsigned int i;
 	int ret;
 
+	if (IS_ERR(sd_tap))
+		return PTR_ERR(sd_tap);
+
 	for (i = 0; i < ASIC2_NR_CLK_GATES; i++) {
 		const struct clk_hw *ex1_parent = &asic->gates[ASIC2_GATE_EX1].hw;
+		const struct clk_hw *sd_parent = &asic->gates[sd_tap->ex_gate].hw;
 		struct clk_init_data init = {
 			.name	= asic2_clk_defs[i].name,
 			.ops	= &asic2_clk_gate_ops,
@@ -1129,18 +1199,24 @@ static int asic2_clocks_register(struct asic2 *asic)
 		 * only the enable, the rate is the own rate of OWM, see
 		 * ASIC2_OWM_RATE. SD needs the same link: its host takes a
 		 * single clock, and its rate selector is useless without the
-		 * 24.576 MHz crystal running. EX1 registers first (lower
-		 * index), so its clk_hw is valid here.
+		 * crystal of the selected tap running, EX1 for SD_2 and SD_4
+		 * and EX2 for SD_1 and SD_3, see asic2_sd_taps[]. EX1 and EX2
+		 * register first (lower index), so their clk_hw is valid here.
 		 */
-		if (i == ASIC2_GATE_OWM || i == ASIC2_GATE_SD) {
+		if (i == ASIC2_GATE_OWM) {
 			init.parent_hws = &ex1_parent;
+			init.num_parents = 1;
+		} else if (i == ASIC2_GATE_SD) {
+			init.parent_hws = &sd_parent;
 			init.num_parents = 1;
 		}
 
 		asic->gates[i].asic = asic;
-		asic->gates[i].bit = asic2_clk_defs[i].bit;
+		asic->gates[i].bit = i == ASIC2_GATE_SD ?
+				     sd_tap->bit : asic2_clk_defs[i].bit;
 		asic->gates[i].mask = asic2_clk_defs[i].mask ? : asic2_clk_defs[i].bit;
-		asic->gates[i].rate = asic2_clk_defs[i].rate;
+		asic->gates[i].rate = i == ASIC2_GATE_SD ?
+				      sd_tap->rate : asic2_clk_defs[i].rate;
 		asic->gates[i].hw.init = &init;
 
 		ret = devm_clk_hw_register(asic->dev, &asic->gates[i].hw);
@@ -1422,8 +1498,13 @@ static int asic2_add_optional_cell(struct asic2 *asic, struct resource *mem,
  * bus-error timeout. So an available child node is checked for first.
  *
  * ASIC1's GPIO block has no interrupt line: its interrupt controller
- * reaches no SoC pin on any board, and the SD host's interrupt is a
- * dedicated SoC GPIO, not one of this chip's hwirqs.
+ * reaches no SoC pin on any board. The SD host does have one, but it
+ * reaches the SoC directly on a dedicated GPIO rather than through one of
+ * this chip's hwirqs, so neither cell carries an IRQ resource. The SD
+ * host gets it as an "interrupts" property of its own devicetree node,
+ * which mfd_add_device() hands to the cell's platform device through the
+ * of_compatible match, and platform_get_irq() looks at that before any
+ * static IORESOURCE_IRQ. Neither cell needs an irq_domain.
  */
 static const struct resource asic1_gpio_resources[] = {
 	DEFINE_RES_MEM(ASIC1_GPIO_BASE, ASIC1_GPIO_SIZE),
@@ -1437,13 +1518,25 @@ static const struct mfd_cell asic1_gpio_cell = {
 	.num_resources	= ARRAY_SIZE(asic1_gpio_resources),
 };
 
-static int asic2_add_asic1_cells(struct asic2 *asic, struct resource *mem)
+static const struct resource asic1_mmc_resources[] = {
+	DEFINE_RES_MEM(ASIC1_MMC_BASE, ASIC1_MMC_SIZE),
+};
+
+static const struct mfd_cell asic1_mmc_cell = {
+	.name		= "asic1-mmc",
+	.id		= PLATFORM_DEVID_NONE,
+	.of_compatible	= "htc,asic1-mmc",
+	.resources	= asic1_mmc_resources,
+	.num_resources	= ARRAY_SIZE(asic1_mmc_resources),
+};
+
+static int asic2_add_asic1_cell(struct asic2 *asic, struct resource *mem,
+				const struct mfd_cell *cell)
 {
 	struct device_node *np;
 	bool present;
 
-	np = of_get_compatible_child(asic->dev->of_node,
-				     asic1_gpio_cell.of_compatible);
+	np = of_get_compatible_child(asic->dev->of_node, cell->of_compatible);
 	if (!np)
 		return 0;
 
@@ -1452,8 +1545,18 @@ static int asic2_add_asic1_cells(struct asic2 *asic, struct resource *mem)
 	if (!present)
 		return 0;
 
-	return devm_mfd_add_devices(asic->dev, 0, &asic1_gpio_cell, 1, mem,
-				    0, NULL);
+	return devm_mfd_add_devices(asic->dev, 0, cell, 1, mem, 0, NULL);
+}
+
+static int asic2_add_asic1_cells(struct asic2 *asic, struct resource *mem)
+{
+	int ret;
+
+	ret = asic2_add_asic1_cell(asic, mem, &asic1_gpio_cell);
+	if (ret)
+		return ret;
+
+	return asic2_add_asic1_cell(asic, mem, &asic1_mmc_cell);
 }
 
 /*

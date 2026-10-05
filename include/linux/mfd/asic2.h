@@ -283,6 +283,14 @@ struct asic2_adc_touch_pdata {
 #define ASIC1_GPIO_BASE			0x1e60
 #define ASIC1_GPIO_SIZE			0x40
 
+/*
+ * ASIC1's SD/MMC host: 4-byte strided registers of 16 bit data, from
+ * StartStopClock at 0x00 to BufferPartFull at 0x50, rounded up to a
+ * 4-byte aligned size. The register list lives with the driver.
+ */
+#define ASIC1_MMC_BASE			0x1c00
+#define ASIC1_MMC_SIZE			0x54
+
 /* Whole-chip register window */
 #define ASIC2_MAP_SIZE			0x2000
 
