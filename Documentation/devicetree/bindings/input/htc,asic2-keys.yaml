@@ -1,0 +1,111 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/htc,asic2-keys.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Keypad driver for the Compaq/HTC ASIC2 companion ASIC
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  This module is part of the ASIC2 MFD device, see htc,asic2.yaml. The
+  keypad is represented as a sub-node of the ASIC2 node.
+
+  The KPIO block of ASIC2 exposes 12 active-low keypad lines as bits of one
+  Data register, not as a scanned row and column matrix. Seven lines map
+  one to one to a physical button. The other five belong to a five-way
+  navigation pad whose Up, Down and centre positions are each an exact
+  match of a combination of three bits, not one bit apiece. The
+  "linux,keymap" property of matrix-keymap.yaml cannot express a key that
+  fires only when several bits match a pattern together. This binding
+  therefore follows the shape of adc-keys.yaml: one "button-*" child per
+  key, each carrying the bitmask and pattern that the driver tests against
+  the Data register as "pressed = ((~Data & htc,key-mask) == htc,key-match)".
+
+  The h3800 and h39xx share the same physical KPIO wiring, but a board is
+  free to describe its own mapping and the driver never assumes the two
+  agree.
+
+properties:
+  compatible:
+    const: htc,asic2-keys
+
+patternProperties:
+  "^button-":
+    type: object
+    $ref: input.yaml#
+    additionalProperties: false
+    description:
+      Each key (including each of the five-way pad's five positions) is
+      represented as a sub-node.
+
+    properties:
+      label: true
+
+      linux,code: true
+
+      htc,key-mask:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        maximum: 0xfff
+        description:
+          Which bits of the KPIO Data register the match condition of this
+          key covers. For the seven direct buttons this is the single bit
+          of the key. For the Up, Down and centre positions of the five-way
+          pad it is 0x3e, the same three-bit group for all three, which the
+          driver also writes to the Alternate register.
+
+      htc,key-match:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        maximum: 0xfff
+        description:
+          The exact value that "~Data & htc,key-mask" must equal for this
+          key to count as pressed. It must be a subset of htc,key-mask. For
+          a one-bit key it is identical to htc,key-mask.
+
+    required:
+      - linux,code
+      - htc,key-mask
+      - htc,key-match
+
+required:
+  - compatible
+
+additionalProperties: false
+
+examples:
+  - |
+    companion-chip {
+        keys {
+            compatible = "htc,asic2-keys";
+
+            button-record {
+                label = "Record";
+                linux,code = <128>; /* KEY_RECORD */
+                htc,key-mask = <0x001>;
+                htc,key-match = <0x001>;
+            };
+
+            button-nav-up {
+                label = "5-way up";
+                linux,code = <103>; /* KEY_UP */
+                htc,key-mask = <0x03e>;
+                htc,key-match = <0x032>;
+            };
+
+            button-nav-down {
+                label = "5-way down";
+                linux,code = <108>; /* KEY_DOWN */
+                htc,key-mask = <0x03e>;
+                htc,key-match = <0x02c>;
+            };
+
+            button-nav-center {
+                label = "5-way centre";
+                linux,code = <28>; /* KEY_ENTER */
+                htc,key-mask = <0x03e>;
+                htc,key-match = <0x020>;
+            };
+        };
+    };
