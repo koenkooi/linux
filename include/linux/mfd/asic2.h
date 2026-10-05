@@ -268,6 +268,21 @@ struct asic2_adc_touch_pdata {
  */
 #define ASIC2_OWM_BASE			0x1800
 
+/* ---------------------------------------------------------------------
+ * ASIC1 (h38xx only). A physically separate chip with no chip select of
+ * its own: the SoC issues plain bus cycles to 0x1c00-0x1eff of this same
+ * window and ASIC2 forwards them. 0x1f00 itself is ASIC2's own
+ * FlashWP_VPP_ON register, not ASIC1's. Its blocks are 16 bit, unlike
+ * this chip's flat 32-bit stride, and their register offsets live with
+ * their own drivers; only each block's position inside the window is
+ * needed here, for the mfd cells that drivers/mfd/asic2.c adds when the
+ * devicetree describes the chip. h39xx has no ASIC1 (ASIC3 replaced it)
+ * and decodes nothing here.
+ * ---------------------------------------------------------------------
+ */
+#define ASIC1_GPIO_BASE			0x1e60
+#define ASIC1_GPIO_SIZE			0x40
+
 /* Whole-chip register window */
 #define ASIC2_MAP_SIZE			0x2000
 

@@ -47,7 +47,10 @@
  *    when the board has a "led-controller" child.
  *    "iio_hwmon" exposes the main-battery voltage channel of the
  *    ADC, and "asic2-sleeve" (drivers/misc/asic2-sleeve.c) is the backend
- *    of the expansion-pack bus.
+ *    of the expansion-pack bus. One more cell exists only on h38xx:
+ *    ASIC1's GPIO block ("asic1-gpio", for the gpio-asic1 driver), a
+ *    separate chip reached through this window, added by
+ *    asic2_add_asic1_cells() only when the devicetree describes it.
  *
  * KPIO's InterruptEnable register (offset 0x001c) must not be read back,
  * so this driver keeps a software shadow of its state instead of doing
@@ -1408,6 +1411,54 @@ static int asic2_add_optional_cell(struct asic2 *asic, struct resource *mem,
 }
 
 /*
+ * ASIC1 (h38xx only) is a separate chip reached through this chip's own
+ * register window, so its blocks are mfd cells of this driver rather than
+ * children populated from the devicetree: asic2_probe() claims the whole
+ * window exclusively, and a platform device created from a child node
+ * would fail its own resource request with -EBUSY.
+ *
+ * Unlike asic2_cells[], these must not exist on a board without ASIC1.
+ * mfd_add_device() creates a cell whose of_compatible matches no child
+ * node anyway, with only a warning, and the driver would then probe a
+ * sub-range where h39xx decodes nothing, on a chip select with no
+ * bus-error timeout. So an available child node is checked for first.
+ *
+ * ASIC1's GPIO block has no interrupt line: its interrupt controller
+ * reaches no SoC pin on any board, and the SD host's interrupt is a
+ * dedicated SoC GPIO, not one of this chip's hwirqs.
+ */
+static const struct resource asic1_gpio_resources[] = {
+	DEFINE_RES_MEM(ASIC1_GPIO_BASE, ASIC1_GPIO_SIZE),
+};
+
+static const struct mfd_cell asic1_gpio_cell = {
+	.name		= "asic1-gpio",
+	.id		= PLATFORM_DEVID_NONE,
+	.of_compatible	= "htc,asic1-gpio",
+	.resources	= asic1_gpio_resources,
+	.num_resources	= ARRAY_SIZE(asic1_gpio_resources),
+};
+
+static int asic2_add_asic1_cells(struct asic2 *asic, struct resource *mem)
+{
+	struct device_node *np;
+	bool present;
+
+	np = of_get_compatible_child(asic->dev->of_node,
+				     asic1_gpio_cell.of_compatible);
+	if (!np)
+		return 0;
+
+	present = of_device_is_available(np);
+	of_node_put(np);
+	if (!present)
+		return 0;
+
+	return devm_mfd_add_devices(asic->dev, 0, &asic1_gpio_cell, 1, mem,
+				    0, NULL);
+}
+
+/*
  * PXA GPIO interrupts are edge-only and ASIC2_INT stays asserted while any
  * enabled source is pending. If the edge that woke the core is not delivered
  * to asic2_irq_handler(), no further edge can occur and every ASIC2 source
@@ -1547,6 +1598,11 @@ static int asic2_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret,
 				     "failed to add LED sub-device\n");
+
+	ret = asic2_add_asic1_cells(asic, mem);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to add ASIC1 sub-devices\n");
 
 	dev_dbg(dev, "ASIC2 core ready, chained on IRQ %d\n", irq);
 
