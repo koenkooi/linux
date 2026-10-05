@@ -29,7 +29,7 @@ config MFD_ASIC3
 
 config MFD_ASIC2
 	bool "Compaq/HTC ASIC2 companion ASIC"
-	depends on ARCH_PXA
+	depends on ARCH_PXA || SA1100_H3800
 	select MFD_CORE
 	help
 	  This is the core driver for the Compaq/HTC ASIC2 companion ASIC
