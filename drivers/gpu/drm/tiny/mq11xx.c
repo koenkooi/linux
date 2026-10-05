@@ -10,8 +10,9 @@
  * unit is unwired on both. Instead a MediaQ chip sits on a PXA static memory
  * bank and does its own scanout from a 256 KiB VRAM window with its 8 KiB
  * register window immediately after it. The register bank base offsets
- * below (CC/MIU/IC/GC/GE/DC/FP) are chip-family-wide, not specific to any
- * one board.
+ * below (CC/MIU/IC/GC/DC/FP) are chip-family-wide, not specific to any
+ * one board. The graphics engine bank is the exception: it moved between
+ * parts, so it comes from the per-chip description (struct mq11xx_chip).
  *
  * This is a drm/tiny driver: there is no SoC CRTC to hang a drm_panel or
  * drm_bridge off, and new fbdev drivers are not accepted. It follows the
@@ -26,7 +27,10 @@
  * (.init_regs/.n_init_regs), and which MediaQ part is expected
  * (.expect_device_id, checked against the chip's own PCI header at probe
  * time by mq11xx_identify()). The bring-up sequence, the verify-and-retry
- * register load and the shadow-plane pipeline are shared.
+ * register load and the shadow-plane pipeline are shared. What differs
+ * between chips, where the graphics engine sits and which optional display
+ * features are known to work, is struct mq11xx_chip, chosen from the PCI
+ * device ID by mq11xx_identify() independently of the board.
  *
  * Vblank is not supported: there is no drm_vblank_init() and no IRQ
  * handler, and atomic_update copies the damage into VRAM synchronously with
@@ -57,6 +61,7 @@
  */
 
 #include <linux/backlight.h>
+#include <linux/bitfield.h>
 #include <linux/bits.h>
 #include <linux/completion.h>
 #include <linux/delay.h>
@@ -64,6 +69,7 @@
 #include <linux/dmaengine.h>
 #include <linux/gpio/consumer.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/math64.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
@@ -73,6 +79,7 @@
 #include <linux/property.h>
 #include <linux/pwm.h>
 #include <linux/regulator/consumer.h>
+#include <linux/sizes.h>
 #include <linux/stdarg.h>
 
 #include <drm/clients/drm_client_setup.h>
@@ -126,6 +133,18 @@ static bool mq11xx_present_dma;
 module_param_named(present_dma, mq11xx_present_dma, bool, 0644);
 MODULE_PARM_DESC(present_dma, "Copy damage into video memory with a DMA channel instead of the CPU; may be changed at run time (default: off)");
 
+/*
+ * Whether the driver uses the chip's 2D engine to clear video memory and to
+ * draw solid damage rectangles, on the chips where the engine is known to
+ * work. The engine's results on the MQ1188 were verified from userspace on
+ * one board only and the MQ1132 path has not run on hardware, so a user who
+ * sees corruption on a board has to be able to fall back to CPU drawing
+ * without a rebuild, and to compare the two on a running system.
+ */
+static bool mq11xx_engine = true;
+module_param_named(engine, mq11xx_engine, bool, 0644);
+MODULE_PARM_DESC(engine, "Clear video memory and draw solid damage with the 2D engine on chips where it is known to work; may be changed at run time (default: on)");
+
 #define DRIVER_MAJOR 1
 #define DRIVER_MINOR 0
 
@@ -140,12 +159,52 @@ MODULE_PARM_DESC(present_dma, "Copy damage into video memory with a DMA channel 
 #define MQ11XX_REG_MIU		0x080
 #define MQ11XX_REG_IC		0x100
 #define MQ11XX_REG_GC		0x180
-#define MQ11XX_REG_GE		0x200
 #define MQ11XX_REG_DC		0x380
 #define MQ11XX_REG_PCI		0x400
 #define MQ11XX_REG_FP		0x600
 
+/*
+ * Graphics engine (GE) bank. The MQ1132 datasheet puts it at 0x200. The
+ * MQ1188 has the same register layout at 0x1400: its WinCE display driver
+ * reaches the engine only there, and GE0A/GE0B written at 0x1428/0x142c
+ * read back while 0x228/0x22c keep their own values. On the MQ1188,
+ * 0x200-0x24c is an unrelated block (see mq11xx_h2200_init_regs[]).
+ */
+#define MQ1132_GE_BASE		0x200
+#define MQ1188_GE_BASE		0x1400
+
+/* Graphics engine registers, relative to the chip's engine bank. */
+#define MQ11XX_GE_COMMAND	0x00	/* ge00, starts the command */
+#define MQ11XX_GE_SIZE		0x04	/* ge01 */
+#define MQ11XX_GE_DEST		0x08	/* ge02 */
+#define MQ11XX_GE_DEST_STRIDE	0x28	/* ge0a */
+#define MQ11XX_GE_BASE_ADDR	0x2c	/* ge0b */
+#define MQ11XX_GE_PATTERN_FG	0x48	/* ge12 */
+
+#define MQ11XX_GE_ROP_PATCOPY	0xf0
+#define MQ11XX_GE_TYPE_BITBLT	(2 << 8)
+#define MQ11XX_GE_MONO_PATTERN	BIT(15)
+#define MQ11XX_GE_SOLID_PATTERN	BIT(30)
+
+#define MQ11XX_GE_X		GENMASK(11, 0)	/* ge01, ge02 */
+#define MQ11XX_GE_Y		GENMASK(27, 16)
+#define MQ11XX_GE_STRIDE	GENMASK(9, 0)	/* ge0a, bytes */
+#define MQ11XX_GE_DEPTH		GENMASK(31, 30)	/* ge0a: 0 8 bpp, 1 16 bpp */
+#define MQ11XX_GE_BASE_MASK	GENMASK(19, 3)	/* ge0b, 8-byte aligned */
+
+/*
+ * Video memory layout. The scanout frame starts at offset 0 (GC0C = 0 in
+ * every register table). The last KiB holds the hardware cursor image:
+ * GC11 addresses it in 1 KiB units, and both boards' WinCE drivers place
+ * it there.
+ */
+#define MQ11XX_SRAM_FRAME	0x00000
+#define MQ11XX_SRAM_CURSOR	0x3fc00
+#define MQ11XX_SRAM_CURSOR_SIZE	SZ_1K
+
 /* Individual registers this driver names and touches directly. */
+#define MQ11XX_CC_CONTROL	(MQ11XX_REG_CC + 0x00)	/* cc00 */
+#define MQ11XX_CC_STATUS	(MQ11XX_REG_CC + 0x04)	/* cc01 */
 #define MQ11XX_DC_CONFIG_0	(MQ11XX_REG_DC + 0x00)	/* endianness */
 #define MQ11XX_DC_CONFIG_1	(MQ11XX_REG_DC + 0x04)	/* oscillator */
 #define MQ11XX_DC_CONFIG_2	(MQ11XX_REG_DC + 0x08)	/* CC module enable */
@@ -187,6 +246,14 @@ MODULE_PARM_DESC(present_dma, "Copy damage into video memory with a DMA channel 
 #define MQ11XX_PCI_VENDOR_ID	(MQ11XX_REG_PCI + 0x00)
 #define MQ11XX_PCI_DEVICE_ID	(MQ11XX_REG_PCI + 0x02)
 
+/*
+ * The CPU interface caches frame buffer reads, and the cache does not see
+ * engine writes: after an engine fill a read of a word the CPU had read
+ * before returned the old value on an MQ1188, as the MQ1132 datasheet
+ * warns. CC00[1] turns the cache off.
+ */
+#define MQ11XX_CC_READ_CACHE_OFF	BIT(1)	/* cc00 */
+#define MQ11XX_CC_GE_BUSY		BIT(16)	/* cc01 */
 #define MQ11XX_CONFIG_CC_MODULE_ENABLE	BIT(0)	/* DC.config_2 */
 #define MQ11XX_CONFIG_GE_ENABLE	BIT(0)	/* DC.config_5 */
 #define MQ11XX_MIU_ENABLE		BIT(0)	/* MIU.miu_0 */
@@ -208,6 +275,82 @@ MODULE_PARM_DESC(present_dma, "Copy damage into video memory with a DMA channel 
 struct mq11xx_reg {
 	u16 offset;
 	u32 value;
+};
+
+/*
+ * Optional features of a chip. For the MQ1132 they come from its
+ * datasheet; for the MQ1188, which has none, a feature is listed only
+ * once it has been exercised on real silicon.
+ */
+#define MQ11XX_CAP_ENGINE	BIT(0)	/* 2D engine at .ge_base */
+#define MQ11XX_CAP_ROTATION	BIT(1)	/* GC00[13:12] + signed GC0E transforms */
+#define MQ11XX_CAP_PIXEL_DOUBLE	BIT(2)	/* GC00[15:14] */
+#define MQ11XX_CAP_ALT_WINDOW	BIT(3)	/* GC0D, GC00[11:10] */
+#define MQ11XX_CAP_PALETTE_8BPP	BIT(4)	/* 8 bpp through the palette at 0x800 */
+#define MQ11XX_CAP_CURSOR	BIT(5)	/* 64x64 2 bpp cursor, GC10-GC13 */
+#define MQ11XX_CAP_FRAME_LATCH	BIT(6)	/* IN02 VENABLE-falling frame latch */
+
+static const char * const mq11xx_cap_names[] = {
+	"engine", "rotation", "pixel-doubling", "alt-window",
+	"palette-8bpp", "cursor", "frame-latch",
+};
+
+/*
+ * Per-chip description, selected from the PCI device ID at bring-up. The
+ * board variant (struct mq11xx_variant) says how a board wires and
+ * programs its chip; this says what the silicon itself offers.
+ */
+struct mq11xx_chip {
+	u16 device_id;
+	const char *name;
+	u16 ge_base;
+	unsigned int caps;
+};
+
+#define MQ1132_CAPS	(MQ11XX_CAP_ENGINE | MQ11XX_CAP_ROTATION |		\
+			 MQ11XX_CAP_PIXEL_DOUBLE | MQ11XX_CAP_ALT_WINDOW |	\
+			 MQ11XX_CAP_PALETTE_8BPP | MQ11XX_CAP_CURSOR |		\
+			 MQ11XX_CAP_FRAME_LATCH)
+
+static const struct mq11xx_chip mq11xx_chips[] = {
+	{
+		.device_id = MQ11XX_PCI_DEVICE_1132,
+		.name = "MQ1132",
+		.ge_base = MQ1132_GE_BASE,
+		.caps = MQ1132_CAPS,
+	}, {
+		/* Covered by the same datasheet as the MQ1132. */
+		.device_id = MQ11XX_PCI_DEVICE_1100,
+		.name = "MQ1100",
+		.ge_base = MQ1132_GE_BASE,
+		.caps = MQ1132_CAPS,
+	}, {
+		/*
+		 * Measured on an h2200: engine fill and copy (including
+		 * overlapping copies), all eight scanout transforms, pixel
+		 * doubling, 8 bpp through the palette, the cursor fetch at
+		 * 0x3fc00 and the IN02 frame latch. The alternate window
+		 * takes its registers but was never shown to scan out, so it
+		 * stays off.
+		 */
+		.device_id = MQ11XX_PCI_DEVICE_1188,
+		.name = "MQ1188",
+		.ge_base = MQ1188_GE_BASE,
+		.caps = MQ1132_CAPS & ~MQ11XX_CAP_ALT_WINDOW,
+	}, {
+		/*
+		 * Presumed to share the MQ1188's layout, but no MQ1178 has
+		 * ever been read, so nothing optional is enabled.
+		 */
+		.device_id = MQ11XX_PCI_DEVICE_1178,
+		.name = "MQ1178",
+		.ge_base = MQ1188_GE_BASE,
+	},
+};
+
+/* Anything unrecognised gets the baseline: scanout only. */
+static const struct mq11xx_chip mq11xx_chip_unknown = {
+	.name = "unknown",
 };
 
 /*
@@ -306,6 +449,7 @@ struct mq11xx_device {
 	struct drm_device drm;
 
 	const struct mq11xx_variant *variant;
+	const struct mq11xx_chip *chip;
 
 	struct drm_plane primary_plane;
 	struct drm_crtc crtc;
@@ -331,6 +475,19 @@ struct mq11xx_device {
 	/* First hw_init done; later re-inits (every unblank) log at debug level. */
 	bool init_logged;
 	int pwm_level;
+
+	/*
+	 * Serialises engine commands, which the commit tail issues without
+	 * hw_lock; taken after hw_lock where both are held. ge_failed latches
+	 * the engine off after a command timed out. The engine surface
+	 * registers are rewritten only when the wanted layout differs from
+	 * ge_stride_reg/ge_base_reg, which bring-up invalidates.
+	 */
+	struct mutex ge_lock;
+	bool ge_failed;
+	bool ge_surface_valid;
+	u32 ge_stride_reg;
+	u32 ge_base_reg;
 
 	struct regulator *vdd;		/* h2200: MQ1178_VDD */
 	struct regulator *power;	/* h2200: MQ1178_POWER_ON;
@@ -410,7 +567,7 @@ static const struct drm_display_mode mq11xx_mode_h2200 = {
 
 /*
  * Power-on register table for the MediaQ 1178 as dumped from WinCE, limited
- * to the registers the chip actually has: a few GC/FP/GE registers, the SPI
+ * to the registers the chip actually has: a few GC/FP registers, the SPI
  * and UHC/I2S blocks and the FP frc_pattern tail at fp70-77 (MediaQ
  * 1100/1132 only) are left out, and DC.config_0/config_3 are handled in
  * mq11xx_chip_init() instead.
@@ -511,12 +668,17 @@ static const struct mq11xx_reg mq11xx_h2200_init_regs[] = {
 	{ MQ11XX_REG_FP + 0xf0, 0xff5efffd }, { MQ11XX_REG_FP + 0xf4, 0x7ffd77b7 },
 	{ MQ11XX_REG_FP + 0xf8, 0x6ff9fef7 }, { MQ11XX_REG_FP + 0xfc, 0x7ffafff7 },
 
-	/* GE: only ge0a/ge0b/ge11 are valid for the 1178; the rest are
-	 * either unconditionally "not set" or gated to other chip variants.
+	/*
+	 * MQ1188 0x200 block. These would be GE0A, GE0B and GE11 of an engine
+	 * at 0x200, but on the MQ1188 the engine is at 0x1400 and this block
+	 * is an undocumented one of its own: all three read back as latched
+	 * registers that engine writes do not disturb, and WinCE writes
+	 * 0x55 to 0x244 in its front-light sequence. The values are the ones
+	 * read off a running unit.
 	 */
-	{ MQ11XX_REG_GE + 0x28, 0x00000000 },	/* ge0a */
-	{ MQ11XX_REG_GE + 0x2c, 0x6b6ffeae },	/* ge0b */
-	{ MQ11XX_REG_GE + 0x44, 0x00000055 },	/* ge11 */
+	{ 0x228, 0x00000000 },
+	{ 0x22c, 0x6b6ffeae },
+	{ 0x244, 0x00000055 },
 };
 
 static const struct mq11xx_variant mq11xx_variant_h2200 = {
@@ -670,9 +832,11 @@ static const struct mq11xx_reg mq11xx_h5xxx_init_regs[] = {
 	{ MQ11XX_REG_FP + 0x1d4, 0x00000000 },	/* fp75 */
 	{ MQ11XX_REG_FP + 0x1d8, 0x95f9c859 },	/* fp76 */
 	{ MQ11XX_REG_FP + 0x1dc, 0x30388dc9 },	/* fp77 */
-	/* GE: only ge0a/ge0b are set for this chip. */
-	{ MQ11XX_REG_GE + 0x028, 0x40000280 },	/* ge0a */
-	{ MQ11XX_REG_GE + 0x02c, 0x00000000 },	/* ge0b */
+	/*
+	 * GE0A/GE0B (a 640-byte destination stride, base 0) are left out:
+	 * they match no mode this driver sets, and the engine pitch and base
+	 * belong to whatever issues engine commands.
+	 */
 };
 
 /*
@@ -837,6 +1001,35 @@ static int mq11xx_apply_envee_delta(struct mq11xx_device *mq)
 	return 0;
 }
 
+static void mq11xx_select_chip(struct mq11xx_device *mq, u16 device)
+{
+	const struct mq11xx_chip *chip = &mq11xx_chip_unknown;
+	char caps[96] = "";
+	unsigned int i;
+	int len = 0;
+
+	for (i = 0; i < ARRAY_SIZE(mq11xx_chips); i++) {
+		if (mq11xx_chips[i].device_id == device) {
+			chip = &mq11xx_chips[i];
+			break;
+		}
+	}
+	mq->chip = chip;
+
+	for (i = 0; i < ARRAY_SIZE(mq11xx_cap_names); i++) {
+		if (!(chip->caps & BIT(i)))
+			continue;
+		len += scnprintf(caps + len, sizeof(caps) - len, " %s",
+				 mq11xx_cap_names[i]);
+		if (BIT(i) == MQ11XX_CAP_ENGINE)
+			len += scnprintf(caps + len, sizeof(caps) - len,
+					 "@0x%x", chip->ge_base);
+	}
+
+	mq11xx_init_info(mq, "chip %s, capabilities:%s\n", chip->name,
+			 len ? caps : " none");
+}
+
 /*
  * Read the chip's PCI-compatible configuration header and log it, warning
  * on a mismatch with this variant's expectation. This is what tells a
@@ -871,6 +1064,8 @@ static void mq11xx_identify(struct mq11xx_device *mq)
 		mq11xx_init_info(mq,
 				 "PCI device 0x%04x is a tolerated alternate for the %s variant, using the init_regs of 0x%04x\n",
 				 device, mq->variant->name, mq->variant->expect_device_id);
+
+	mq11xx_select_chip(mq, vendor == MQ11XX_PCI_VENDOR_MEDIAQ ? device : 0);
 }
 
 /*
@@ -1005,6 +1200,279 @@ static void mq11xx_pwm_write_level(struct mq11xx_device *mq, unsigned int level)
 	writel(val, mq->regs + MQ11XX_FP_PULSE_WIDTH_MOD_CONTROL);
 }
 
+/* ------------------------------------------------------------------ */
+/* 2D graphics engine */
+
+/*
+ * The engine fills inside video memory on its own, so a clear or a solid
+ * rectangle costs a few register writes instead of every pixel crossing the
+ * 16-bit host bus at about 8 MB/s; an MQ1188 engine fills at about 185 MB/s.
+ * DRM has no 2D interface, so only the driver itself issues commands.
+ *
+ * Every command is synchronous: its operands, then GE00, then a bounded
+ * poll of the busy bit. So at most one command is ever queued, the FIFO
+ * level fields are never needed, and nothing is still drawing when the CPU
+ * next touches video memory. Neither auto-execute nor the host source FIFO
+ * is used: the chip holds the CPU's bus cycle while a FIFO is full, the
+ * PXA bus has no timeout, and a miscounted source push would hang the
+ * machine.
+ */
+
+/*
+ * A command's timeout: a fixed allowance plus the bytes it writes at 16 MB/s,
+ * a tenth of the rate measured on an MQ1188.
+ */
+#define MQ11XX_GE_TIMEOUT_BASE_US	2000
+#define MQ11XX_GE_TIMEOUT_BYTES_PER_US	16
+
+/* Below this, the command's register writes cost about what an upload does. */
+#define MQ11XX_GE_FILL_MIN_PIXELS	16
+
+/* The bring-up clear draws video memory as one surface of this pitch. */
+#define MQ11XX_GE_CLEAR_PITCH		512
+#define MQ11XX_GE_CLEAR_CHECKS		16
+
+static bool mq11xx_ge_capable(struct mq11xx_device *mq)
+{
+	return (mq->chip->caps & MQ11XX_CAP_ENGINE) && !READ_ONCE(mq->ge_failed);
+}
+
+static bool mq11xx_ge_wanted(struct mq11xx_device *mq)
+{
+	return READ_ONCE(mq11xx_engine) && mq11xx_ge_capable(mq);
+}
+
+static void mq11xx_ge_write(struct mq11xx_device *mq, unsigned int reg, u32 val)
+{
+	writel(val, mq->regs + mq->chip->ge_base + reg);
+}
+
+static u32 mq11xx_ge_xy(unsigned int x, unsigned int y)
+{
+	return FIELD_PREP(MQ11XX_GE_X, x) | FIELD_PREP(MQ11XX_GE_Y, y);
+}
+
+static unsigned int mq11xx_ge_cpp(struct mq11xx_device *mq)
+{
+	return FIELD_GET(MQ11XX_GE_DEPTH, mq->ge_stride_reg) + 1;
+}
+
+/* Coordinates and sizes are 12-bit fields. */
+static bool mq11xx_ge_rect_valid(const struct drm_rect *r)
+{
+	return r->x1 >= 0 && r->y1 >= 0 && r->x1 < r->x2 && r->y1 < r->y2 &&
+	       r->x2 <= FIELD_MAX(MQ11XX_GE_X) && r->y2 <= FIELD_MAX(MQ11XX_GE_Y);
+}
+
+/*
+ * Waits for the command just issued; the chip holds off CPU accesses to
+ * video memory while the engine draws, so nothing touches it before this
+ * returns 0. On a timeout, clearing the engine enable bit resets the
+ * engine's state machines and FIFOs, and the engine is not used again.
+ */
+static int mq11xx_ge_wait(struct mq11xx_device *mq, size_t bytes)
+{
+	unsigned long timeout_us = MQ11XX_GE_TIMEOUT_BASE_US +
+				   bytes / MQ11XX_GE_TIMEOUT_BYTES_PER_US;
+	u32 status, val;
+	int ret;
+
+	lockdep_assert_held(&mq->ge_lock);
+
+	ret = readl_poll_timeout_atomic(mq->regs + MQ11XX_CC_STATUS, status,
+					!(status & MQ11XX_CC_GE_BUSY), 1,
+					timeout_us);
+	if (!ret)
+		return 0;
+
+	drm_err(&mq->drm,
+		"graphics engine busy for %lu us (CC01 0x%08x), resetting it and drawing with the CPU from now on\n",
+		timeout_us, status);
+
+	val = readl(mq->regs + MQ11XX_DC_CONFIG_5);
+	writel(val & ~MQ11XX_CONFIG_GE_ENABLE, mq->regs + MQ11XX_DC_CONFIG_5);
+	writel(val, mq->regs + MQ11XX_DC_CONFIG_5);
+
+	WRITE_ONCE(mq->ge_failed, true);
+	mq->ge_surface_valid = false;
+
+	status = readl(mq->regs + MQ11XX_CC_STATUS);
+	if (status & MQ11XX_CC_GE_BUSY)
+		drm_err(&mq->drm, "graphics engine still busy after its reset (CC01 0x%08x)\n",
+			status);
+
+	return ret;
+}
+
+/*
+ * Points the engine at a pitch-linear surface of @cpp bytes per pixel
+ * starting @base bytes into video memory. The engine takes the stride from
+ * GE0A for both source and destination, so every command draws within this
+ * one surface. The first command after a bring-up also turns the frame
+ * buffer read cache off, since the CPU reads what the engine wrote.
+ */
+static int mq11xx_ge_set_surface(struct mq11xx_device *mq, size_t base,
+				 unsigned int pitch, unsigned int cpp)
+{
+	u32 stride;
+
+	lockdep_assert_held(&mq->ge_lock);
+
+	if (cpp < 1 || cpp > 2 || pitch > FIELD_MAX(MQ11XX_GE_STRIDE) ||
+	    (base & ~MQ11XX_GE_BASE_MASK))
+		return -EINVAL;
+
+	stride = FIELD_PREP(MQ11XX_GE_STRIDE, pitch) |
+		 FIELD_PREP(MQ11XX_GE_DEPTH, cpp - 1);
+
+	if (mq->ge_surface_valid && mq->ge_stride_reg == stride &&
+	    mq->ge_base_reg == base)
+		return 0;
+
+	if (!mq->ge_surface_valid)
+		writel(MQ11XX_CC_READ_CACHE_OFF, mq->regs + MQ11XX_CC_CONTROL);
+
+	mq11xx_ge_write(mq, MQ11XX_GE_DEST_STRIDE, stride);
+	mq11xx_ge_write(mq, MQ11XX_GE_BASE_ADDR, base);
+	mq->ge_stride_reg = stride;
+	mq->ge_base_reg = base;
+	mq->ge_surface_valid = true;
+
+	return 0;
+}
+
+/* Fills @r of the current surface with @colour, a pixel value. */
+static int mq11xx_ge_fill(struct mq11xx_device *mq, const struct drm_rect *r,
+			  u32 colour)
+{
+	unsigned int w = drm_rect_width(r), h = drm_rect_height(r);
+
+	lockdep_assert_held(&mq->ge_lock);
+
+	if (!mq11xx_ge_capable(mq) || !mq->ge_surface_valid)
+		return -ENODEV;
+	if (!mq11xx_ge_rect_valid(r))
+		return -EINVAL;
+
+	mq11xx_ge_write(mq, MQ11XX_GE_SIZE, mq11xx_ge_xy(w, h));
+	mq11xx_ge_write(mq, MQ11XX_GE_DEST, mq11xx_ge_xy(r->x1, r->y1));
+	mq11xx_ge_write(mq, MQ11XX_GE_PATTERN_FG, colour);
+	mq11xx_ge_write(mq, MQ11XX_GE_COMMAND,
+			MQ11XX_GE_ROP_PATCOPY | MQ11XX_GE_TYPE_BITBLT |
+			MQ11XX_GE_MONO_PATTERN | MQ11XX_GE_SOLID_PATTERN);
+
+	return mq11xx_ge_wait(mq, (size_t)w * h * mq11xx_ge_cpp(mq));
+}
+
+/*
+ * Clears video memory with one fill of a 512-byte-pitch surface covering
+ * all of it, then spot-checks the result. Whatever the engine did not
+ * clear, the CPU does; a clear that reads back wrong also latches the
+ * engine off.
+ */
+static void mq11xx_ge_clear_vram(struct mq11xx_device *mq)
+{
+	unsigned int lines = mq->vram_size / MQ11XX_GE_CLEAR_PITCH;
+	size_t done = (size_t)lines * MQ11XX_GE_CLEAR_PITCH;
+	size_t step = done / MQ11XX_GE_CLEAR_CHECKS, off = 0;
+	struct drm_rect r = DRM_RECT_INIT(0, 0, MQ11XX_GE_CLEAR_PITCH / 2, lines);
+	unsigned int i;
+	u32 val = 0;
+
+	if (!step || mq11xx_ge_set_surface(mq, MQ11XX_SRAM_FRAME,
+					   MQ11XX_GE_CLEAR_PITCH, 2) ||
+	    mq11xx_ge_fill(mq, &r, 0))
+		goto fallback;
+
+	/* The first and the last word of each sixteenth. */
+	for (i = 0; i < 2 * MQ11XX_GE_CLEAR_CHECKS; i++) {
+		off = (i / 2) * step + (i & 1 ? step - sizeof(u32) : 0);
+		val = readl(mq->vram + off);
+		if (val) {
+			drm_err(&mq->drm,
+				"graphics engine clear left 0x%08x at video memory offset 0x%zx, drawing with the CPU from now on\n",
+				val, off);
+			WRITE_ONCE(mq->ge_failed, true);
+			goto fallback;
+		}
+	}
+
+	if (done < mq->vram_size)
+		memset_io(mq->vram + done, 0, mq->vram_size - done);
+	return;
+
+fallback:
+	memset_io(mq->vram, 0, mq->vram_size);
+}
+
+/*
+ * Engine half of every bring-up, after the register table load, which has
+ * left GE0A/GE0B undefined and the read cache on. @clear: video memory is
+ * still to be cleared, by the engine.
+ */
+static void mq11xx_ge_bring_up(struct mq11xx_device *mq, bool clear)
+{
+	mutex_lock(&mq->ge_lock);
+	mq->ge_surface_valid = false;
+	if (clear)
+		mq11xx_ge_clear_vram(mq);
+	mutex_unlock(&mq->ge_lock);
+}
+
+/* Whether the @r pixels at @vaddr, @pitch bytes per row, are all one RGB565 value. */
+static bool mq11xx_rect_is_solid16(const void *vaddr, unsigned int pitch,
+				   const struct drm_rect *r, u32 *colour)
+{
+	unsigned int w = drm_rect_width(r), h = drm_rect_height(r), x, y;
+	__le16 c = *(const __le16 *)vaddr;
+
+	for (y = 0; y < h; y++) {
+		const __le16 *px = vaddr + y * pitch;
+
+		for (x = 0; x < w; x++)
+			if (px[x] != c)
+				return false;
+	}
+
+	*colour = le16_to_cpu(c);
+	return true;
+}
+
+/*
+ * Draws a damage rectangle whose shadow pixels are all one colour with an
+ * engine fill instead of uploading it: clears, letterbox bars and blank
+ * console lines then cost no host bus traffic. The shadow buffer is
+ * cached system memory, and the scan stops at the first differing pixel.
+ * The engine surface is the frame as the CPU path writes it, at the frame
+ * buffer's own pitch. Returns 0 when the engine drew the rectangle.
+ */
+static int mq11xx_ge_fill_damage(struct mq11xx_device *mq,
+				 struct drm_framebuffer *fb,
+				 const struct iosys_map *data,
+				 const struct drm_rect *damage)
+{
+	unsigned int pitch = fb->pitches[0];
+	u32 colour;
+	int ret;
+
+	if (!mq11xx_ge_wanted(mq) || fb->format->cpp[0] != 2 || data->is_iomem ||
+	    drm_rect_width(damage) * drm_rect_height(damage) < MQ11XX_GE_FILL_MIN_PIXELS)
+		return -ENODEV;
+
+	if (!mq11xx_rect_is_solid16(data->vaddr +
+				    drm_fb_clip_offset(pitch, fb->format, damage),
+				    pitch, damage, &colour))
+		return -EINVAL;
+
+	mutex_lock(&mq->ge_lock);
+	ret = mq11xx_ge_set_surface(mq, MQ11XX_SRAM_FRAME, pitch, 2);
+	if (!ret)
+		ret = mq11xx_ge_fill(mq, damage, colour);
+	mutex_unlock(&mq->ge_lock);
+
+	return ret;
+}
+
 /*
  * Full bring-up from power-off: rails and reset, the video memory clear,
  * then mq11xx_chip_init()'s register load. Runs at probe and again on
@@ -1014,9 +1482,16 @@ static void mq11xx_pwm_write_level(struct mq11xx_device *mq, unsigned int level)
  */
 static int mq11xx_hw_init(struct mq11xx_device *mq)
 {
+	bool ge_clear;
 	int ret;
 
 	lockdep_assert_held(&mq->hw_lock);
+
+	/*
+	 * The chip is identified during the register load, so only a re-init
+	 * already knows whether its engine can clear video memory.
+	 */
+	ge_clear = mq11xx_ge_wanted(mq);
 
 	ret = mq11xx_power_up(mq);
 	if (ret)
@@ -1030,14 +1505,20 @@ static int mq11xx_hw_init(struct mq11xx_device *mq)
 	 * is visible as noise until then. It must run after
 	 * mq11xx_power_up(): a CPU write to the chip select while the chip
 	 * is unpowered or held in reset does not reach the memory.
+	 * The engine clear instead runs after the register load, which
+	 * programs the engine, and still before scanout starts; the CPU
+	 * clear takes about 30 ms of bus time, the engine's under 2 ms.
 	 */
-	memset_io(mq->vram, 0, mq->vram_size);
+	if (!ge_clear)
+		memset_io(mq->vram, 0, mq->vram_size);
 
 	ret = mq11xx_chip_init(mq);
 	if (ret) {
 		mq11xx_power_down(mq);
 		return ret;
 	}
+
+	mq11xx_ge_bring_up(mq, ge_clear);
 
 	mq->powered = true;
 	mq->init_logged = true;
@@ -1641,6 +2122,10 @@ static void mq11xx_primary_plane_helper_atomic_update(struct drm_plane *plane,
 		unsigned int offset = drm_fb_clip_offset(fb->pitches[0], fb->format, &damage);
 		struct iosys_map dst = IOSYS_MAP_INIT_OFFSET(&vram_map, offset);
 
+		if (!mq11xx_ge_fill_damage(mq, fb, shadow_plane_state->data,
+					   &damage))
+			continue;
+
 		if (dma && !mq11xx_present_dma_rect(mq, fb, shadow_plane_state->data,
 						    &damage))
 			continue;
@@ -1872,6 +2357,7 @@ static int mq11xx_probe(struct platform_device *pdev)
 	drm = &mq->drm;
 
 	mq->variant = device_get_match_data(dev);
+	mq->chip = &mq11xx_chip_unknown;
 	if (!mq->variant)
 		return -ENODEV;
 
@@ -1929,6 +2415,9 @@ static int mq11xx_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(mq->backlight), "failed to get backlight\n");
 
 	ret = drmm_mutex_init(drm, &mq->hw_lock);
+	if (ret)
+		return ret;
+	ret = drmm_mutex_init(drm, &mq->ge_lock);
 	if (ret)
 		return ret;
 	mq->pwm_level = -1;
