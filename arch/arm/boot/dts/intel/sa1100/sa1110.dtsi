@@ -235,5 +235,28 @@
 				 <5 0 0x48000000 0x08000000>;
 			status = "disabled";
 		};
+
+		/*
+		 * Socket 0 of the SA-1110's expansion memory bus PC Card
+		 * interface (drivers/pcmcia/sa1100_generic.c,
+		 * Documentation/devicetree/bindings/pcmcia/
+		 * intel,sa1110-pcmcia.yaml). The 256 MiB window is fixed by
+		 * the silicon and is the socket's identity; its four 64 MiB
+		 * partitions (I/O, reserved, attribute, common memory) are a
+		 * fixed sub-division the driver derives, not a board fact.
+		 * Access timing is per-socket bit fields, counted in core
+		 * clock cycles, inside the memory controller's shared MECR
+		 * word, which is why this is a peer of "smc" above rather than
+		 * one of its chip-select children. status = "disabled": every
+		 * status line, the card reset and Vcc are board wiring, so a
+		 * board with no socket has nothing here to describe. Socket 1
+		 * (0x30000000) gets its own node when a board populates it.
+		 */
+		pcmcia0: pcmcia@20000000 {
+			compatible = "intel,sa1110-pcmcia";
+			reg = <0x20000000 0x10000000>;
+			clocks = <&clks SA1100_CLK_CPU>;
+			status = "disabled";
+		};
 	};
 };
