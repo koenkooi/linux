@@ -59,11 +59,13 @@
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/io.h>
+#include <linux/math64.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/property.h>
+#include <linux/pwm.h>
 #include <linux/regulator/consumer.h>
 
 #include <drm/clients/drm_client_setup.h>
@@ -120,6 +122,25 @@
 #define MQ11XX_GC_CONTROL	(MQ11XX_REG_GC + 0x00)
 #define MQ11XX_GC_WINDOW_STRIDE	(MQ11XX_REG_GC + 0x38)	/* gc0e, bytes/scanline */
 #define MQ11XX_FP_OUTPUT_CONTROL (MQ11XX_REG_FP + 0x08)
+/*
+ * FP.pulse_width_mod_control (fp0f): two independent 8-bit duty fields for the
+ * internal two-channel PWM generator of the chip, channel 0 in bits 15:8 and
+ * channel 1 in bits 31:24. Only channel 0 has a known consumer, the backlight
+ * of the h5xxx, so only one pwm_chip line is exported, see
+ * mq11xx_variant.has_internal_pwm.
+ */
+#define MQ11XX_FP_PULSE_WIDTH_MOD_CONTROL (MQ11XX_REG_FP + 0x3c)
+#define MQ11XX_PWM_CHAN0_SHIFT	8
+#define MQ11XX_PWM_MAX_LEVEL	0xff
+/*
+ * The real period of the generator is set by the frc_pattern and
+ * pwm_clock_selector entries of mq11xx_h5xxx_init_regs[], and no datasheet
+ * states what that is in time units. The driver therefore declares a fixed
+ * nominal period of 1 kHz, a conventional backlight PWM frequency, and
+ * expresses the duty against it. The ratio that is programmed is exact, the
+ * absolute frequency reported with it is a placeholder.
+ */
+#define MQ11XX_PWM_PERIOD_NS	1000000
 /* PCI configuration header: little-endian 16-bit vendor_id, then device_id */
 #define MQ11XX_PCI_VENDOR_ID	(MQ11XX_REG_PCI + 0x00)
 #define MQ11XX_PCI_DEVICE_ID	(MQ11XX_REG_PCI + 0x02)
@@ -218,6 +239,15 @@ struct mq11xx_variant {
 	 * the wrong panel on a unit that runs the Philips table.
 	 */
 	bool envee_default_philips;
+	/*
+	 * True if the channel 0 duty field of the PWM register is the
+	 * backlight brightness control of the board, so that the variant
+	 * exports a pwm_chip, see mq11xx_pwm_chip_register(). On the h2200
+	 * the brightness is modulated by the PWM peripheral of the PXA SoC
+	 * instead, which is independent of this chip. The h5xxx has no such
+	 * wiring and no other brightness path.
+	 */
+	bool has_internal_pwm;
 };
 
 struct mq11xx_device {
@@ -624,6 +654,8 @@ static const struct mq11xx_variant mq11xx_variant_h5xxx = {
 	 * Sharp panel would need its own variant.
 	 */
 	.envee_default_philips = true,
+	/* The only backlight brightness path of the h5xxx */
+	.has_internal_pwm = true,
 };
 
 static const struct of_device_id mq11xx_of_match[] = {
@@ -919,6 +951,117 @@ static void mq11xx_output_disable(struct mq11xx_device *mq)
 	writel(val & ~MQ11XX_CONFIG_GE_ENABLE, mq->regs + MQ11XX_DC_CONFIG_5);
 
 	writel(0, mq->regs + MQ11XX_FP_OUTPUT_CONTROL);
+}
+
+/*
+ * Backlight brightness of the h5xxx. The duty levels are 8 bits and inverted:
+ * the duty count of channel 0 of the chip runs opposite to the brightness on
+ * the screen, so the darkest level is the highest count.
+ *
+ * The period is fixed in hardware, MQ11XX_PWM_PERIOD_NS, so a request for a
+ * shorter one is refused and a longer one rounds down to it, the usual
+ * contract for a PWM whose only programmable field is the duty.
+ */
+static int mq11xx_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
+			    const struct pwm_state *state)
+{
+	struct mq11xx_device *mq = dev_get_drvdata(pwmchip_parent(chip));
+	unsigned int level;
+	u64 duty;
+	u32 val;
+	int idx;
+
+	if (state->polarity != PWM_POLARITY_NORMAL)
+		return -EINVAL;
+	if (state->period < MQ11XX_PWM_PERIOD_NS)
+		return -EINVAL;
+
+	duty = min_t(u64, state->duty_cycle, MQ11XX_PWM_PERIOD_NS);
+	if (!state->enabled)
+		duty = 0;
+
+	/* Darkest is the highest count, see the comment above. */
+	level = MQ11XX_PWM_MAX_LEVEL -
+		div_u64(duty * MQ11XX_PWM_MAX_LEVEL, MQ11XX_PWM_PERIOD_NS);
+
+	if (!drm_dev_enter(&mq->drm, &idx))
+		return -ENODEV;
+
+	val = readl(mq->regs + MQ11XX_FP_PULSE_WIDTH_MOD_CONTROL);
+	val &= ~(MQ11XX_PWM_MAX_LEVEL << MQ11XX_PWM_CHAN0_SHIFT);
+	val |= level << MQ11XX_PWM_CHAN0_SHIFT;
+	writel(val, mq->regs + MQ11XX_FP_PULSE_WIDTH_MOD_CONTROL);
+
+	drm_dev_exit(idx);
+
+	return 0;
+}
+
+/*
+ * fp0f holds no enable bit of its own, the generator always runs, so the
+ * darkest count is reported back as disabled, the same compromise that
+ * pwm-iqs620a makes for its duty only device. Rounding the duty up makes
+ * .apply() idempotent over the read-back state: .apply() rounds the same
+ * conversion down, so an unrounded read would come back one count darker
+ * every time the core re-applied it.
+ */
+static int mq11xx_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
+				struct pwm_state *state)
+{
+	struct mq11xx_device *mq = dev_get_drvdata(pwmchip_parent(chip));
+	unsigned int level, duty_level;
+	int idx;
+
+	if (!drm_dev_enter(&mq->drm, &idx))
+		return -ENODEV;
+
+	level = (readl(mq->regs + MQ11XX_FP_PULSE_WIDTH_MOD_CONTROL) >>
+		 MQ11XX_PWM_CHAN0_SHIFT) & MQ11XX_PWM_MAX_LEVEL;
+
+	drm_dev_exit(idx);
+
+	duty_level = MQ11XX_PWM_MAX_LEVEL - level;
+
+	state->period = MQ11XX_PWM_PERIOD_NS;
+	state->polarity = PWM_POLARITY_NORMAL;
+	state->enabled = duty_level > 0;
+	state->duty_cycle = DIV_ROUND_UP_ULL((u64)duty_level * MQ11XX_PWM_PERIOD_NS,
+					     MQ11XX_PWM_MAX_LEVEL);
+
+	return 0;
+}
+
+static const struct pwm_ops mq11xx_pwm_ops = {
+	.apply = mq11xx_pwm_apply,
+	.get_state = mq11xx_pwm_get_state,
+};
+
+/*
+ * Best effort, not fatal to probe(): the display works with the brightness
+ * that the fp0f entry of mq11xx_h5xxx_init_regs[] left in the register, so a
+ * failure to register the pwm_chip, which realistically means memory
+ * exhaustion, must not turn a working display into a probe failure. The
+ * platform device has no devicetree node yet, so no consumer can be wired
+ * to it from the devicetree either.
+ */
+static void mq11xx_pwm_chip_register(struct mq11xx_device *mq, struct device *dev)
+{
+	struct pwm_chip *chip;
+	int ret;
+
+	chip = devm_pwmchip_alloc(dev, 1, 0);
+	if (IS_ERR(chip)) {
+		drm_warn(&mq->drm, "devm_pwmchip_alloc failed (%ld), backlight brightness stays fixed\n",
+			 PTR_ERR(chip));
+		return;
+	}
+
+	chip->ops = &mq11xx_pwm_ops;
+
+	ret = devm_pwmchip_add(dev, chip);
+	if (ret)
+		drm_warn(&mq->drm, "devm_pwmchip_add failed (%d), backlight brightness stays fixed\n",
+			 ret);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1249,6 +1392,9 @@ static int mq11xx_probe(struct platform_device *pdev)
 	ret = mq11xx_chip_init(mq);
 	if (ret)
 		return dev_err_probe(dev, ret, "chip bring-up failed\n");
+
+	if (mq->variant->has_internal_pwm)
+		mq11xx_pwm_chip_register(mq, dev);
 
 	ret = mq11xx_mode_config_init(mq);
 	if (ret)
