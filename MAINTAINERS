@@ -7171,6 +7171,13 @@ L:	linux-input@vger.kernel.org
 S:	Supported
 F:	drivers/input/keyboard/dlink-dir685-touchkeys.c
 
+DALLAS DS1WM 1-WIRE MASTER DRIVER
+M:	Koen Kooi <koen@dominion.thruhere.net>
+S:	Maintained
+F:	Documentation/devicetree/bindings/w1/dallas,ds1wm.yaml
+F:	drivers/w1/masters/ds1wm.c
+F:	include/linux/mfd/ds1wm.h
+
 DALLAS/MAXIM DS1685-FAMILY REAL TIME CLOCK
 M:	Joshua Kinard <linux@kumba.dev>
 S:	Maintained
