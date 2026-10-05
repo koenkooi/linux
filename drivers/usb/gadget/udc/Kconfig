@@ -222,6 +222,23 @@ config USB_PXA27X
 	   dynamically linked module called "pxa27x_udc" and force all
 	   gadget drivers to also be dynamically linked.
 
+config USB_SA1100
+	tristate "SA-1100/SA-1110"
+	depends on ARCH_SA1100 || COMPILE_TEST
+	depends on USB_GADGET
+	help
+	   Intel/Marvell's SA-1100 and SA-1110 StrongARM processors include
+	   an integrated full speed USB 1.1 device controller.
+
+	   It has exactly three fixed-function endpoints: ep0 (for control
+	   transfers), one bulk-OUT and one bulk-IN endpoint. There is no
+	   interrupt endpoint of any kind, so gadget function drivers that
+	   need one (such as CDC ACM) cannot be used with this controller.
+
+	   Say "y" to link the driver statically, or "m" to build a
+	   dynamically linked module called "sa1100_udc" and force all
+	   gadget drivers to also be dynamically linked.
+
 config USB_SNP_CORE
 	depends on (USB_AMD5536UDC || USB_SNP_UDC_PLAT)
 	depends on HAS_DMA
