@@ -29,7 +29,13 @@
  *    as a gate. EX1 and EX2 are plain gates and are not modelled as
  *    parents of the peripheral gates that depend on them, as no consumer
  *    needs rate information.
- *  - Sub-devices: devm_mfd_add_devices() with no cells yet.
+ *  - Sub-devices: one devm_mfd_add_devices() call registers the cells:
+ *    "ds1wm" (the 1-Wire driver as is, since the register layout matches
+ *    it with bus_shift = 2), "asic2-spi" (drivers/spi/spi-asic2.c),
+ *    "asic2-pwm" (drivers/pwm/pwm-asic2.c), "asic2-keys"
+ *    (drivers/input/keyboard/asic2-keys.c, the KPIO keypad, which is not
+ *    gpio-keys because its bits are not addressable GPIO lines) and
+ *    "asic2-adc" (drivers/iio/adc/asic2-adc.c).
  *
  * KPIO's InterruptEnable register (offset 0x001c) must not be read back,
  * so this driver keeps a software shadow of its state instead of doing
@@ -52,6 +58,7 @@
 #include <linux/kernel.h>
 #include <linux/mfd/asic2.h>
 #include <linux/mfd/core.h>
+#include <linux/mfd/ds1wm.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
@@ -968,7 +975,7 @@ static const struct {
 				    0, 0, ASIC2_EX1_RATE },
 	[ASIC2_GATE_OWM]	= { "asic2-owm",	"ds1wm",	ASIC2_CLOCK_OWM,
 				    0, 0, ASIC2_OWM_RATE },
-	[ASIC2_GATE_PWM]	= { "asic2-pwm",	NULL,		ASIC2_CLOCK_PWM },
+	[ASIC2_GATE_PWM]	= { "asic2-pwm",	"asic2-pwm",	ASIC2_CLOCK_PWM },
 	[ASIC2_GATE_UART_0]	= { "asic2-uart0",	NULL,		ASIC2_CLOCK_UART_0 },
 	[ASIC2_GATE_UART_1]	= { "asic2-uart1",	NULL,		ASIC2_CLOCK_UART_1 },
 	[ASIC2_GATE_EX2]	= { "asic2-ex2",	NULL,		ASIC2_CLOCK_EX2 },
@@ -1025,9 +1032,147 @@ static int asic2_clocks_register(struct asic2 *asic)
 		}
 	}
 
+	/*
+	 * EX1 (24.576 MHz) is the shared crystal feeding ADC, SPI, OWM and
+	 * PWM. It is not modelled as a parent of the ADC, SPI and PWM gates,
+	 * so each of those consumers acquires it as a second clock named
+	 * "ex1" besides its own peripheral gate. OWM is the exception, see
+	 * above.
+	 */
+	ret = devm_clk_hw_register_clkdev(asic->dev, &asic->gates[ASIC2_GATE_EX1].hw,
+					  "ex1", "asic2-spi");
+	if (ret)
+		return ret;
+	ret = devm_clk_hw_register_clkdev(asic->dev, &asic->gates[ASIC2_GATE_EX1].hw,
+					  "ex1", "asic2-adc");
+	if (ret)
+		return ret;
+	ret = devm_clk_hw_register_clkdev(asic->dev, &asic->gates[ASIC2_GATE_EX1].hw,
+					  "ex1", "asic2-pwm");
+	if (ret)
+		return ret;
+
 	return 0;
 }
 
+static const struct ds1wm_driver_data asic2_ds1wm_pdata = {
+	.bus_shift		= 2,
+	/*
+	 * The driver sets the IAS bit of DS1WM_INT_EN only when active_high
+	 * is set, and the OWM block of this chip needs INT_EN = 0x13
+	 * (ERBF | IAS | EPD) to deliver the presence-detect interrupt.
+	 */
+	.active_high		= 1,
+	.reset_recover_delay	= 1,
+};
+
+static const struct resource asic2_ds1wm_resources[] = {
+	DEFINE_RES_MEM(ASIC2_OWM_BASE, 0x14),
+	DEFINE_RES_IRQ(ASIC2_IRQ_OWM),
+};
+
+static const struct resource asic2_spi_resources[] = {
+	DEFINE_RES_MEM(ASIC2_SPI_BASE, 0x0c),
+	DEFINE_RES_IRQ(ASIC2_IRQ_SPI),
+};
+
+static const struct resource asic2_pwm_resources[] = {
+	DEFINE_RES_MEM(ASIC2_PWM_0_BASE, ASIC2_PWM_1_BASE - ASIC2_PWM_0_BASE + 0x0c),
+};
+
+/*
+ * The 12 keypad lines live in the KPIO block's Data register, with one
+ * grouped hwirq (ASIC2_IRQ_KEY). They are not gpio-keys: KPIO's bits are
+ * not registered as GPIOs, so asic2-keys reads and diffs the Data register
+ * directly. The window covers the Data (relative 0x14) and Alternate
+ * (relative 0x3c) registers.
+ */
+static const struct resource asic2_keys_resources[] = {
+	DEFINE_RES_MEM(ASIC2_KPIO_BASE, 0x40),
+	DEFINE_RES_IRQ(ASIC2_IRQ_KEY),
+};
+
+/*
+ * Only ASIC2_IRQ_ADC, the conversion-complete interrupt, is requested; the
+ * pen interrupt (ASIC2_IRQ_PEN) belongs to the touchscreen path, which this
+ * cell does not cover.
+ */
+static const struct resource asic2_adc_resources[] = {
+	DEFINE_RES_MEM(ASIC2_ADC_BASE, 0x0c),
+	DEFINE_RES_IRQ(ASIC2_IRQ_ADC),
+};
+
+static struct mfd_cell asic2_cells[] = {
+	{
+		/*
+		 * drivers/w1/masters/ds1wm.c. MMIO and IRQ come from
+		 * asic2_ds1wm_resources[]; the of_compatible only gives a
+		 * board's "onewire" child node a device to bind to, so the
+		 * driver can read its "dallas,*" properties in preference to
+		 * asic2_ds1wm_pdata, which stays as the fallback.
+		 */
+		.name		= "ds1wm",
+		.id		= PLATFORM_DEVID_NONE,
+		.of_compatible	= "htc,asic2-onewire",
+		.platform_data	= &asic2_ds1wm_pdata,
+		.pdata_size	= sizeof(asic2_ds1wm_pdata),
+		.resources	= asic2_ds1wm_resources,
+		.num_resources	= ARRAY_SIZE(asic2_ds1wm_resources),
+	},
+	{
+		/* drivers/spi/spi-asic2.c */
+		.name		= "asic2-spi",
+		.id		= PLATFORM_DEVID_NONE,
+		.resources	= asic2_spi_resources,
+		.num_resources	= ARRAY_SIZE(asic2_spi_resources),
+	},
+	{
+		/*
+		 * drivers/pwm/pwm-asic2.c. The of_compatible gives the cell a
+		 * device node when the board has a "pwm" child: of_pwm_get()
+		 * resolves the "pwms" phandle of a pwm-backlight consumer
+		 * through fwnode_to_pwmchip(), which cannot match a chip with
+		 * no of_node, and the driver reads the board's divider and
+		 * period from that node.
+		 */
+		.name		= "asic2-pwm",
+		.id		= PLATFORM_DEVID_NONE,
+		.of_compatible	= "htc,asic2-pwm",
+		.resources	= asic2_pwm_resources,
+		.num_resources	= ARRAY_SIZE(asic2_pwm_resources),
+	},
+	{
+		/*
+		 * drivers/input/keyboard/asic2-keys.c. The MMIO and IRQ come
+		 * from asic2_keys_resources[], not from the node. The
+		 * of_compatible gives the cell the "keys" child node of the
+		 * board, which the driver reads its key table from.
+		 */
+		.name		= "asic2-keys",
+		.id		= PLATFORM_DEVID_NONE,
+		.of_compatible	= "htc,asic2-keys",
+		.resources	= asic2_keys_resources,
+		.num_resources	= ARRAY_SIZE(asic2_keys_resources),
+	},
+	{
+		/*
+		 * drivers/iio/adc/asic2-adc.c: the light sensor, Imin and
+		 * battery channels only. The touchpanel channels would need
+		 * the four GPIO2 touchscreen bits driven in a plate-switching
+		 * sequence, which this cell does not do.
+		 *
+		 * The of_compatible gives the ADC a firmware node, which the
+		 * driver does not need itself. Consumers that resolve an
+		 * io-channels phandle, such as a battery node, need the
+		 * provider to have one.
+		 */
+		.name		= "asic2-adc",
+		.id		= PLATFORM_DEVID_NONE,
+		.of_compatible	= "htc,asic2-adc",
+		.resources	= asic2_adc_resources,
+		.num_resources	= ARRAY_SIZE(asic2_adc_resources),
+	},
+};
 /*
  * PXA GPIO interrupts are edge-only and ASIC2_INT stays asserted while any
  * enabled source is pending. If the edge that woke the core is not delivered
@@ -1140,10 +1285,10 @@ static int asic2_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to register clocks\n");
 
-	/* No cells yet */
-	ret = devm_mfd_add_devices(dev, 0, NULL, 0, NULL, 0, asic->domain);
+	ret = devm_mfd_add_devices(dev, 0, asic2_cells, ARRAY_SIZE(asic2_cells),
+				   mem, 0, asic->domain);
 	if (ret)
-		return dev_err_probe(dev, ret, "failed to init MFD core\n");
+		return dev_err_probe(dev, ret, "failed to add sub-devices\n");
 
 	dev_dbg(dev, "ASIC2 core ready, chained on IRQ %d\n", irq);
 
