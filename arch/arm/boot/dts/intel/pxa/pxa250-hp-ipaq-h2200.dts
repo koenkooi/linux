@@ -75,6 +75,29 @@
 	};
 
 	/*
+	 * The MediaQ's two switched supplies, both active-high PXA GPIOs.
+	 * Polarity comes from enable-active-high alone: gpiolib ignores the
+	 * phandle flag on a regulator-fixed node's "gpio". The 10 ms startup
+	 * delay of POWER_ON is the settle time of the vendor code; the 2 ms on
+	 * VDD is an unconfirmed allowance for the switch to settle.
+	 */
+	mq_vdd: regulator-mq-vdd {
+		compatible = "regulator-fixed";
+		regulator-name = "MQ1178_VDD";
+		gpios = <&gpio 60 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		startup-delay-us = <2000>;
+	};
+
+	mq_power: regulator-mq-power {
+		compatible = "regulator-fixed";
+		regulator-name = "MQ1178_POWER_ON";
+		gpios = <&gpio 67 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		startup-delay-us = <10000>;
+	};
+
+	/*
 	 * CompactFlash socket. The shared PXA PCMCIA driver is matched by
 	 * name and needs board callbacks that no property can express, so
 	 * the board code registers the platform device and merely looks this
