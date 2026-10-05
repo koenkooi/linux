@@ -12051,8 +12051,11 @@ L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
 S:	Maintained
 F:	Documentation/devicetree/bindings/leds/htc,asic*-leds.yaml
 F:	Documentation/devicetree/bindings/mfd/htc,asic*.yaml
+F:	Documentation/devicetree/bindings/mmc/htc,asic*.yaml
+F:	Documentation/devicetree/bindings/pwm/htc,asic2-pwm.yaml
 F:	drivers/leds/leds-asic*.c
 F:	drivers/mfd/asic*.c
+F:	include/dt-bindings/clock/htc,asic2.h
 F:	include/linux/mfd/asic*.h
 
 HTCPEN TOUCHSCREEN DRIVER
