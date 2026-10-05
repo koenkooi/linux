@@ -69,6 +69,7 @@ config DRM_GM12U320
 config DRM_MQ11XX
 	tristate "DRM support for the MediaQ 11xx family (HP iPAQ h2200/h5xxx)"
 	depends on DRM && ARCH_PXA && MMU
+	select BACKLIGHT_CLASS_DEVICE
 	select DRM_CLIENT_SELECTION
 	select DRM_KMS_HELPER
 	select DRM_GEM_SHMEM_HELPER

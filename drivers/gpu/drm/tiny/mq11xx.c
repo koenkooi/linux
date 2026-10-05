@@ -55,6 +55,7 @@
  *     say which of them are required, so they are used as-is.
  */
 
+#include <linux/backlight.h>
 #include <linux/bits.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
@@ -287,6 +288,7 @@ struct mq11xx_device {
 					 * rather than chip power, see
 					 * mq11xx_output_enable()
 					 */
+	struct backlight_device *backlight;	/* NULL if DT names none */
 };
 
 #define to_mq11xx(_dev) container_of(_dev, struct mq11xx_device, drm)
@@ -1045,6 +1047,17 @@ static void mq11xx_output_enable(struct mq11xx_device *mq)
 	writel(mq->variant->fp_output_control,
 	       mq->regs + MQ11XX_FP_OUTPUT_CONTROL);
 
+	mutex_unlock(&mq->hw_lock);
+
+	/*
+	 * Backlight last, once the panel is powered and driven -- the same
+	 * order drm_panel_enable() gives panel drivers. Called outside
+	 * hw_lock because a pwm-backlight on this chip's own pwm_chip would
+	 * take that lock from the PWM callbacks.
+	 */
+	backlight_enable(mq->backlight);
+	return;
+
 out_unlock:
 	mutex_unlock(&mq->hw_lock);
 }
@@ -1056,6 +1069,14 @@ out_unlock:
 static void mq11xx_output_disable(struct mq11xx_device *mq)
 {
 	u32 val;
+
+	/*
+	 * Backlight first, while the panel is still powered and driven: these
+	 * normally-white TFTs pass the light straight through once undriven,
+	 * so a lit backlight turns a blanked screen bright white instead of
+	 * dark. This is the order drm_panel_disable() gives panel drivers.
+	 */
+	backlight_disable(mq->backlight);
 
 	mutex_lock(&mq->hw_lock);
 
@@ -1526,6 +1547,10 @@ static int mq11xx_probe(struct platform_device *pdev)
 	mq->panel = devm_regulator_get(dev, "panel");
 	if (IS_ERR(mq->panel))
 		return dev_err_probe(dev, PTR_ERR(mq->panel), "failed to get panel supply\n");
+
+	mq->backlight = devm_of_find_backlight(dev);
+	if (IS_ERR(mq->backlight))
+		return dev_err_probe(dev, PTR_ERR(mq->backlight), "failed to get backlight\n");
 
 	ret = drmm_mutex_init(drm, &mq->hw_lock);
 	if (ret)
