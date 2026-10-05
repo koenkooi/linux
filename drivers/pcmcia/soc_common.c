@@ -788,7 +788,12 @@ EXPORT_SYMBOL(soc_pcmcia_init_one);
 
 void soc_pcmcia_remove_one(struct soc_pcmcia_socket *skt)
 {
-	timer_delete_sync(&skt->poll_timer);
+	/*
+	 * shutdown, not delete: soc_common_pcmcia_poll_event() re-arms the
+	 * timer from inside its own callback, which timer_delete_sync()
+	 * cannot prevent if that callback is already running elsewhere.
+	 */
+	timer_shutdown_sync(&skt->poll_timer);
 
 	/*
 	 * Free the status IRQs before pcmcia_unregister_socket(). The
@@ -909,7 +914,7 @@ int soc_pcmcia_add_one(struct soc_pcmcia_socket *skt)
 	return ret;
 
  out_err_8:
-	timer_delete_sync(&skt->poll_timer);
+	timer_shutdown_sync(&skt->poll_timer);
 	/* Same pccardd-teardown window as soc_pcmcia_remove_one(). */
 	soc_pcmcia_free_stat_irqs(skt, ARRAY_SIZE(skt->stat));
 	pcmcia_unregister_socket(&skt->socket);
