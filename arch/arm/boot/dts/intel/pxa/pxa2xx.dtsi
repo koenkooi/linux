@@ -150,6 +150,29 @@
 			status = "disabled";
 		};
 
+		/*
+		 * The I2S block is the same on PXA25x and PXA27x (registers,
+		 * interrupt, clock and DMA request lines), so it lives here like
+		 * mmc0 above. The node is what lets sound/soc/pxa/pxa2xx-i2s.c
+		 * resolve its DMA channels on a DT boot. The register window
+		 * is rounded up to 0x100 as the driver only needs SADR at 0x80,
+		 * and the interrupt is informational, the driver does not
+		 * request it. The first dmas cell is the request line, the
+		 * second the priority (3 is the lowest).
+		 */
+		i2s: i2s@40400000 {
+			compatible = "marvell,pxa2xx-i2s";
+			reg = <0x40400000 0x100>;
+			interrupts = <13>;
+			clocks = <&clks CLK_I2S>;
+			clock-names = "I2SCLK";
+			dmas = <&pdma 2 3
+				&pdma 3 3>;
+			dma-names = "rx", "tx";
+			#sound-dai-cells = <0>;
+			status = "disabled";
+		};
+
 		rtc@40900000 {
 			compatible = "marvell,pxa-rtc";
 			reg = <0x40900000 0x3c>;
