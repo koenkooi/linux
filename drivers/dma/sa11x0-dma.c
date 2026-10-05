@@ -13,6 +13,8 @@
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_dma.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
@@ -830,6 +832,30 @@ static bool sa11x0_dma_filter_fn(struct dma_chan *chan, void *param)
 	return !strcmp(c->name, p);
 }
 
+/*
+ * DT consumers select a channel with a single cell: the same DDAR
+ * "device select" nibble chan_desc[] above is indexed by (0 = Ser0UDCTr
+ * ... 14 = Ser4SSPTr, 15 = Ser4SSPRc) -- not a physical channel number,
+ * since this hardware has no concept of a DT-visible physical channel
+ * separate from its fixed peripheral wiring.
+ */
+static struct dma_chan *sa11x0_dma_of_xlate(struct of_phandle_args *dma_spec,
+					    struct of_dma *ofdma)
+{
+	struct sa11x0_dma_dev *d = ofdma->of_dma_data;
+	struct sa11x0_dma_chan *c;
+
+	if (dma_spec->args_count != 1 ||
+	    dma_spec->args[0] >= ARRAY_SIZE(chan_desc))
+		return NULL;
+
+	list_for_each_entry(c, &d->slave.channels, vc.chan.device_node)
+		if (c->ddar == chan_desc[dma_spec->args[0]].ddar)
+			return dma_get_slave_channel(&c->vc.chan);
+
+	return NULL;
+}
+
 static int sa11x0_dma_init_dmadev(struct dma_device *dmadev,
 	struct device *dev)
 {
@@ -966,9 +992,21 @@ static int sa11x0_dma_probe(struct platform_device *pdev)
 		goto err_slave_reg;
 	}
 
+	if (pdev->dev.of_node) {
+		ret = of_dma_controller_register(pdev->dev.of_node,
+						 sa11x0_dma_of_xlate, d);
+		if (ret) {
+			dev_err(d->slave.dev, "failed to register OF DMA controller: %d\n",
+				ret);
+			goto err_of_dma;
+		}
+	}
+
 	platform_set_drvdata(pdev, d);
 	return 0;
 
+ err_of_dma:
+	dma_async_device_unregister(&d->slave);
  err_slave_reg:
 	sa11x0_dma_free_channels(&d->slave);
 	for (i = 0; i < NR_PHY_CHAN; i++)
@@ -986,6 +1024,9 @@ static void sa11x0_dma_remove(struct platform_device *pdev)
 {
 	struct sa11x0_dma_dev *d = platform_get_drvdata(pdev);
 	unsigned pch;
+
+	if (pdev->dev.of_node)
+		of_dma_controller_free(pdev->dev.of_node);
 
 	dma_async_device_unregister(&d->slave);
 
@@ -1071,10 +1112,18 @@ static const struct dev_pm_ops sa11x0_dma_pm_ops = {
 	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(sa11x0_dma_suspend, sa11x0_dma_resume)
 };
 
+static const struct of_device_id sa11x0_dma_dt_ids[] = {
+	{ .compatible = "intel,sa1110-dma" },
+	{ .compatible = "intel,sa1100-dma" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, sa11x0_dma_dt_ids);
+
 static struct platform_driver sa11x0_dma_driver = {
 	.driver = {
 		.name	= "sa11x0-dma",
 		.pm	= &sa11x0_dma_pm_ops,
+		.of_match_table = sa11x0_dma_dt_ids,
 	},
 	.probe		= sa11x0_dma_probe,
 	.remove		= sa11x0_dma_remove,
