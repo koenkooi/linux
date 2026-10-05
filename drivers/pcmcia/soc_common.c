@@ -858,6 +858,8 @@ int soc_pcmcia_add_one(struct soc_pcmcia_socket *skt)
 	if (ret)
 		goto out_err_7;
 
+	add_timer(&skt->poll_timer);
+
 	ret = device_create_file(&skt->socket.dev, &dev_attr_status);
 	if (ret)
 		goto out_err_8;
