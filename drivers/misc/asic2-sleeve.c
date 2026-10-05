@@ -45,6 +45,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/ipaq-sleeve.h>
+#include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
@@ -114,7 +115,9 @@ struct asic2_sleeve {
 	struct gpio_desc	*nvram_gpio;
 	struct gpio_desc	*power_gpio;
 	struct gpio_desc	*reset_gpio;
+	struct gpio_desc	*opt_int_gpio;
 	int			irq_detect;
+	int			irq_opt_int;
 	/* Serialises whole multi-message transactions, not single transfers:
 	 * the EEPROM path is an RDSR poll followed by a separate read, which
 	 * must not interleave with the jacket microcontroller's own
@@ -364,21 +367,33 @@ static int asic2_sleeve_control_egpio(void *dev, int egpio, int state)
 }
 
 /*
- * ipaq_sleeve_ops::read_egpio and ::egpio_irq -- no line of enum
- * ipaq_sleeve_egpio is readable or an interrupt source on this backend.
- * The four power and reset lines are GPIO outputs, and the four PCMCIA
- * status lines belong to the socket driver, see the header comment. They
- * are stubs instead of NULL slots because the bus core calls through these
- * pointers without checking them.
+ * ipaq_sleeve_ops::read_egpio -- no line of enum ipaq_sleeve_egpio is
+ * readable on this backend. The four power and reset lines are GPIO
+ * outputs, and the four PCMCIA status lines belong to the socket driver,
+ * see the header comment. It is a stub instead of a NULL slot because the
+ * bus core calls through the pointer without checking it.
  */
 static int asic2_sleeve_read_egpio(void *dev, int nr)
 {
 	return -EINVAL;
 }
 
+/*
+ * ipaq_sleeve_ops::egpio_irq -- IPAQ_EGPIO_OPT_INT only. The sleeve-device
+ * interrupt of the connector is a bare SoC pin, separate from the PC Card
+ * IRQ pin, so it is described as an ordinary GPIO and resolved here. The
+ * four PCMCIA status lines belong to the socket driver. The line is
+ * optional in the binding, so a board that does not describe it gets
+ * -ENXIO, which a consumer can degrade on, instead of a failed probe.
+ */
 static int asic2_sleeve_egpio_irq(void *dev, int nr)
 {
-	return -EINVAL;
+	struct asic2_sleeve *sleeve = dev;
+
+	if (nr != IPAQ_EGPIO_OPT_INT)
+		return -EINVAL;
+
+	return sleeve->irq_opt_int;
 }
 
 static struct ipaq_sleeve_ops asic2_sleeve_ops = {
@@ -521,6 +536,56 @@ static int asic2_sleeve_probe(struct platform_device *pdev)
 	if (sleeve->irq_detect < 0)
 		return dev_err_probe(dev, sleeve->irq_detect,
 				     "detect gpio has no irq\n");
+
+	/*
+	 * The sleeve-device interrupt (OPT_INT) of the connector is handed to
+	 * whichever sleeve driver wants it through ipaq_sleeve_egpio_irq().
+	 * Nothing after this point may fail because of it: a missing line, a
+	 * line without an interrupt or a rejected trigger type only means
+	 * that there is no OPT_INT source. -EPROBE_DEFER is the exception and
+	 * is propagated, so that the probe is retried when the GPIO provider
+	 * shows up.
+	 */
+	sleeve->opt_int_gpio = devm_gpiod_get_optional(dev, "opt-int", GPIOD_IN);
+	if (IS_ERR(sleeve->opt_int_gpio)) {
+		ret = PTR_ERR(sleeve->opt_int_gpio);
+		if (ret == -EPROBE_DEFER)
+			return ret;
+		dev_warn(dev,
+			 "failed to get opt-int gpio (%d); continuing with no OPT_INT source\n",
+			 ret);
+		sleeve->opt_int_gpio = NULL;
+	}
+
+	sleeve->irq_opt_int = -ENXIO;
+	if (sleeve->opt_int_gpio) {
+		int opt_int_irq = gpiod_to_irq(sleeve->opt_int_gpio);
+
+		if (opt_int_irq < 0) {
+			dev_warn(dev,
+				 "opt-int gpio has no irq (%d); continuing with no OPT_INT source\n",
+				 opt_int_irq);
+			goto opt_int_done;
+		}
+
+		/*
+		 * An irq derived from a GPIO carries no trigger type until one
+		 * is set, and a consumer only receives a bare irq number
+		 * through ops->egpio_irq(), so it cannot know the polarity of
+		 * the board's wiring. Use a rising edge. PXA GPIO interrupts
+		 * are edge-only, so a level type is not available.
+		 */
+		ret = irq_set_irq_type(opt_int_irq, IRQ_TYPE_EDGE_RISING);
+		if (ret) {
+			dev_warn(dev,
+				 "cannot set opt-int irq trigger (%d); continuing with no OPT_INT source\n",
+				 ret);
+			goto opt_int_done;
+		}
+
+		sleeve->irq_opt_int = opt_int_irq;
+	}
+opt_int_done:
 
 	ret = asic2_sleeve_add_spi_devices(sleeve);
 	if (ret)
