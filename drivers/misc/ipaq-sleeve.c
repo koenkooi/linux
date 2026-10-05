@@ -81,8 +81,9 @@
  * ipaq_sleeve_ops_lock; they are read without it from the work item and
  * from the ipaq_sleeve_write_egpio()/read_egpio()/egpio_irq() helpers,
  * which is safe because a backend is expected to unregister only after
- * quiescing its own presence IRQ and calling cancel_delayed_work_sync()
- * (done for it, below, inside ipaq_sleeve_unregister()) -- the ops lock
+ * quiescing its own presence and battery-fault IRQs and calling
+ * cancel_delayed_work_sync() (done for it, below, inside
+ * ipaq_sleeve_unregister()) -- the ops lock
  * exists to make double-registration safe, not to serialise every access. Both
  * registration and unregistration also hold ipaq_sleeve_lock, because the
  * identity_override store path re-enumerates under that lock alone and is
@@ -586,6 +587,183 @@ static void ipaq_sleeve_reset_pulse(const struct ipaq_sleeve_device *sdev)
 }
 
 /*
+ * Jacket battery fault (IPAQ_EGPIO_OPT_BAT_FAULT). A battery-carrying
+ * pack asserts it when its battery can no longer supply the jacket; the
+ * WinCE keyboard driver then leaves only the NVRAM rail on and withholds
+ * or drops OPT_ON, and the option-pack manager tells the user the pack
+ * is being powered off.
+ *
+ * What a fault does here is bat_fault_action's choice:
+ *
+ *  - "log" (default): the fault and its clearing are logged, nothing
+ *    else. OPT_ON is raised and the slot consumers are notified exactly
+ *    as without a fault line.
+ *  - "poweroff": the WinCE behaviour, and nothing beyond it. At
+ *    insertion a fault leaves the jacket on its NVRAM rail, unenumerated,
+ *    OPT_ON off and no IPAQ_SLEEVE_EVENT_ADD. At runtime a fault tears
+ *    the sleeve down as a removal does (slot consumers see
+ *    IPAQ_SLEEVE_EVENT_REMOVE, so the CF socket goes away) and then drops
+ *    OPT_ON, but keeps the NVRAM rail up; the host itself is never
+ *    powered off.
+ *
+ * "log" is the default, and the only mode suitable until a board's wiring
+ * is confirmed on hardware, because in "poweroff" mode a fault takes the
+ * CF socket with it: a wrong polarity in a board description, or a line
+ * left floating by a jacket with no battery, would cut power to a CF root
+ * filesystem at boot. Neither the polarity nor the idle level of this
+ * line on a battery-less jacket has been observed on any board yet.
+ *
+ * Read-only after boot (ipaq_sleeve.bat_fault_action= on the command
+ * line): changing it while a jacket is held off for a fault would leave
+ * the held state with no mode to recover it.
+ */
+enum ipaq_sleeve_bat_fault_action {
+	IPAQ_SLEEVE_BAT_FAULT_LOG,
+	IPAQ_SLEEVE_BAT_FAULT_POWEROFF,
+};
+
+static const char * const ipaq_sleeve_bat_fault_actions[] = {
+	[IPAQ_SLEEVE_BAT_FAULT_LOG]		= "log",
+	[IPAQ_SLEEVE_BAT_FAULT_POWEROFF]	= "poweroff",
+};
+
+static enum ipaq_sleeve_bat_fault_action ipaq_sleeve_bat_fault_action;
+
+static int ipaq_sleeve_bat_fault_action_set(const char *val,
+					    const struct kernel_param *kp)
+{
+	int i = sysfs_match_string(ipaq_sleeve_bat_fault_actions, val);
+
+	if (i < 0)
+		return i;
+
+	ipaq_sleeve_bat_fault_action = i;
+
+	return 0;
+}
+
+static int ipaq_sleeve_bat_fault_action_get(char *buf,
+					    const struct kernel_param *kp)
+{
+	return sysfs_emit(buf, "%s\n",
+			  ipaq_sleeve_bat_fault_actions[ipaq_sleeve_bat_fault_action]);
+}
+
+static const struct kernel_param_ops ipaq_sleeve_bat_fault_action_ops = {
+	.set = ipaq_sleeve_bat_fault_action_set,
+	.get = ipaq_sleeve_bat_fault_action_get,
+};
+module_param_cb(bat_fault_action, &ipaq_sleeve_bat_fault_action_ops, NULL, 0444);
+MODULE_PARM_DESC(bat_fault_action,
+		 "on a jacket battery fault: log (default) or poweroff (drop the jacket's main rail and remove it, as WinCE does)");
+
+/*
+ * @ipaq_sleeve_bat_fault_latched is the last debounced level of the fault
+ * line on the jacket now fitted; @ipaq_sleeve_bat_fault_held is set while
+ * "poweroff" keeps that jacket on its NVRAM rail and unenumerated. Both
+ * are read and written only under ipaq_sleeve_lock.
+ */
+static bool ipaq_sleeve_bat_fault_latched;
+static bool ipaq_sleeve_bat_fault_held;
+
+/*
+ * The WinCE keyboard driver samples the line with a 1 ms sleep between
+ * samples until five in a row agree. The bound turns a line that never
+ * settles into a logged failure instead of an endless loop under
+ * ipaq_sleeve_lock.
+ */
+#define IPAQ_SLEEVE_BAT_FAULT_STABLE		5
+#define IPAQ_SLEEVE_BAT_FAULT_MAX_SAMPLES	50
+
+/*
+ * ipaq_sleeve_bat_fault_sample: debounced level of the fault line into
+ * @fault. Returns 0, -EAGAIN if the line did not settle within the bound,
+ * or the backend's error, -ENXIO when the board has no such line.
+ *
+ * Caller holds ipaq_sleeve_lock, with sleeve_ops set.
+ */
+static int ipaq_sleeve_bat_fault_sample(bool *fault)
+{
+	unsigned int i, stable = 0;
+	int val, prev = -1;
+
+	for (i = 0; i < IPAQ_SLEEVE_BAT_FAULT_MAX_SAMPLES; i++) {
+		if (i)
+			usleep_range(1000, 1500);
+
+		val = sleeve_ops->read_egpio(sleeve_dev, IPAQ_EGPIO_OPT_BAT_FAULT);
+		if (val < 0)
+			return val;
+
+		val = !!val;
+		stable = val == prev ? stable + 1 : 1;
+		prev = val;
+
+		if (stable == IPAQ_SLEEVE_BAT_FAULT_STABLE) {
+			*fault = val;
+			return 0;
+		}
+	}
+
+	/* A floating line interrupts on every edge: keep it off the console. */
+	pr_warn_ratelimited("ipaq-sleeve: jacket battery fault line did not settle in %u samples\n",
+			    IPAQ_SLEEVE_BAT_FAULT_MAX_SAMPLES);
+
+	return -EAGAIN;
+}
+
+/*
+ * ipaq_sleeve_bat_fault_check_insert: the insertion-time check, run with
+ * the NVRAM rail just switched on. Returns true if "poweroff" is holding
+ * the jacket off, in which case the caller stops with the NVRAM rail on.
+ * A board with no fault line, or a line that does not settle, gives
+ * false: the jacket is powered as it is without a fault line.
+ *
+ * Caller holds ipaq_sleeve_lock.
+ */
+static bool ipaq_sleeve_bat_fault_check_insert(void)
+{
+	bool fault;
+
+	/* WinCE waits 1 ms after the NVRAM rail before the first sample. */
+	usleep_range(1000, 1500);
+
+	if (ipaq_sleeve_bat_fault_sample(&fault) || !fault) {
+		ipaq_sleeve_bat_fault_latched = false;
+		return false;
+	}
+
+	ipaq_sleeve_bat_fault_latched = true;
+
+	if (ipaq_sleeve_bat_fault_action != IPAQ_SLEEVE_BAT_FAULT_POWEROFF) {
+		pr_warn("ipaq-sleeve: jacket battery fault asserted at insertion; bat_fault_action=log, powering the jacket anyway\n");
+		return false;
+	}
+
+	pr_err("ipaq-sleeve: jacket battery fault asserted at insertion; jacket held on its NVRAM rail, main rail off, not enumerated\n");
+	ipaq_sleeve_bat_fault_held = true;
+
+	return true;
+}
+
+/*
+ * ipaq_sleeve_teardown: unpublish @sdev, notify slot consumers and
+ * unregister it, touching no rail. Shared by a removal and by a battery
+ * fault in "poweroff" mode, so that a slot consumer cannot tell the two
+ * apart. Caller holds ipaq_sleeve_lock.
+ */
+static void ipaq_sleeve_teardown(struct ipaq_sleeve_device *sdev)
+{
+	scoped_guard(mutex, &ipaq_sleeve_ops_lock)
+		active_sleeve = NULL;
+
+	blocking_notifier_call_chain(&ipaq_sleeve_notifier_list,
+				     IPAQ_SLEEVE_EVENT_REMOVE, sdev);
+
+	device_unregister(&sdev->dev);
+}
+
+/*
  * ipaq_sleeve_eject: notify slot consumers, unregister the active
  * sleeve, if any, and power its jacket and NVRAM rails down.
  * device_unregister() runs the bound driver's remove() through the
@@ -599,22 +777,27 @@ static void ipaq_sleeve_reset_pulse(const struct ipaq_sleeve_device *sdev)
  * own platform_device down), then device_unregister(), then power off,
  * the jacket rail before the NVRAM and ID EEPROM rail.
  *
+ * A jacket held off for a battery fault has no sleeve device, only its
+ * NVRAM rail, which goes down here too.
+ *
  * Caller holds ipaq_sleeve_lock.
  */
 static void ipaq_sleeve_eject(void)
 {
 	struct ipaq_sleeve_device *sdev = active_sleeve;
+	bool held = ipaq_sleeve_bat_fault_held;
 
-	if (!sdev)
+	ipaq_sleeve_bat_fault_latched = false;
+	ipaq_sleeve_bat_fault_held = false;
+
+	if (!sdev) {
+		if (held)
+			sleeve_ops->control_egpio(sleeve_dev,
+						  IPAQ_EGPIO_OPT_NVRAM_ON, 0);
 		return;
+	}
 
-	scoped_guard(mutex, &ipaq_sleeve_ops_lock)
-		active_sleeve = NULL;
-
-	blocking_notifier_call_chain(&ipaq_sleeve_notifier_list,
-				     IPAQ_SLEEVE_EVENT_REMOVE, sdev);
-
-	device_unregister(&sdev->dev);
+	ipaq_sleeve_teardown(sdev);
 
 	sleeve_ops->control_egpio(sleeve_dev, IPAQ_EGPIO_OPT_ON, 0);
 	sleeve_ops->control_egpio(sleeve_dev, IPAQ_EGPIO_OPT_NVRAM_ON, 0);
@@ -632,10 +815,12 @@ static void ipaq_sleeve_eject(void)
  * ipaq_sleeve_task_handler(), i.e. process context, never from the
  * presence IRQ itself.
  *
- * Order matters and is deliberate: NVRAM rail -> settle -> EEPROM read
- * -> device_register() -> OPT_ON -> settle -> the record's OPT_RESET
- * pulse, if it asks for one -> notify. device_register()
- * before OPT_ON so a sleeve-specific driver (e.g. the Navman GPS UART)
+ * Order matters and is deliberate: NVRAM rail -> battery fault check ->
+ * settle -> EEPROM read -> device_register() -> OPT_ON -> settle -> the
+ * record's OPT_RESET pulse, if it asks for one -> notify. The fault
+ * check can end the insertion right there, NVRAM rail on, but only in
+ * bat_fault_action "poweroff" mode. device_register() comes before
+ * OPT_ON so a sleeve-specific driver (e.g. the Navman GPS UART)
  * finishes its own probe on an unpowered-but-identified sleeve first;
  * notify last so a slot consumer only ever sees a sleeve whose jacket
  * rail is already up and whose own driver, if any, has already bound.
@@ -667,6 +852,10 @@ static void ipaq_sleeve_insert(void)
 	}
 
 	sleeve_ops->control_egpio(sleeve_dev, IPAQ_EGPIO_OPT_NVRAM_ON, 1);
+
+	if (ipaq_sleeve_bat_fault_check_insert())
+		return;
+
 	/*
 	 * The ID EEPROM is read 250 ms after its NVRAM rail is powered. The
 	 * vendor driver waits only a few milliseconds, so this is
@@ -1328,6 +1517,85 @@ irqreturn_t ipaq_sleeve_presence_interrupt(int irq, void *dev_id)
 EXPORT_SYMBOL_GPL(ipaq_sleeve_presence_interrupt);
 
 /*
+ * A change of the debounced fault level on a fitted jacket. Removal
+ * stays the presence path's alone: with no jacket on the connector the
+ * fault line means nothing, as in WinCE, whose fault test also requires
+ * option detect to read present.
+ *
+ * Recovery is the fault line's own debounced deassert. WinCE instead
+ * re-powers the pack from its backlight-change handler, on AC power
+ * only -- a user-interface hook with no counterpart in this driver, and
+ * no AC state is known here either -- so a cleared fault re-enumerates
+ * the jacket unconditionally, re-running the insertion-time check and
+ * the ID EEPROM read as a fresh insertion would.
+ */
+static void ipaq_sleeve_bat_fault_task_handler(struct work_struct *work)
+{
+	int opt_det = 0;
+	bool fault;
+
+	guard(mutex)(&ipaq_sleeve_lock);
+
+	if (!sleeve_ops)
+		return;
+
+	sleeve_ops->get_option_detect(sleeve_dev, &opt_det);
+	if (!opt_det)
+		return;
+
+	if (ipaq_sleeve_bat_fault_sample(&fault))
+		return;
+
+	if (fault == ipaq_sleeve_bat_fault_latched)
+		return;
+
+	ipaq_sleeve_bat_fault_latched = fault;
+
+	if (ipaq_sleeve_bat_fault_action != IPAQ_SLEEVE_BAT_FAULT_POWEROFF) {
+		pr_warn_ratelimited("ipaq-sleeve: jacket battery fault %s; bat_fault_action=log, jacket power unchanged\n",
+				    fault ? "asserted" : "cleared");
+		return;
+	}
+
+	if (fault) {
+		struct ipaq_sleeve_device *sdev = active_sleeve;
+
+		pr_err("ipaq-sleeve: jacket battery fault asserted; jacket removed, main rail off, NVRAM rail kept on\n");
+
+		/*
+		 * The order of ipaq_sleeve_eject(): slot consumers tear their
+		 * devices down while the jacket still has power, and only then
+		 * does the main rail go.
+		 */
+		if (sdev)
+			ipaq_sleeve_teardown(sdev);
+		sleeve_ops->control_egpio(sleeve_dev, IPAQ_EGPIO_OPT_ON, 0);
+		ipaq_sleeve_bat_fault_held = true;
+	} else if (ipaq_sleeve_bat_fault_held) {
+		pr_info("ipaq-sleeve: jacket battery fault cleared; re-enumerating the jacket\n");
+
+		ipaq_sleeve_bat_fault_held = false;
+		ipaq_sleeve_insert();
+	}
+}
+
+/*
+ * 1 ms: the settle WinCE allows before its first sample. Restarted by
+ * every edge, like the presence debounce, so a bounce burst is sampled
+ * once, after its last edge.
+ */
+static DECLARE_DELAYED_WORK(ipaq_sleeve_bat_fault_task,
+			    ipaq_sleeve_bat_fault_task_handler);
+
+irqreturn_t ipaq_sleeve_bat_fault_interrupt(int irq, void *dev_id)
+{
+	mod_delayed_work(system_wq, &ipaq_sleeve_bat_fault_task,
+			 msecs_to_jiffies(1));
+	return IRQ_HANDLED;
+}
+EXPORT_SYMBOL_GPL(ipaq_sleeve_bat_fault_interrupt);
+
+/*
  * ipaq_sleeve_register: install @ops/@dev as the active bus transport
  * and kick off initial enumeration. Called once by a backend driver's
  * probe (e.g. a SAMCOP EPS driver), analogous to how the backend later
@@ -1350,6 +1618,9 @@ int ipaq_sleeve_register(struct ipaq_sleeve_ops *ops, void *dev)
 			sleeve_ops = ops;
 			sleeve_dev = dev;
 		}
+
+		ipaq_sleeve_bat_fault_latched = false;
+		ipaq_sleeve_bat_fault_held = false;
 
 		ipaq_sleeve_clear_egpio(IPAQ_EGPIO_OPT_RESET);
 		ipaq_sleeve_clear_egpio(IPAQ_EGPIO_CARD_RESET);
@@ -1376,6 +1647,7 @@ int ipaq_sleeve_unregister(void)
 		return -ENODEV;
 
 	cancel_delayed_work_sync(&ipaq_sleeve_task);
+	cancel_delayed_work_sync(&ipaq_sleeve_bat_fault_task);
 
 	guard(mutex)(&ipaq_sleeve_lock);
 
