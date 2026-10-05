@@ -246,7 +246,8 @@ void asic3_write_register(struct asic3 *asic, unsigned int reg, u32 value);
  * Called by drivers/mmc/host/tmio_mmc.c from its set_clock() callback to
  * program the ClockMode register of SD_CONFIG, which lives behind a
  * mapping private to drivers/mfd/asic3.c. "gated" true selects the
- * divided/external clock path.
+ * divided/external clock path, which is wanted whenever a nonzero divider
+ * is programmed in CardClockCtrl.
  */
 void asic3_sd_set_clock_mode(struct asic3 *asic, bool gated);
 void asic3_sd_set_power(struct asic3 *asic, bool on);
