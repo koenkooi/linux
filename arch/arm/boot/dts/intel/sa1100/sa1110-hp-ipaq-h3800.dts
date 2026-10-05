@@ -8,12 +8,56 @@
 
 /dts-v1/;
 
+#include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include "sa1110.dtsi"
 
 / {
 	model = "HP iPAQ h3800";
 	compatible = "hp,ipaq-h3800", "intel,sa1110";
+
+	aliases {
+		serial0 = &uart3;
+	};
+
+	chosen {
+		stdout-path = &uart3;
+	};
+
+	/*
+	 * Enable of the RS232 transceiver (ASIC1 GPIO bit 2); the console
+	 * produces no output until it is driven. regulator-boot-on drives it
+	 * as soon as the regulator probes, and the serial driver holds it
+	 * from then on for as long as the port is the console.
+	 */
+	rs232_vcc: regulator-vcc-rs232 {
+		compatible = "regulator-fixed";
+		regulator-name = "RS232_ON";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpio = <&asic1 2 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+	};
+
+	/*
+	 * Ser3 is the only UART of this board that is a tty and its console;
+	 * Ser1 is used for plain GPIO (see &ppc below) and Ser2 is IrDA only.
+	 * The modem control lines are active low because the RS232
+	 * transceiver inverts them. DTR is Ser1's TXD1 pin, the COM_DTR line
+	 * of &ppc; it is deasserted until the port is opened, as the factory
+	 * firmware does.
+	 */
+	uart3: serial@80050000 {
+		compatible = "intel,sa1110-uart", "intel,sa1100-uart";
+		reg = <0x80050000 0x24>;
+		interrupts = <17>;
+		vcc-supply = <&rs232_vcc>;
+		dcd-gpios = <&gpio 23 GPIO_ACTIVE_LOW>;
+		cts-gpios = <&gpio 25 GPIO_ACTIVE_LOW>;
+		rts-gpios = <&gpio 26 GPIO_ACTIVE_LOW>;
+		dtr-gpios = <&ppc 12 GPIO_ACTIVE_LOW>;
+	};
 
 	memory@c0000000 {
 		device_type = "memory";
@@ -24,6 +68,12 @@
 		 */
 		reg = <0xc0000000 0x04000000>;
 	};
+};
+
+/* The two lines of the PPC block that this board uses. */
+&ppc {
+	gpio-line-names = "", "", "", "", "", "", "", "", "", "", "", "",
+			  "COM_DTR", "NSD_WP";
 };
 
 &smc {
