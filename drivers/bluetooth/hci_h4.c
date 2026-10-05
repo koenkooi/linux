@@ -231,6 +231,10 @@ struct sk_buff *h4_recv_buf(struct hci_uart *hu, struct sk_buff *skb,
 				hci_skb_expect(skb) += dlen;
 
 				if (skb_tailroom(skb) < dlen) {
+					bt_dev_err_ratelimited(hdev,
+							       "type 0x%02x length %u exceeds the %u-byte receive buffer",
+							       hci_skb_pkt_type(skb), dlen,
+							       skb_tailroom(skb));
 					kfree_skb(skb);
 					return ERR_PTR(-EMSGSIZE);
 				}
@@ -242,6 +246,10 @@ struct sk_buff *h4_recv_buf(struct hci_uart *hu, struct sk_buff *skb,
 				hci_skb_expect(skb) += dlen;
 
 				if (skb_tailroom(skb) < dlen) {
+					bt_dev_err_ratelimited(hdev,
+							       "type 0x%02x length %u exceeds the %u-byte receive buffer",
+							       hci_skb_pkt_type(skb), dlen,
+							       skb_tailroom(skb));
 					kfree_skb(skb);
 					return ERR_PTR(-EMSGSIZE);
 				}
