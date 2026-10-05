@@ -1593,6 +1593,31 @@ static const struct hc_driver sl811h_hc_driver = {
 
 /*-------------------------------------------------------------------------*/
 
+/* Force-complete whatever the chip was working on.  Called when the
+ * controller is going away, where an in-flight URB whose DONE_A interrupt
+ * will never arrive would otherwise leave usb_kill_urb() waiting forever.
+ */
+static void
+sl811h_quiesce(struct sl811 *sl811)
+{
+	struct sl811h_ep	*ep;
+	struct urb		*urb;
+	unsigned long		flags;
+
+	spin_lock_irqsave(&sl811->lock, flags);
+	ep = sl811->active_a;
+	if (ep) {
+		sl811_write(sl811, SL811_EP_A(SL11H_HOSTCTLREG), 0);
+		sl811->active_a = NULL;
+		if (!list_empty(&ep->hep->urb_list)) {
+			urb = list_first_entry(&ep->hep->urb_list,
+					       struct urb, urb_list);
+			finish_request(sl811, ep, urb, -ESHUTDOWN);
+		}
+	}
+	spin_unlock_irqrestore(&sl811->lock, flags);
+}
+
 static void
 sl811h_remove(struct platform_device *dev)
 {
@@ -1601,6 +1626,7 @@ sl811h_remove(struct platform_device *dev)
 	struct resource		*res;
 
 	remove_debug_file(sl811);
+	sl811h_quiesce(sl811);
 	usb_remove_hcd(hcd);
 	device_wakeup_disable(hcd->self.controller);
 
