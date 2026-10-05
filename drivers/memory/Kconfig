@@ -204,6 +204,19 @@ config RENESAS_RPCIF
 	  either SPI host or HyperFlash. You'll have to select individual
 	  components under the corresponding menu.
 
+config SA1110_SMC
+	bool "Intel SA-1110 static memory controller"
+	depends on (ARCH_SA1100 || COMPILE_TEST) && OF
+	help
+	  Select this to program the access timing of the Intel SA-1110's
+	  six static memory chip selects from the device tree. Devices on
+	  those chip selects are described as child nodes of the controller
+	  and are instantiated only after their timing has been written,
+	  which is a requirement rather than a convenience on nCS3 to nCS5:
+	  in variable latency I/O mode the bus has no error timeout, so an
+	  access to a device whose chip select is still at its reset timing
+	  can stall the CPU indefinitely.
+
 config STM32_FMC2_EBI
 	tristate "Support for FMC2 External Bus Interface on STM32MP SoCs"
 	depends on ARCH_STM32 || COMPILE_TEST
