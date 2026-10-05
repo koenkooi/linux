@@ -121,6 +121,7 @@
 			compatible = "mrvl,pxa-uart";
 			reg = <0x41600000 0x30>;
 			interrupts = <7>;
+			clocks = <&clks CLK_HWUART>;
 			status = "disabled";
 		};
 
