@@ -62,11 +62,13 @@
 #include <linux/math64.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/property.h>
 #include <linux/pwm.h>
 #include <linux/regulator/consumer.h>
+#include <linux/stdarg.h>
 
 #include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic.h>
@@ -261,7 +263,22 @@ struct mq11xx_device {
 	struct drm_connector connector;
 
 	void __iomem *vram;
+	resource_size_t vram_size;
 	void __iomem *regs;
+
+	/*
+	 * Chip power follows the CRTC: off while the display is blanked.
+	 * hw_lock serialises that against the pwm_chip callbacks, which
+	 * sysfs can call at any time -- a register access while the chip is
+	 * unpowered is never valid on this static-memory bus. pwm_level is
+	 * the channel-0 duty count to restore after each re-power, since the
+	 * register table load resets it; -1 until the pwm_chip reads it.
+	 */
+	struct mutex hw_lock;
+	bool powered;
+	/* First hw_init done; later re-inits (every unblank) log at debug level. */
+	bool init_logged;
+	int pwm_level;
 
 	struct regulator *vdd;		/* h2200: MQ1178_VDD */
 	struct regulator *power;	/* h2200: MQ1178_POWER_ON;
@@ -275,6 +292,25 @@ struct mq11xx_device {
 };
 
 #define to_mq11xx(_dev) container_of(_dev, struct mq11xx_device, drm)
+
+/* Bring-up lines: info on the first init only, since every unblank repeats them. */
+static __printf(2, 3) void mq11xx_init_info(struct mq11xx_device *mq,
+					    const char *fmt, ...)
+{
+	struct va_format vaf;
+	va_list args;
+
+	va_start(args, fmt);
+	vaf.fmt = fmt;
+	vaf.va = &args;
+
+	if (mq->init_logged)
+		drm_dbg(&mq->drm, "%pV", &vaf);
+	else
+		drm_info(&mq->drm, "%pV", &vaf);
+
+	va_end(args);
+}
 
 /* ------------------------------------------------------------------ */
 /* HP iPAQ h2200 (MediaQ 1178) variant data */
@@ -736,11 +772,11 @@ static int mq11xx_apply_envee_delta(struct mq11xx_device *mq)
 		return 0;
 
 	if (!mq->variant->envee_default_philips) {
-		drm_info(&mq->drm, "%s: Sharp panel timing\n", mq->variant->name);
+		mq11xx_init_info(mq, "%s: Sharp panel timing\n", mq->variant->name);
 		return 0;
 	}
 
-	drm_info(&mq->drm, "%s: Philips panel timing\n", mq->variant->name);
+	mq11xx_init_info(mq, "%s: Philips panel timing\n", mq->variant->name);
 
 	for (i = 0; i < mq->variant->n_envee_regs; i++) {
 		ret = mq11xx_write_verify(mq, regs[i].offset, regs[i].value);
@@ -772,8 +808,8 @@ static void mq11xx_identify(struct mq11xx_device *mq)
 	u16 vendor = readw(mq->regs + MQ11XX_PCI_VENDOR_ID);
 	u16 device = readw(mq->regs + MQ11XX_PCI_DEVICE_ID);
 
-	drm_info(&mq->drm, "%s: PCI header reports vendor 0x%04x device 0x%04x\n",
-		 mq->variant->name, vendor, device);
+	mq11xx_init_info(mq, "%s: PCI header reports vendor 0x%04x device 0x%04x\n",
+			 mq->variant->name, vendor, device);
 
 	if (vendor != MQ11XX_PCI_VENDOR_MEDIAQ)
 		drm_warn(&mq->drm,
@@ -786,9 +822,9 @@ static void mq11xx_identify(struct mq11xx_device *mq)
 			 "PCI device 0x%04x does not match the %s variant's expected 0x%04x\n",
 			 device, mq->variant->name, mq->variant->expect_device_id);
 	else if (device == mq->variant->tolerate_device_id)
-		drm_info(&mq->drm,
-			 "PCI device 0x%04x is a tolerated alternate for the %s variant, using the init_regs of 0x%04x\n",
-			 device, mq->variant->name, mq->variant->expect_device_id);
+		mq11xx_init_info(mq,
+				 "PCI device 0x%04x is a tolerated alternate for the %s variant, using the init_regs of 0x%04x\n",
+				 device, mq->variant->name, mq->variant->expect_device_id);
 }
 
 /*
@@ -824,9 +860,19 @@ static void mq11xx_power_down(struct mq11xx_device *mq)
 	regulator_disable(mq->vdd);
 }
 
+/*
+ * devm_add_action_or_reset() callback. Only a powered chip holds supply
+ * references to drop: a chip that failed mq11xx_hw_init() was already
+ * powered down there, and a blanked one by mq11xx_output_disable().
+ */
 static void mq11xx_power_down_action(void *data)
 {
-	mq11xx_power_down(data);
+	struct mq11xx_device *mq = data;
+
+	if (mq->powered) {
+		mq11xx_power_down(mq);
+		mq->powered = false;
+	}
 }
 
 /*
@@ -836,9 +882,8 @@ static void mq11xx_power_down_action(void *data)
  * full register table load. Scanout stays off until the first atomic_enable
  * (see mq11xx_output_enable()).
  *
- * The caller powers the chip up and ties mq11xx_power_down_action() to devm
- * before calling in here, because the register load can fail and the chip
- * must not be left powered with nothing to unwind it.
+ * Only called from mq11xx_hw_init(), which powers the chip up first and
+ * powers it back down if this fails.
  */
 static int mq11xx_chip_init(struct mq11xx_device *mq)
 {
@@ -898,10 +943,85 @@ static int mq11xx_chip_init(struct mq11xx_device *mq)
 	return mq11xx_apply_envee_delta(mq);
 }
 
+static unsigned int mq11xx_pwm_read_level(struct mq11xx_device *mq)
+{
+	return (readl(mq->regs + MQ11XX_FP_PULSE_WIDTH_MOD_CONTROL) >>
+		MQ11XX_PWM_CHAN0_SHIFT) & MQ11XX_PWM_MAX_LEVEL;
+}
+
+static void mq11xx_pwm_write_level(struct mq11xx_device *mq, unsigned int level)
+{
+	u32 val;
+
+	val = readl(mq->regs + MQ11XX_FP_PULSE_WIDTH_MOD_CONTROL);
+	val &= ~(MQ11XX_PWM_MAX_LEVEL << MQ11XX_PWM_CHAN0_SHIFT);
+	val |= level << MQ11XX_PWM_CHAN0_SHIFT;
+	writel(val, mq->regs + MQ11XX_FP_PULSE_WIDTH_MOD_CONTROL);
+}
+
+/*
+ * Full bring-up from power-off: rails and reset, the video memory clear,
+ * then mq11xx_chip_init()'s register load. Runs at probe and again on
+ * every unblank, because mq11xx_output_disable() cuts chip power and
+ * neither the registers nor the video memory can be assumed to survive
+ * that. Leaves the chip powered down again if the register load fails.
+ */
+static int mq11xx_hw_init(struct mq11xx_device *mq)
+{
+	int ret;
+
+	lockdep_assert_held(&mq->hw_lock);
+
+	ret = mq11xx_power_up(mq);
+	if (ret)
+		return ret;
+
+	/*
+	 * Clear the whole video memory before any scanout: the chip scans
+	 * out of a single, non-double-buffered VRAM with no vsync gating,
+	 * and mq11xx_output_enable() turns scanout on before the shadow
+	 * plane's first full-damage copy lands, so anything not cleared here
+	 * is visible as noise until then. It must run after
+	 * mq11xx_power_up(): a CPU write to the chip select while the chip
+	 * is unpowered or held in reset does not reach the memory.
+	 */
+	memset_io(mq->vram, 0, mq->vram_size);
+
+	ret = mq11xx_chip_init(mq);
+	if (ret) {
+		mq11xx_power_down(mq);
+		return ret;
+	}
+
+	mq->powered = true;
+	mq->init_logged = true;
+
+	if (mq->variant->has_internal_pwm && mq->pwm_level >= 0)
+		mq11xx_pwm_write_level(mq, mq->pwm_level);
+
+	return 0;
+}
+
+/*
+ * Unblank. Mirrors probe's bring-up order: the chip is powered, out of
+ * reset and fully programmed by mq11xx_hw_init() before any of the
+ * scanout and flat-panel writes below touch it.
+ */
 static void mq11xx_output_enable(struct mq11xx_device *mq)
 {
 	u32 val;
 	int ret;
+
+	mutex_lock(&mq->hw_lock);
+
+	if (!mq->powered) {
+		ret = mq11xx_hw_init(mq);
+		if (ret) {
+			drm_err(&mq->drm, "chip bring-up failed (%d), display stays off\n",
+				ret);
+			goto out_unlock;
+		}
+	}
 
 	val = readl(mq->regs + MQ11XX_GC_CONTROL);
 	writel(val | MQ11XX_GC_CONTROL_ENABLE, mq->regs + MQ11XX_GC_CONTROL);
@@ -921,7 +1041,9 @@ static void mq11xx_output_enable(struct mq11xx_device *mq)
 	if (ret) {
 		drm_err(&mq->drm, "failed to enable panel supply (%d), display stays off\n",
 			ret);
-		return;
+		mq11xx_power_down(mq);
+		mq->powered = false;
+		goto out_unlock;
 	}
 
 	/*
@@ -933,11 +1055,23 @@ static void mq11xx_output_enable(struct mq11xx_device *mq)
 	 */
 	writel(mq->variant->fp_output_control,
 	       mq->regs + MQ11XX_FP_OUTPUT_CONTROL);
+
+out_unlock:
+	mutex_unlock(&mq->hw_lock);
 }
 
+/*
+ * Blank: the reverse of mq11xx_output_enable(), ending with the chip's
+ * own power cut, so a blanked screen draws nothing from the MediaQ.
+ */
 static void mq11xx_output_disable(struct mq11xx_device *mq)
 {
 	u32 val;
+
+	mutex_lock(&mq->hw_lock);
+
+	if (!mq->powered)
+		goto out_unlock;
 
 	/* Blank the panel before tearing down scanout -- see the mirrored
 	 * comment in mq11xx_output_enable() above.
@@ -951,6 +1085,12 @@ static void mq11xx_output_disable(struct mq11xx_device *mq)
 	writel(val & ~MQ11XX_CONFIG_GE_ENABLE, mq->regs + MQ11XX_DC_CONFIG_5);
 
 	writel(0, mq->regs + MQ11XX_FP_OUTPUT_CONTROL);
+
+	mq11xx_power_down(mq);
+	mq->powered = false;
+
+out_unlock:
+	mutex_unlock(&mq->hw_lock);
 }
 
 /*
@@ -968,7 +1108,6 @@ static int mq11xx_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	struct mq11xx_device *mq = dev_get_drvdata(pwmchip_parent(chip));
 	unsigned int level;
 	u64 duty;
-	u32 val;
 	int idx;
 
 	if (state->polarity != PWM_POLARITY_NORMAL)
@@ -987,10 +1126,12 @@ static int mq11xx_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	if (!drm_dev_enter(&mq->drm, &idx))
 		return -ENODEV;
 
-	val = readl(mq->regs + MQ11XX_FP_PULSE_WIDTH_MOD_CONTROL);
-	val &= ~(MQ11XX_PWM_MAX_LEVEL << MQ11XX_PWM_CHAN0_SHIFT);
-	val |= level << MQ11XX_PWM_CHAN0_SHIFT;
-	writel(val, mq->regs + MQ11XX_FP_PULSE_WIDTH_MOD_CONTROL);
+	/* While blanked, only remember the level for mq11xx_hw_init(). */
+	mutex_lock(&mq->hw_lock);
+	mq->pwm_level = level;
+	if (mq->powered)
+		mq11xx_pwm_write_level(mq, level);
+	mutex_unlock(&mq->hw_lock);
 
 	drm_dev_exit(idx);
 
@@ -1015,8 +1156,9 @@ static int mq11xx_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
 	if (!drm_dev_enter(&mq->drm, &idx))
 		return -ENODEV;
 
-	level = (readl(mq->regs + MQ11XX_FP_PULSE_WIDTH_MOD_CONTROL) >>
-		 MQ11XX_PWM_CHAN0_SHIFT) & MQ11XX_PWM_MAX_LEVEL;
+	mutex_lock(&mq->hw_lock);
+	level = mq->powered ? mq11xx_pwm_read_level(mq) : mq->pwm_level;
+	mutex_unlock(&mq->hw_lock);
 
 	drm_dev_exit(idx);
 
@@ -1048,6 +1190,11 @@ static void mq11xx_pwm_chip_register(struct mq11xx_device *mq, struct device *de
 {
 	struct pwm_chip *chip;
 	int ret;
+
+	/* Probe just powered the chip, so fp0f holds the table's level. */
+	mutex_lock(&mq->hw_lock);
+	mq->pwm_level = mq11xx_pwm_read_level(mq);
+	mutex_unlock(&mq->hw_lock);
 
 	chip = devm_pwmchip_alloc(dev, 1, 0);
 	if (IS_ERR(chip)) {
@@ -1111,6 +1258,15 @@ static void mq11xx_primary_plane_helper_atomic_update(struct drm_plane *plane,
 	if (!drm_dev_enter(&mq->drm, &idx))
 		return;
 
+	/*
+	 * The commit tail only updates planes on an active CRTC, but an
+	 * unblank whose chip bring-up failed leaves the CRTC active with the
+	 * chip unpowered. Written only from this same commit path, so no
+	 * lock is needed to read it here.
+	 */
+	if (!mq->powered)
+		goto out_exit;
+
 	drm_atomic_helper_damage_iter_init(&iter, old_plane_state, plane_state);
 	drm_atomic_for_each_plane_damage(&iter, &damage) {
 		unsigned int offset = drm_fb_clip_offset(fb->pitches[0], fb->format, &damage);
@@ -1119,6 +1275,7 @@ static void mq11xx_primary_plane_helper_atomic_update(struct drm_plane *plane,
 		drm_fb_memcpy(&dst, fb->pitches, shadow_plane_state->data, fb, &damage);
 	}
 
+out_exit:
 	drm_dev_exit(idx);
 }
 
@@ -1276,6 +1433,18 @@ static const struct drm_mode_config_funcs mq11xx_mode_config_funcs = {
 	.atomic_commit = drm_atomic_helper_commit,
 };
 
+/*
+ * The chip is unpowered while the CRTC is off, so plane updates must be
+ * skipped then and, on unblank, must follow the CRTC enable that powers
+ * and reprograms the chip. The _rpm commit tail gives exactly that order
+ * (disables, enables, then planes on active CRTCs only); the unblank's
+ * modeset marks the whole plane damaged, so the copy restores the full
+ * picture into the freshly cleared video memory.
+ */
+static const struct drm_mode_config_helper_funcs mq11xx_mode_config_helper_funcs = {
+	.atomic_commit_tail = drm_atomic_helper_commit_tail_rpm,
+};
+
 static int mq11xx_mode_config_init(struct mq11xx_device *mq)
 {
 	struct drm_device *dev = &mq->drm;
@@ -1292,6 +1461,7 @@ static int mq11xx_mode_config_init(struct mq11xx_device *mq)
 	dev->mode_config.preferred_depth = 16;
 	dev->mode_config.prefer_shadow = 0;
 	dev->mode_config.funcs = &mq11xx_mode_config_funcs;
+	dev->mode_config.helper_private = &mq11xx_mode_config_helper_funcs;
 
 	return 0;
 }
@@ -1316,6 +1486,7 @@ static int mq11xx_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct mq11xx_device *mq;
 	struct drm_device *drm;
+	struct resource *res;
 	int ret;
 
 	mq = devm_drm_dev_alloc(dev, &mq11xx_driver, struct mq11xx_device, drm);
@@ -1329,17 +1500,10 @@ static int mq11xx_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, mq);
 
-	mq->vram = devm_platform_ioremap_resource(pdev, 0);
+	mq->vram = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(mq->vram))
 		return dev_err_probe(dev, PTR_ERR(mq->vram), "failed to map VRAM\n");
-
-	/*
-	 * Clear the VRAM up front: only damaged regions are ever copied in,
-	 * and this chip scans out a single non-double-buffered VRAM
-	 * independently of how much of the plane has been committed, so
-	 * leftover contents would otherwise show up as noise.
-	 */
-	memset_io(mq->vram, 0, resource_size(platform_get_resource(pdev, IORESOURCE_MEM, 0)));
+	mq->vram_size = resource_size(res);
 
 	mq->regs = devm_platform_ioremap_resource(pdev, 1);
 	if (IS_ERR(mq->regs))
@@ -1374,22 +1538,29 @@ static int mq11xx_probe(struct platform_device *pdev)
 	if (IS_ERR(mq->panel))
 		return dev_err_probe(dev, PTR_ERR(mq->panel), "failed to get panel supply\n");
 
-	/*
-	 * Power up and tie the power-down to devm before chip_init() writes a
-	 * single register: the register load can fail, and a failed probe
-	 * must not leave the chip powered and out of reset with no driver
-	 * bound; regulator_put() on unwind also requires every enable to have
-	 * been balanced first.
-	 */
-	ret = mq11xx_power_up(mq);
+	ret = drmm_mutex_init(drm, &mq->hw_lock);
 	if (ret)
 		return ret;
+	mq->pwm_level = -1;
 
+	/*
+	 * Tie the power-down to devm before the first register write: a
+	 * probe failure after mq11xx_hw_init() must not leave the chip powered
+	 * and out of reset with no driver bound, and regulator_put() on unwind
+	 * requires every enable to have been balanced first.
+	 */
 	ret = devm_add_action_or_reset(dev, mq11xx_power_down_action, mq);
 	if (ret)
 		return ret;
 
-	ret = mq11xx_chip_init(mq);
+	/*
+	 * Bring the chip up once here, not just at the first unblank, so
+	 * a chip that does not respond fails probe instead of binding a
+	 * display that can never light.
+	 */
+	mutex_lock(&mq->hw_lock);
+	ret = mq11xx_hw_init(mq);
+	mutex_unlock(&mq->hw_lock);
 	if (ret)
 		return dev_err_probe(dev, ret, "chip bring-up failed\n");
 
@@ -1426,14 +1597,12 @@ static void mq11xx_remove(struct platform_device *pdev)
 }
 
 /*
- * System sleep is a light suspend and resume: the MediaQ stays powered
- * across sleep and keeps its registers, so only the panel facing gating has
- * to be redone. Suspend gates the FP clock and GC scanout and drops the
- * panel enable, and resume does the opposite. The forced atomic disable
- * and enable of the DRM helpers run the DPMS off and on paths of this
- * driver, mq11xx_output_disable() and mq11xx_output_enable(), so no
- * additional register sequence is needed. The settle times after
- * suspending and resuming are those of the vendor display driver.
+ * System sleep reuses the blank and unblank path: the forced atomic
+ * disable and enable of the DRM helpers run mq11xx_output_disable() and
+ * mq11xx_output_enable(), so the chip is powered off across sleep and fully
+ * reprogrammed by mq11xx_hw_init() on resume, exactly as at probe. The
+ * settle times after suspending and resuming are those of the vendor
+ * display driver.
  */
 static int mq11xx_pm_suspend(struct device *dev)
 {
