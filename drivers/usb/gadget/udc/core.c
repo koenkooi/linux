@@ -1699,6 +1699,8 @@ static int gadget_bind_driver(struct device *dev)
 	mutex_lock(&udc_lock);
 	udc->driver = NULL;
 	driver->is_bound = false;
+	/* -EISNAM is the quiet "nothing to bind here" result, not a failure */
+	driver->bind_err = ret == -EISNAM ? 0 : ret;
 	mutex_unlock(&udc_lock);
 
 	return ret;
@@ -1749,6 +1751,7 @@ int usb_gadget_register_driver_owner(struct usb_gadget_driver *driver,
 	driver->driver.owner = owner;
 	driver->driver.mod_name = mod_name;
 	driver->driver.probe_type = PROBE_FORCE_SYNCHRONOUS;
+	driver->bind_err = 0;
 	ret = driver_register(&driver->driver);
 	if (ret) {
 		pr_warn("%s: driver registration failed: %d\n",
@@ -1758,7 +1761,11 @@ int usb_gadget_register_driver_owner(struct usb_gadget_driver *driver,
 
 	mutex_lock(&udc_lock);
 	if (!driver->is_bound) {
-		if (driver->match_existing_only) {
+		if (driver->match_existing_only && driver->bind_err) {
+			pr_warn("%s: failed to bind to a UDC: %d\n",
+				driver->function, driver->bind_err);
+			ret = driver->bind_err;
+		} else if (driver->match_existing_only) {
 			pr_warn("%s: couldn't find an available UDC or it's busy\n",
 					driver->function);
 			ret = -EBUSY;

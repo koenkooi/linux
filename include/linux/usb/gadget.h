@@ -709,6 +709,10 @@ static inline int usb_gadget_check_config(struct usb_gadget *gadget)
  * @match_existing_only: If udc is not found, return an error and fail
  *	the driver registration
  * @is_bound: Allow a driver to be bound to only one gadget
+ * @bind_err: Error returned by the most recent failed bind attempt, or 0.
+ *	Used by usb_gadget_register_driver_owner() to report the real
+ *	failure of a @match_existing_only driver, since the driver core does
+ *	not propagate probe errors.
  *
  * Devices are disabled till a gadget driver successfully bind()s, which
  * means the driver will handle setup() requests needed to enumerate (and
@@ -782,6 +786,7 @@ struct usb_gadget_driver {
 	char			*udc_name;
 	unsigned                match_existing_only:1;
 	bool			is_bound:1;
+	int			bind_err;
 };
 
 
