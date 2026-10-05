@@ -95,6 +95,20 @@
 
 #define DRIVER_NAME "mq11xx"
 #define DRIVER_DESC "MediaQ 11xx family display driver"
+
+/*
+ * The video memory sits behind a 16-bit VLIO chip select and is mapped as
+ * device memory, which on XScale is bufferable but marked so that the write
+ * buffer does not coalesce stores. A write-combining mapping (bufferable
+ * only) lets it merge them. Whether that speeds up the frame copy on this
+ * bus, where each 16-bit beat is its own strobe, depends on the board and
+ * has to be measured, so the mapping is selectable at load time. The
+ * registers keep the device mapping either way.
+ */
+static bool mq11xx_wc;
+module_param_named(wc, mq11xx_wc, bool, 0444);
+MODULE_PARM_DESC(wc, "Map video memory write-combining instead of device memory (default: off)");
+
 #define DRIVER_MAJOR 1
 #define DRIVER_MINOR 0
 
@@ -263,6 +277,7 @@ struct mq11xx_device {
 
 	void __iomem *vram;
 	resource_size_t vram_size;
+	bool vram_wc;
 	void __iomem *regs;
 
 	/*
@@ -1249,6 +1264,23 @@ static int mq11xx_primary_plane_helper_atomic_check(struct drm_plane *plane,
 						    false, false);
 }
 
+/*
+ * A write-combining mapping lets the CPU's write buffer hold stores back.
+ * Reading back a location just written forces them out to the bus, so the
+ * scanout sees the frame promptly; on the PXA255 the CP15 drain-write-buffer
+ * operation is not a reliable substitute (specification update erratum 3).
+ */
+static void mq11xx_vram_flush(struct mq11xx_device *mq, size_t offset)
+{
+	/*
+	 * Any halfword of the region does the job. A C8 damage rectangle can
+	 * start on an odd byte, and an unaligned readw() there is an
+	 * alignment fault.
+	 */
+	if (mq->vram_wc)
+		readw(mq->vram + ALIGN_DOWN(offset, sizeof(u16)));
+}
+
 static void mq11xx_primary_plane_helper_atomic_update(struct drm_plane *plane,
 						      struct drm_atomic_commit *state)
 {
@@ -1283,6 +1315,10 @@ static void mq11xx_primary_plane_helper_atomic_update(struct drm_plane *plane,
 		struct iosys_map dst = IOSYS_MAP_INIT_OFFSET(&vram_map, offset);
 
 		drm_fb_memcpy(&dst, fb->pitches, shadow_plane_state->data, fb, &damage);
+		/* RGB565 is the only format, so the last pixel is 2 bytes. */
+		mq11xx_vram_flush(mq, offset +
+				  (drm_rect_height(&damage) - 1) * fb->pitches[0] +
+				  drm_rect_width(&damage) * 2 - 2);
 	}
 
 out_exit:
@@ -1510,7 +1546,15 @@ static int mq11xx_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, mq);
 
-	mq->vram = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
+	if (mq11xx_wc) {
+		res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+		if (!res)
+			return dev_err_probe(dev, -ENODEV, "no VRAM resource\n");
+		mq->vram = devm_ioremap_resource_wc(dev, res);
+		mq->vram_wc = true;
+	} else {
+		mq->vram = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
+	}
 	if (IS_ERR(mq->vram))
 		return dev_err_probe(dev, PTR_ERR(mq->vram), "failed to map VRAM\n");
 	mq->vram_size = resource_size(res);
