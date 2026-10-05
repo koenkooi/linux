@@ -301,3 +301,4 @@ MODULE_AUTHOR("Eugen Hristev <eugen.hristev@microchip.com>");
 MODULE_DESCRIPTION("Generic ADC Resistive Touch Driver");
 MODULE_LICENSE("GPL v2");
 MODULE_IMPORT_NS("IIO_CONSUMER");
+MODULE_ALIAS("platform:" DRIVER_NAME);
