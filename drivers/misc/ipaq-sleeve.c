@@ -87,6 +87,15 @@
  * registration and unregistration also hold ipaq_sleeve_lock, because the
  * identity_override store path re-enumerates under that lock alone and is
  * not covered by the cancel_delayed_work_sync().
+ *
+ * The jacket-microcontroller wrappers (ipaq_sleeve_read_battery() and
+ * friends) serialise on ipaq_sleeve_ops_lock alone and never take
+ * ipaq_sleeve_lock: slot-consumer notifier callbacks run under
+ * ipaq_sleeve_lock, and a consumer stopping its own poller from a REMOVE
+ * callback with cancel_delayed_work_sync() would otherwise wait on a poll
+ * that is itself waiting for that lock. So that those wrappers can tell
+ * whether a sleeve is present, active_sleeve is set and cleared under both
+ * locks, always ipaq_sleeve_lock first.
  */
 static DEFINE_MUTEX(ipaq_sleeve_ops_lock);
 static struct ipaq_sleeve_ops *sleeve_ops;
@@ -290,6 +299,73 @@ int ipaq_sleeve_egpio_irq(int nr)
 	return sleeve_ops->egpio_irq(sleeve_dev, nr);
 }
 EXPORT_SYMBOL_GPL(ipaq_sleeve_egpio_irq);
+
+/*
+ * Commands to the microcontroller inside a battery-carrying pack. Only
+ * some backends reach it at all (h5xxx's SAMCOP has no second chip
+ * select on the sleeve SPI link), so an unimplemented slot is reported
+ * as -EOPNOTSUPP, distinct from -ENODEV for no sleeve. See
+ * ipaq_sleeve_ops_lock for why these do not take ipaq_sleeve_lock.
+ */
+/**
+ * ipaq_sleeve_get_version - read the pack microcontroller's firmware version
+ * @ver: filled with the three version bytes
+ *
+ * Return: 0 on success, -ENODEV with no sleeve, -EOPNOTSUPP if the backend
+ * cannot reach a pack microcontroller, or the backend's transfer error.
+ */
+int ipaq_sleeve_get_version(struct ipaq_sleeve_version *ver)
+{
+	guard(mutex)(&ipaq_sleeve_ops_lock);
+
+	if (!sleeve_ops || !active_sleeve)
+		return -ENODEV;
+	if (!sleeve_ops->get_version)
+		return -EOPNOTSUPP;
+
+	return sleeve_ops->get_version(sleeve_dev, ver);
+}
+EXPORT_SYMBOL_GPL(ipaq_sleeve_get_version);
+
+/**
+ * ipaq_sleeve_read_battery - read the pack battery's state
+ * @chem: filled with the chemistry byte
+ * @percent: filled with the remaining capacity in percent
+ * @flag: filled with the status flag byte
+ *
+ * Return: as for ipaq_sleeve_get_version().
+ */
+int ipaq_sleeve_read_battery(unsigned char *chem, unsigned char *percent,
+			     unsigned char *flag)
+{
+	guard(mutex)(&ipaq_sleeve_ops_lock);
+
+	if (!sleeve_ops || !active_sleeve)
+		return -ENODEV;
+	if (!sleeve_ops->read_battery)
+		return -EOPNOTSUPP;
+
+	return sleeve_ops->read_battery(sleeve_dev, chem, percent, flag);
+}
+EXPORT_SYMBOL_GPL(ipaq_sleeve_read_battery);
+
+/**
+ * ipaq_sleeve_set_ebat - ask the pack to supply the host from its battery
+ *
+ * Return: as for ipaq_sleeve_get_version().
+ */
+int ipaq_sleeve_set_ebat(void)
+{
+	guard(mutex)(&ipaq_sleeve_ops_lock);
+
+	if (!sleeve_ops || !active_sleeve)
+		return -ENODEV;
+	if (!sleeve_ops->set_ebat)
+		return -EOPNOTSUPP;
+
+	return sleeve_ops->set_ebat(sleeve_dev);
+}
+EXPORT_SYMBOL_GPL(ipaq_sleeve_set_ebat);
 
 /*
  * ipaq_sleeve_match_device: search a concrete id_table for an entry
@@ -532,7 +608,8 @@ static void ipaq_sleeve_eject(void)
 	if (!sdev)
 		return;
 
-	active_sleeve = NULL;
+	scoped_guard(mutex, &ipaq_sleeve_ops_lock)
+		active_sleeve = NULL;
 
 	blocking_notifier_call_chain(&ipaq_sleeve_notifier_list,
 				     IPAQ_SLEEVE_EVENT_REMOVE, sdev);
@@ -707,7 +784,8 @@ static void ipaq_sleeve_insert(void)
 		return;
 	}
 
-	active_sleeve = sdev;
+	scoped_guard(mutex, &ipaq_sleeve_ops_lock)
+		active_sleeve = sdev;
 
 	if (id_valid) {
 		const struct ipaq_sleeve_type *t =
