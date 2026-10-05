@@ -60,6 +60,21 @@
 	};
 
 	/*
+	 * SD slot power switch on PXA GPIO61 (SD_POWER_EN). The 3.3 V window is
+	 * the OCR range the HAMCOP SD host advertises. Polarity comes from
+	 * enable-active-high alone: gpiolib ignores the phandle flag on a
+	 * regulator-fixed node's "gpios".
+	 */
+	sd_vmmc: regulator-sd-vmmc {
+		compatible = "regulator-fixed";
+		regulator-name = "SD_POWER_EN";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpios = <&gpio 61 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	/*
 	 * CompactFlash socket. The shared PXA PCMCIA driver is matched by
 	 * name and needs board callbacks that no property can express, so
 	 * the board code registers the platform device and merely looks this
@@ -107,6 +122,8 @@
 
 		mmc {
 			compatible = "samsung,hamcop-sdi";
+			cd-gpios = <&gpio 8 GPIO_ACTIVE_LOW>;
+			vmmc-supply = <&sd_vmmc>;
 		};
 
 		led-controller {
