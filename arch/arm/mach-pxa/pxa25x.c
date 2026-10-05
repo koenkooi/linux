@@ -216,6 +216,16 @@ static const struct dma_slave_map pxa25x_slave_map[] = {
 	{ "pxa25x-nssp.1", "tx", PDMA_FILTER_PARAM(LOWEST, 16) },
 	{ "pxa25x-nssp.2", "rx", PDMA_FILTER_PARAM(LOWEST, 23) },
 	{ "pxa25x-nssp.2", "tx", PDMA_FILTER_PARAM(LOWEST, 24) },
+
+	/*
+	 * I2S request lines 2 (RX) and 3 (TX), as DRCMR2 and DRCMR3 in the
+	 * PXA2xx register map. These entries serve a board without devicetree;
+	 * on a DT boot pxad_probe() does not consult this table and the
+	 * channels are resolved through the dmas and dma-names properties of
+	 * the consumer node instead.
+	 */
+	{ "pxa2xx-i2s", "rx", PDMA_FILTER_PARAM(LOWEST, 2) },
+	{ "pxa2xx-i2s", "tx", PDMA_FILTER_PARAM(LOWEST, 3) },
 };
 
 static struct mmp_dma_platdata pxa25x_dma_pdata = {
