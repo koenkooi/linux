@@ -265,6 +265,49 @@
 		};
 
 		/*
+		 * The SPI block of ASIC2. Its register window and interrupt come
+		 * from the MFD core, not from this node, which exists so that the
+		 * controller has a device_node: that is how the sleeve driver
+		 * finds it. There are no child nodes, as the only two devices on
+		 * the bus, the ID EEPROM and the microcontroller of the option
+		 * jacket that is plugged in, have no fixed identity and are
+		 * allocated at probe time.
+		 */
+		spi {
+			compatible = "htc,asic2-spi";
+			clocks = <&asic2 ASIC2_CLK_SPI>, <&asic2 ASIC2_CLK_EX1>;
+			clock-names = "ref", "ex1";
+		};
+
+		/*
+		 * Expansion pack ("sleeve" or "option jacket") backend of the
+		 * generic iPAQ sleeve bus. The 100-pin connector, the ASIC2 GPIO
+		 * control bits and the ID EEPROM protocol are those of the h39xx;
+		 * only the SoC lines differ: jacket presence is GPIO20 (NOPT_IND,
+		 * active low), the OPT_INT line of the connector is GPIO24 and
+		 * the battery fault line is GPIO22, active high, which the
+		 * factory keyboard driver tests as "GPLR bit 22 set". All are
+		 * ordinary GPIOs without alternate function muxing, and no other
+		 * node in this file uses them.
+		 *
+		 * nvram, power and reset are bits 13, 12 and 9 of the ASIC2 GPIO
+		 * bank. Bit 8 (OPT_PCM_RESET, the reset of a single PCMCIA card as
+		 * opposed to the reset of the whole jacket at bit 9) is not
+		 * listed because the PCMCIA socket driver requests it as its own
+		 * reset GPIO.
+		 */
+		sleeve {
+			compatible = "htc,asic2-sleeve";
+
+			bat-fault-gpios = <&gpio 22 GPIO_ACTIVE_HIGH>;
+			detect-gpios = <&gpio 20 GPIO_ACTIVE_LOW>;
+			nvram-gpios = <&asic2 13 GPIO_ACTIVE_HIGH>;
+			opt-int-gpios = <&gpio 24 GPIO_ACTIVE_HIGH>;
+			power-gpios = <&asic2 12 GPIO_ACTIVE_HIGH>;
+			reset-gpios = <&asic2 9 GPIO_ACTIVE_HIGH>;
+		};
+
+		/*
 		 * ASIC2 PWM0 drives the frontlight, see the "frontlight" node.
 		 * The divider and period are the values this board needs
 		 * instead of the driver's defaults.
