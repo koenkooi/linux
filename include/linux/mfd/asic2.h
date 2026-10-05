@@ -137,6 +137,22 @@
 #define ASIC2_PWM_DUTY_TIME		0x0008	/* R/W 12 bits */
 
 /* ---------------------------------------------------------------------
+ * LED: three blink-timer channels with a 0x80 stride, driving the three
+ * physical status LEDs. The block has no clock-enable bit of its own, it
+ * is fed by EX0 (32.768 kHz), which is forced on at probe.
+ * ---------------------------------------------------------------------
+ */
+#define ASIC2_NUM_LEDS			3
+
+#define ASIC2_LED0_BASE			0x0800
+#define ASIC2_LED1_BASE			0x0880
+#define ASIC2_LED2_BASE			0x0900
+#define ASIC2_LED_TIMEBASE		0x0000	/* R/W 7 bits */
+#define ASIC2_LED_PERIODTIME		0x0004	/* R/W 12 bits */
+#define ASIC2_LED_DUTYTIME		0x0008	/* R/W 12 bits */
+#define ASIC2_LED_AUTOSTOPCOUNT		0x000c	/* R/W 16 bits, not changeable */
+
+/* ---------------------------------------------------------------------
  * Clock enable: one flat 18-bit register, one CCF gate per bit exposed by
  * drivers/mfd/asic2.c. EX0 feeds the chip's interrupt controller and is
  * forced on at probe instead of being a consumer-facing gate. Bits without
