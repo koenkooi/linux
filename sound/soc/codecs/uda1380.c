@@ -427,9 +427,12 @@ static const struct snd_soc_dapm_route uda1380_dapm_routes[] = {
 	{"Input Mux", "Line L", "Left PGA"},
 	{"Input Mux", "Line", "Left PGA"},
 
-	/* right input */
-	{"Right ADC", "Mic + Line R", "Right PGA"},
-	{"Right ADC", "Line", "Right PGA"},
+	/*
+	 * "Right ADC" is a plain ADC widget, not a mux or mixer, so a route
+	 * into it cannot name a control. The left channel has an "Input Mux"
+	 * widget backing its named routes, the right channel has none.
+	 */
+	{"Right ADC", NULL, "Right PGA"},
 
 	/* inputs */
 	{"Mic LNA", NULL, "VINM"},
