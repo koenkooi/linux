@@ -30,7 +30,8 @@
  *
  * Vblank is not supported: there is no drm_vblank_init() and no IRQ
  * handler, and atomic_update copies the damage into VRAM synchronously with
- * no regard for the scanout position, so a large update can tear. The
+ * no regard for the scanout position (by the CPU, or through a DMA channel
+ * while present_dma is set), so a large update can tear. The
  * 256 KiB VRAM holds one 240x320 RGB565 frame (153600 bytes) but not two,
  * so a hardware page flip is not available at this format; tear-free
  * updates need the copy timed against the scanout instead. The interrupt
@@ -57,7 +58,10 @@
 
 #include <linux/backlight.h>
 #include <linux/bits.h>
+#include <linux/completion.h>
 #include <linux/delay.h>
+#include <linux/dma-mapping.h>
+#include <linux/dmaengine.h>
 #include <linux/gpio/consumer.h>
 #include <linux/io.h>
 #include <linux/math64.h>
@@ -108,6 +112,19 @@
 static bool mq11xx_wc;
 module_param_named(wc, mq11xx_wc, bool, 0444);
 MODULE_PARM_DESC(wc, "Map video memory write-combining instead of device memory (default: off)");
+
+/*
+ * Whether the damage copy into video memory is made by a dmaengine memcpy
+ * channel instead of the CPU. The channel writes video memory no faster than
+ * the CPU does; what it gives is a CPU that sleeps through the transfer,
+ * which only pays off where something else wants the CPU, and a DMA channel
+ * is a scarce, shared resource on these SoCs. The right choice depends on
+ * the board's workload, so it is switchable at run time, which also lets
+ * the two paths be compared on a running system.
+ */
+static bool mq11xx_present_dma;
+module_param_named(present_dma, mq11xx_present_dma, bool, 0644);
+MODULE_PARM_DESC(present_dma, "Copy damage into video memory with a DMA channel instead of the CPU; may be changed at run time (default: off)");
 
 #define DRIVER_MAJOR 1
 #define DRIVER_MINOR 0
@@ -267,6 +284,26 @@ struct mq11xx_variant {
 	bool has_internal_pwm;
 };
 
+/*
+ * Resources of the DMA present path. They are set up from the plane's
+ * atomic_check, the first time it finds present_dma set, so that the commit
+ * tail neither allocates nor acquires anything. Checks are serialised by the
+ * plane lock and publish @chan last, with release semantics; the commit
+ * tail, whose commits on the one CRTC run in order, reads @chan with acquire
+ * semantics and owns @failed. mq11xx_remove() tears everything down once no
+ * commit can be running any more. A failed setup is not retried.
+ */
+struct mq11xx_present_dma {
+	struct dma_chan *chan;		/* NULL: unavailable or not set up */
+	void *bounce;			/* one frame in coherent memory */
+	dma_addr_t bounce_dma;
+	dma_addr_t vram_dma;		/* the frame at the start of video memory */
+	size_t size;
+	unsigned int pitch;
+	bool tried;
+	bool failed;			/* a transfer failed: CPU copies only */
+};
+
 struct mq11xx_device {
 	struct drm_device drm;
 
@@ -279,6 +316,7 @@ struct mq11xx_device {
 
 	void __iomem *vram;
 	resource_size_t vram_size;
+	phys_addr_t vram_phys;
 	bool vram_wc;
 	void __iomem *regs;
 
@@ -306,6 +344,8 @@ struct mq11xx_device {
 					 * mq11xx_output_enable()
 					 */
 	struct backlight_device *backlight;	/* NULL if DT names none */
+
+	struct mq11xx_present_dma present_dma;
 };
 
 #define to_mq11xx(_dev) container_of(_dev, struct mq11xx_device, drm)
@@ -1259,12 +1299,292 @@ static const u64 mq11xx_primary_plane_format_modifiers[] = {
 	DRM_FORMAT_MOD_INVALID,
 };
 
+/*
+ * The DMA present path. The CPU first copies each rectangle from the
+ * shadow buffer into a coherent bounce buffer at the same frame offsets,
+ * and the channel moves it from there, so the channel never reads cached
+ * memory and no cache maintenance is needed. The shadow pages are read
+ * exactly as the CPU path reads them, so whatever their aliasing in the
+ * virtually indexed data cache means for that path it means here too.
+ */
+
+/*
+ * A transfer never legitimately runs long: a whole frame takes about
+ * 20 ms. The fixed part covers descriptor setup and interrupt latency; the
+ * proportional part assumes 1 MB/s, an eighth of the measured rate, which
+ * leaves room for a lowest-priority channel to be held off by other DMA
+ * traffic. A timeout costs a terminate and a CPU copy, so a generous limit
+ * is cheaper than a spurious one.
+ */
+#define MQ11XX_PRESENT_DMA_BASE_MS	100
+#define MQ11XX_PRESENT_DMA_BYTES_PER_MS	1000
+
+/*
+ * A descriptor costs the CPU a few microseconds to set up, about what it
+ * spends stalled on the video memory bus while storing this many bytes
+ * (the bus moves roughly 8 MB/s, so 64 bytes take about 8 us), so anything
+ * moved in pieces smaller than this is left to the CPU. Without it a
+ * narrow, tall rectangle such as a text caret would need a descriptor per
+ * row and cost more than the copy it replaces.
+ */
+#define MQ11XX_PRESENT_DMA_MIN_CHUNK	64
+
+static void mq11xx_dma_done(void *arg)
+{
+	complete(arg);
+}
+
+/*
+ * Copies @n chunks of @chunk bytes as @n separate transfers, the i-th from
+ * @src + i * @stride to @dst + i * @stride. All of them are prepared and
+ * submitted before the channel is started, and only the last interrupts.
+ * Waits for the last one up to @timeout_ms. No transfer is left in flight
+ * on return.
+ */
+static int mq11xx_dma_round(struct dma_chan *chan, dma_addr_t dst,
+			    dma_addr_t src, size_t chunk, size_t stride,
+			    unsigned int n, unsigned int timeout_ms)
+{
+	DECLARE_COMPLETION_ONSTACK(done);
+	struct dma_async_tx_descriptor *tx;
+	dma_cookie_t cookie;
+	unsigned long flags;
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < n; i++) {
+		flags = DMA_CTRL_ACK;
+		if (i == n - 1)
+			flags |= DMA_PREP_INTERRUPT;
+
+		tx = dmaengine_prep_dma_memcpy(chan, dst + i * stride,
+					       src + i * stride, chunk, flags);
+		if (!tx) {
+			ret = -ENOMEM;
+			goto err_terminate;
+		}
+		if (i == n - 1) {
+			tx->callback = mq11xx_dma_done;
+			tx->callback_param = &done;
+		}
+
+		cookie = dmaengine_submit(tx);
+		ret = dma_submit_error(cookie);
+		if (ret)
+			goto err_terminate;
+	}
+	dma_async_issue_pending(chan);
+
+	if (!wait_for_completion_timeout(&done, msecs_to_jiffies(timeout_ms))) {
+		ret = -ETIMEDOUT;
+		goto err_terminate;
+	}
+
+	return 0;
+
+err_terminate:
+	/* Also discards transfers submitted before the failure. */
+	dmaengine_terminate_sync(chan);
+	return ret;
+}
+
+/*
+ * Request the channel and map the bounce buffer and video memory for it.
+ * Any failure leaves the path inert with the CPU copy in charge; probe
+ * never depends on it. It is done on first use rather than at probe so
+ * that a board that never sets present_dma does not hold a channel and
+ * 150 KB of contiguous memory, which is a lot on 64 MB, for its whole
+ * life. Called from atomic_check because it sleeps and allocates, which
+ * the commit tail must not do.
+ */
+static void mq11xx_present_dma_setup(struct mq11xx_device *mq)
+{
+	const struct drm_display_mode *mode = mq->variant->mode;
+	struct mq11xx_present_dma *d = &mq->present_dma;
+	unsigned int pitch = mode->hdisplay * 2;
+	size_t size = (size_t)pitch * mode->vdisplay;
+	const char *why;
+	struct dma_chan *chan;
+	dma_addr_t bounce_dma, vram_dma;
+	dma_cap_mask_t mask;
+	struct device *dev;
+	void *bounce;
+
+	d->tried = true;
+
+	if (size > mq->vram_size) {
+		why = "video memory is smaller than a frame";
+		goto err_log;
+	}
+
+	dma_cap_zero(mask);
+	dma_cap_set(DMA_MEMCPY, mask);
+	chan = dma_request_chan_by_mask(&mask);
+	if (IS_ERR(chan)) {
+		why = "no DMA_MEMCPY channel";
+		goto err_log;
+	}
+	dev = chan->device->dev;
+
+	bounce = dma_alloc_coherent(dev, size, &bounce_dma,
+				    GFP_KERNEL | __GFP_NOWARN);
+	if (!bounce) {
+		why = "out of memory";
+		goto err_release;
+	}
+
+	vram_dma = dma_map_resource(dev, mq->vram_phys, size, DMA_FROM_DEVICE, 0);
+	if (dma_mapping_error(dev, vram_dma)) {
+		why = "cannot map video memory for DMA";
+		goto err_free;
+	}
+
+	if (!is_dma_copy_aligned(chan->device, vram_dma, bounce_dma, pitch)) {
+		why = "video memory or line not aligned for the channel";
+		goto err_unmap;
+	}
+
+	d->bounce = bounce;
+	d->bounce_dma = bounce_dma;
+	d->vram_dma = vram_dma;
+	d->size = size;
+	d->pitch = pitch;
+	/* Pairs with the acquire in mq11xx_present_dma_rect(). */
+	smp_store_release(&d->chan, chan);
+	drm_info(&mq->drm, "present_dma: using channel %s\n", dma_chan_name(chan));
+
+	return;
+
+err_unmap:
+	dma_unmap_resource(dev, vram_dma, size, DMA_FROM_DEVICE, 0);
+err_free:
+	dma_free_coherent(dev, size, bounce, bounce_dma);
+err_release:
+	dma_release_channel(chan);
+err_log:
+	drm_info(&mq->drm, "present_dma unavailable (%s), copying with the CPU\n", why);
+}
+
+static void mq11xx_present_dma_fini(struct mq11xx_device *mq)
+{
+	struct mq11xx_present_dma *d = &mq->present_dma;
+	struct device *dev;
+
+	if (!d->chan)
+		return;
+
+	dev = d->chan->device->dev;
+	dma_unmap_resource(dev, d->vram_dma, d->size, DMA_FROM_DEVICE, 0);
+	dma_free_coherent(dev, d->size, d->bounce, d->bounce_dma);
+	dma_release_channel(d->chan);
+	d->chan = NULL;
+}
+
+/*
+ * Present the rows of @damage from the shadow buffer @data through the
+ * channel, and wait for them. Returns 0 with the rectangle in video
+ * memory, or an error with nothing in flight and the caller to copy the
+ * rectangle itself; it may have written part of it.
+ *
+ * The channel moves multiples of its copy alignment between aligned
+ * addresses, so the rectangle is widened to it. The extra pixels come
+ * from the same shadow buffer and are what the frame holds there.
+ *
+ * Returns -EMSGSIZE, with nothing written, for a rectangle whose pieces
+ * are below MQ11XX_PRESENT_DMA_MIN_CHUNK. Any failure of the transfer
+ * itself turns the path off for good, so a channel that has stopped making
+ * progress costs one timeout rather than one per rectangle.
+ *
+ * The chip must stay powered until this returns. Power is only cut by
+ * mq11xx_output_disable() from the CRTC disable hook, which the commit tail
+ * runs before it updates planes, and by a failed re-init in the enable hook,
+ * which it runs before them. A later commit on the CRTC waits for this one
+ * to signal hw_done, but only for a limited time, after which the helpers
+ * let it go on regardless. That is why the time this function can take is
+ * bounded: with at most one timeout per commit, of at most a few hundred
+ * milliseconds, it stays far below that limit. mq11xx_remove() unplugs the
+ * device, waiting for every drm_dev_enter() section, before it lets power
+ * go. hw_lock is deliberately not held across the wait: it would serialise
+ * the present path with the PWM callbacks.
+ */
+static int mq11xx_present_dma_rect(struct mq11xx_device *mq,
+				   struct drm_framebuffer *fb,
+				   const struct iosys_map *data,
+				   const struct drm_rect *damage)
+{
+	struct mq11xx_present_dma *d = &mq->present_dma;
+	/* Orders the reads of the other fields after setup's writes to them. */
+	struct dma_chan *chan = smp_load_acquire(&d->chan);
+	struct iosys_map bounce_map;
+	struct dma_device *ddev;
+	unsigned int align, cpp, x1, x2, rows, n, timeout_ms;
+	size_t chunk, stride, offset, total;
+	struct drm_rect wide;
+	struct iosys_map dst;
+	int ret;
+
+	if (!chan || d->failed || fb->pitches[0] != d->pitch)
+		return -ENODEV;
+
+	iosys_map_set_vaddr(&bounce_map, d->bounce);
+	ddev = chan->device;
+	align = 1 << ddev->copy_align;
+	cpp = fb->format->cpp[0];
+	rows = drm_rect_height(damage);
+
+	x1 = ALIGN_DOWN(damage->x1 * cpp, align);
+	x2 = min(ALIGN(damage->x2 * cpp, align), d->pitch);
+	wide = DRM_RECT_INIT(x1 / cpp, damage->y1, (x2 - x1) / cpp, rows);
+	offset = drm_fb_clip_offset(d->pitch, fb->format, &wide);
+
+	if (x2 - x1 == d->pitch) {
+		/* Rows are adjacent, so the whole rectangle is one transfer. */
+		chunk = (size_t)rows * d->pitch;
+		stride = chunk;
+		n = 1;
+	} else {
+		chunk = x2 - x1;
+		stride = d->pitch;
+		n = rows;
+	}
+
+	if (chunk < MQ11XX_PRESENT_DMA_MIN_CHUNK)
+		return -EMSGSIZE;
+
+	if (offset + (n - 1) * stride + chunk > d->size ||
+	    !is_dma_copy_aligned(ddev, d->vram_dma + offset,
+				 d->bounce_dma + offset, chunk))
+		return -EINVAL;
+
+	dst = IOSYS_MAP_INIT_OFFSET(&bounce_map, offset);
+	drm_fb_memcpy(&dst, fb->pitches, data, fb, &wide);
+
+	total = chunk * n;
+	timeout_ms = MQ11XX_PRESENT_DMA_BASE_MS +
+		     DIV_ROUND_UP(total, MQ11XX_PRESENT_DMA_BYTES_PER_MS);
+
+	ret = mq11xx_dma_round(chan, d->vram_dma + offset,
+			       d->bounce_dma + offset, chunk, stride, n,
+			       timeout_ms);
+	if (ret) {
+		d->failed = true;
+		drm_warn(&mq->drm, "present_dma: transfer failed (%d), copying with the CPU from now on\n",
+			 ret);
+	}
+
+	return ret;
+}
+
 static int mq11xx_primary_plane_helper_atomic_check(struct drm_plane *plane,
 						    struct drm_atomic_commit *state)
 {
 	struct drm_plane_state *new_plane_state = drm_atomic_get_new_plane_state(state, plane);
 	struct drm_crtc *new_crtc = new_plane_state->crtc;
 	struct drm_crtc_state *new_crtc_state = NULL;
+	struct mq11xx_device *mq = to_mq11xx(plane->dev);
+
+	if (READ_ONCE(mq11xx_present_dma) && !mq->present_dma.tried)
+		mq11xx_present_dma_setup(mq);
 
 	if (new_crtc)
 		new_crtc_state = drm_atomic_get_new_crtc_state(state, new_crtc);
@@ -1303,6 +1623,7 @@ static void mq11xx_primary_plane_helper_atomic_update(struct drm_plane *plane,
 	struct iosys_map vram_map = IOSYS_MAP_INIT_VADDR_IOMEM(mq->vram);
 	struct drm_atomic_helper_damage_iter iter;
 	struct drm_rect damage;
+	bool dma;
 	int idx;
 
 	if (!fb)
@@ -1320,10 +1641,20 @@ static void mq11xx_primary_plane_helper_atomic_update(struct drm_plane *plane,
 	if (!mq->powered)
 		goto out_exit;
 
+	/*
+	 * Read once: every rectangle of this commit is finished before it
+	 * returns, so a change through sysfs simply takes effect on the next.
+	 */
+	dma = READ_ONCE(mq11xx_present_dma);
+
 	drm_atomic_helper_damage_iter_init(&iter, old_plane_state, plane_state);
 	drm_atomic_for_each_plane_damage(&iter, &damage) {
 		unsigned int offset = drm_fb_clip_offset(fb->pitches[0], fb->format, &damage);
 		struct iosys_map dst = IOSYS_MAP_INIT_OFFSET(&vram_map, offset);
+
+		if (dma && !mq11xx_present_dma_rect(mq, fb, shadow_plane_state->data,
+						    &damage))
+			continue;
 
 		drm_fb_memcpy(&dst, fb->pitches, shadow_plane_state->data, fb, &damage);
 		/* RGB565 is the only format, so the last pixel is 2 bytes. */
@@ -1569,6 +1900,7 @@ static int mq11xx_probe(struct platform_device *pdev)
 	if (IS_ERR(mq->vram))
 		return dev_err_probe(dev, PTR_ERR(mq->vram), "failed to map VRAM\n");
 	mq->vram_size = resource_size(res);
+	mq->vram_phys = res->start;
 
 	mq->regs = devm_platform_ioremap_resource(pdev, 1);
 	if (IS_ERR(mq->regs))
@@ -1661,6 +1993,8 @@ static void mq11xx_remove(struct platform_device *pdev)
 
 	drm_dev_unplug(&mq->drm);
 	drm_atomic_helper_shutdown(&mq->drm);
+	/* Unplugged, so no commit can be using the channel any more. */
+	mq11xx_present_dma_fini(mq);
 
 	/* mq11xx_power_down_action() runs via devm after .remove() returns. */
 }
