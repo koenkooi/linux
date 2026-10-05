@@ -91,6 +91,42 @@
 		rtc@40900000 {
 			clocks = <&clks CLK_OSC32k768>;
 		};
+
+		/*
+		 * PXA25x has three distinct SSP-family blocks rather than
+		 * three instances of one type: the primary SSP is present on
+		 * every chip, NSSP and ASSP only on PXA255/26x. The primary
+		 * unit has a 0x20 byte window and uses CLK_SSP, not CLK_SSP1.
+		 * ASSP is equivalent to NSSP and shares its compatible string,
+		 * which carries the "mvrl" spelling matched by
+		 * drivers/soc/pxa/ssp.c and marvell,mmp2-ssp.yaml.
+		 *
+		 * All three are left disabled: a board enables and gives a role
+		 * to the instance it wires up.
+		 */
+		ssp1: spi@41000000 {
+			compatible = "mrvl,pxa25x-ssp";
+			reg = <0x41000000 0x20>;
+			interrupts = <24>;
+			clocks = <&clks CLK_SSP>;
+			status = "disabled";
+		};
+
+		nssp: spi@41400000 {
+			compatible = "mvrl,pxa25x-nssp";
+			reg = <0x41400000 0x30>;
+			interrupts = <16>;
+			clocks = <&clks CLK_NSSP>;
+			status = "disabled";
+		};
+
+		assp: spi@41500000 {
+			compatible = "mvrl,pxa25x-nssp";
+			reg = <0x41500000 0x30>;
+			interrupts = <15>;
+			clocks = <&clks CLK_ASSP>;
+			status = "disabled";
+		};
 	};
 
 	timer@40a00000 {
