@@ -58,6 +58,8 @@ config MACH_H2200
 	select ARM_ATAG_DTB_COMPAT
 	select GENERIC_ALLOCATOR
 	select MFD_HAMCOP
+	select REGULATOR
+	select REGULATOR_FIXED_VOLTAGE
 	select RFKILL
 	help
 	  Say Y here for the HP iPAQ h2200 (h2210/h2212/h2215 are the same
