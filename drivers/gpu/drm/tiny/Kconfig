@@ -120,6 +120,33 @@ config DRM_PIXPAPER
 
 	  If M is selected, the module will be built as pixpaper.ko.
 
+config DRM_SA11X0_LCDC
+	tristate "DRM support for the Intel/StrongARM SA-1100 LCD controller"
+	depends on DRM && OF
+	depends on ARCH_SA1100 || COMPILE_TEST
+	depends on COMMON_CLK
+	depends on MMU
+	select DRM_CLIENT_SELECTION
+	select DRM_KMS_HELPER
+	select DRM_GEM_DMA_HELPER
+	select DRM_PANEL_BRIDGE
+	help
+	  DRM driver for the LCD controller integrated in the Intel/
+	  StrongARM SA-1100 and SA-1110 application processors, driving a
+	  parallel RGB (DPI) panel described in the device tree. This
+	  controller has a single DMA base-address register with no
+	  descriptor to chain, but requires a small fixed pixel-format header to precede
+	  the pixel data in memory, so this driver copies each update into
+	  one persistent shadow buffer rather than scanning out of the GEM
+	  object directly.
+
+	  Panel supplies and timings belong to a drm_panel driver reached
+	  over the OF graph, not to this driver. The legacy fbdev driver for
+	  the same hardware, CONFIG_FB_SA1100, binds to the platform device
+	  that a board file registers and does not match a device tree node.
+
+	  If M is selected the module will be called sa1100-lcdc.
+
 config TINYDRM_HX8357D
 	tristate "DRM support for HX8357D display panels"
 	depends on DRM && SPI
