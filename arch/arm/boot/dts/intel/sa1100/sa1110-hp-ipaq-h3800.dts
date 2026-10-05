@@ -8,6 +8,7 @@
 
 /dts-v1/;
 
+#include <dt-bindings/clock/htc,asic2.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include "sa1110.dtsi"
@@ -68,12 +69,75 @@
 		 */
 		reg = <0xc0000000 0x04000000>;
 	};
+
+	/*
+	 * The panel driver sequences all six rails, including the frontlight
+	 * power rail FL_PWR_ON, so that the pin has a single owner.
+	 */
+	panel {
+		compatible = "hp,ipaq-h3800-panel";
+
+		lcd-5v-gpios  = <&asic1 5 GPIO_ACTIVE_HIGH>;
+		lcd-on-gpios  = <&asic1 6 GPIO_ACTIVE_HIGH>;
+		lcd-pci-gpios = <&asic1 7 GPIO_ACTIVE_HIGH>;
+		vgh-gpios     = <&asic1 8 GPIO_ACTIVE_HIGH>;
+		vgl-gpios     = <&asic1 9 GPIO_ACTIVE_HIGH>;
+		fl-pwr-gpios  = <&asic1 10 GPIO_ACTIVE_HIGH>;
+
+		/*
+		 * The glass is physically portrait. The mounting correction is
+		 * 270, DRM_MODE_PANEL_ORIENTATION_LEFT_UP. The h3900, which has
+		 * the same case and panel size, uses 90, but the two are not
+		 * mounted the same way: with 90 the image of the one h3870
+		 * checked is rotated 180 degrees from correct.
+		 */
+		rotation = <270>;
+		backlight = <&frontlight>;
+
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&lcdc_out>;
+			};
+		};
+	};
+
+	/*
+	 * No enable-gpios: the panel driver owns FL_PWR_ON.
+	 *
+	 * The period in pwms is only used by pwm-backlight to scale the duty
+	 * cycle: the PWM driver ignores the requested period and always
+	 * programs the fixed hardware period from the asic2_pwm node.
+	 */
+	frontlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&asic2_pwm 0 100000>;
+
+		/*
+		 * The duty range of the hardware is 0-64, and the PWM driver
+		 * clamps any non-zero duty below 21 (about 33%) up to 21. Level
+		 * 0 is off; the other levels step evenly from that floor to
+		 * full scale, so no listed level needs clamping.
+		 */
+		brightness-levels = <0 21 27 33 39 45 51 58 64>;
+		default-brightness-level = <4>;
+	};
 };
 
 /* The two lines of the PPC block that this board uses. */
 &ppc {
 	gpio-line-names = "", "", "", "", "", "", "", "", "", "", "", "",
 			  "COM_DTR", "NSD_WP";
+};
+
+&lcdc {
+	status = "okay";
+
+	port {
+		lcdc_out: endpoint {
+			remote-endpoint = <&panel_in>;
+			bus-width = <16>;
+		};
+	};
 };
 
 &smc {
@@ -145,6 +209,20 @@
 					  "LCD_ON", "LCD_PCI", "VGH_ON", "VGL_ON",
 					  "FL_PWR_ON", "BT_PWR_ON", "SPK_ON",
 					  "EAR_ON_N", "AUD_PWR_ON";
+		};
+
+		/*
+		 * ASIC2 PWM0 drives the frontlight, see the "frontlight" node.
+		 * The divider and period are the values this board needs
+		 * instead of the driver's defaults.
+		 */
+		asic2_pwm: pwm {
+			compatible = "htc,asic2-pwm";
+			#pwm-cells = <2>;
+			clocks = <&asic2 ASIC2_CLK_PWM>, <&asic2 ASIC2_CLK_EX1>;
+			clock-names = "ref", "ex1";
+			htc,pwm-divider = <8>;
+			htc,pwm-period = <64>;
 		};
 	};
 };
