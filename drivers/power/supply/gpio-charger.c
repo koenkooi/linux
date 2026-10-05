@@ -32,6 +32,7 @@ struct gpio_charger {
 	struct power_supply_desc charger_desc;
 	struct gpio_desc *gpiod;
 	struct gpio_desc *charge_status;
+	struct gpio_desc *charge_enable;
 
 	struct gpio_descs *current_limit_gpios;
 	struct gpio_mapping *current_limit_map;
@@ -316,6 +317,17 @@ static int gpio_charger_probe(struct platform_device *pdev)
 		gpio_charger_properties[num_props] = POWER_SUPPLY_PROP_STATUS;
 		num_props++;
 	}
+
+	/*
+	 * Optional single-line charge enable, requested asserted and left
+	 * asserted for the lifetime of the device: the charge timeout is
+	 * handled by the charger circuit itself.
+	 */
+	gpio_charger->charge_enable = devm_gpiod_get_optional(dev, "charge-enable",
+							      GPIOD_OUT_HIGH);
+	if (IS_ERR(gpio_charger->charge_enable))
+		return dev_err_probe(dev, PTR_ERR(gpio_charger->charge_enable),
+				     "error getting charge-enable GPIO\n");
 
 	ret = init_charge_current_limit(dev, gpio_charger);
 	if (ret < 0)
