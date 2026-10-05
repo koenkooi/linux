@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/interrupt-controller/intel,sa1100-intc.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Intel SA-1100/SA-1110 interrupt controller
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  The SA-1100/SA-1110 on-chip interrupt controller (ICIP, ICMR, ICLR,
+  ICCR and ICPR registers). All on-chip peripheral interrupts, and the
+  aggregate lines of the GPIO0-27 demultiplexer, are routed through it.
+  The controller has no per-line trigger type configuration, so
+  #interrupt-cells is a bare hardware interrupt number.
+
+properties:
+  compatible:
+    items:
+      - const: intel,sa1110-intc
+      - const: intel,sa1100-intc
+
+  reg:
+    maxItems: 1
+
+  interrupt-controller: true
+
+  '#interrupt-cells':
+    const: 1
+
+required:
+  - compatible
+  - reg
+  - interrupt-controller
+  - '#interrupt-cells'
+
+additionalProperties: false
+
+examples:
+  - |
+    interrupt-controller@90050000 {
+        compatible = "intel,sa1110-intc", "intel,sa1100-intc";
+        reg = <0x90050000 0x24>;
+        interrupt-controller;
+        #interrupt-cells = <1>;
+    };
+
+...
