@@ -385,6 +385,20 @@ config LEDS_IPAQ_MICRO
 	  Choose this option if you want to use the notification LED on
 	  Compaq/HP iPAQ h3100 and h3600.
 
+config LEDS_ASIC2
+	tristate "LED Support for Compaq/HTC ASIC2 companion ASIC"
+	depends on LEDS_CLASS
+	depends on MFD_ASIC2
+	help
+	  This option enables support for the LEDs on the Compaq/HTC ASIC2
+	  companion ASIC, which drive the status LEDs of the HP iPAQ h3800.
+	  ASIC2 has three independent, hardware-blink-capable LED channels, each
+	  with its own duty-cycle and period timer, switched via a
+	  timebase register rather than a plain GPIO output.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called leds-asic2.
+
 config LEDS_ASIC3
 	tristate "LED Support for Compaq/HTC ASIC3 companion ASIC"
 	depends on LEDS_CLASS
