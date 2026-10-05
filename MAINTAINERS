@@ -2991,6 +2991,7 @@ F:	Documentation/devicetree/bindings/interrupt-controller/intel,sa1100-intc.yaml
 F:	Documentation/devicetree/bindings/memory-controllers/intel,sa1110-smc*.yaml
 F:	Documentation/devicetree/bindings/mmc/htc,asic1-mmc.yaml
 F:	Documentation/devicetree/bindings/serial/intel,sa1100-uart.yaml
+F:	Documentation/devicetree/bindings/usb/intel,sa1100-udc.yaml
 F:	arch/arm/boot/dts/intel/sa1100/
 F:	arch/arm/mach-sa1100/h3800.c
 F:	drivers/clk/clk-sa1100.c
