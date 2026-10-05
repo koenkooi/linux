@@ -75,6 +75,64 @@
 		dtr-gpios = <&ppc 12 GPIO_ACTIVE_LOW>;
 	};
 
+	/*
+	 * On-board NOR flash on CS0: an Intel 28F320J3, 28F640J3 or 28F128J3
+	 * (4, 8 or 16 MiB, device IDs 0x16, 0x17 and 0x18), two x16 chips
+	 * interleaved onto the 32-bit bus when a second chip also reports
+	 * manufacturer 0x89, hence a bank-width of 4. The reg property maps
+	 * 32 MiB, two of the largest chips, as the h3xxx board code does: CFI
+	 * probing only finds what is populated inside the window and the MTD
+	 * partition code truncates, with a warning, a partition that extends
+	 * past the detected size, so the same node works on every variant. The
+	 * boot firmware takes the first 256 KiB. On a 32 MiB unit the top 256
+	 * KiB is an asset block with per-unit identity data that the factory
+	 * firmware reads, so it is a read-only partition of its own. Where that
+	 * block sits on a 16 MiB unit is not known; there the "asset" partition
+	 * lies past the detected size and the MTD partition code disables it.
+	 *
+	 * vpp-gpios is the FlashWP_VPP_ON line of ASIC2 (offset 16 of its
+	 * GPIO chip), active high. physmap-core only drives it around an erase
+	 * or program operation.
+	 *
+	 * This node needs no board code, since physmap-core matches "cfi-flash"
+	 * and the node is populated by of_platform_default_populate(). It is
+	 * left at the root rather than put under the static memory controller
+	 * with ASIC2: nCS0 has no known access timing, and a child that carries
+	 * none of the timing properties leaves its chip select as the boot
+	 * firmware programmed it, which is the only safe option for the
+	 * device the kernel was fetched through. The probe is deferred until
+	 * the gpio chip of ASIC2 that backs vpp-gpios exists.
+	 */
+	flash@0 {
+		compatible = "cfi-flash";
+		reg = <0x00000000 0x02000000>;
+		bank-width = <4>;
+		vpp-gpios = <&asic2 16 GPIO_ACTIVE_HIGH>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "H3800 boot firmware";
+				reg = <0x00000000 0x00040000>;
+				read-only;
+			};
+
+			partition@40000 {
+				label = "H3800 rootfs";
+				reg = <0x00040000 0x01f80000>;
+			};
+
+			partition@1fc0000 {
+				label = "asset";
+				reg = <0x01fc0000 0x00040000>;
+				read-only;
+			};
+		};
+	};
+
 	memory@c0000000 {
 		device_type = "memory";
 		/*
