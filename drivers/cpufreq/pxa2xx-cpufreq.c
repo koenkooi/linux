@@ -127,7 +127,12 @@ static int pxa_cpufreq_change_voltage(const struct pxa_freqs *pxa_freq)
 
 static void pxa_cpufreq_init_voltages(void)
 {
-	vcc_core = regulator_get(NULL, "vcc_core");
+	/*
+	 * regulator_get() succeeds against the always-present dummy
+	 * regulator when no real "vcc_core" supply is registered, so use
+	 * the optional variant to tell a genuine miss from the dummy.
+	 */
+	vcc_core = regulator_get_optional(NULL, "vcc_core");
 	if (IS_ERR(vcc_core)) {
 		pr_info("Didn't find vcc_core regulator\n");
 		vcc_core = NULL;
