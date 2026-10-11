@@ -84,6 +84,7 @@ sa1100_pcmcia_set_mecr(struct soc_pcmcia_socket *skt, unsigned int cpu_clock)
 	unsigned int bs_io, bs_mem, bs_attr;
 
 	soc_common_pcmcia_get_timing(skt, &timing);
+	timing.io = max(timing.io, skt->min_io_ns);
 
 	bs_io = skt->ops->get_timing(skt, cpu_clock, timing.io);
 	bs_mem = skt->ops->get_timing(skt, cpu_clock, timing.mem);

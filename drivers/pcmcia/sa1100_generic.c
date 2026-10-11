@@ -178,6 +178,7 @@ static int sa11x0_drv_pcmcia_probe(struct platform_device *pdev)
 {
 	struct soc_pcmcia_socket *skt;
 	struct device *dev = &pdev->dev;
+	u32 min_io_ns = 0;
 	int nr;
 
 	if (dev_of_node(dev)) {
@@ -191,6 +192,8 @@ static int sa11x0_drv_pcmcia_probe(struct platform_device *pdev)
 			return dev_err_probe(dev, nr,
 				"reg %pR is not an SA-1110 PC Card window\n",
 				res);
+		of_property_read_u32(dev->of_node, "intel,min-io-cycle-ns",
+				     &min_io_ns);
 	} else if (pdev->id == -1) {
 		return sa11x0_drv_pcmcia_legacy_probe(pdev);
 	} else {
@@ -204,6 +207,7 @@ static int sa11x0_drv_pcmcia_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, skt);
 
 	skt->nr = nr;
+	skt->min_io_ns = min_t(u32, min_io_ns, U16_MAX);
 	skt->clk = devm_clk_get(dev, NULL);
 	if (IS_ERR(skt->clk))
 		return PTR_ERR(skt->clk);
