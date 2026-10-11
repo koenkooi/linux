@@ -496,6 +496,14 @@ int pci_remap_iospace(const struct resource *res, phys_addr_t phys_addr)
 }
 EXPORT_SYMBOL(pci_remap_iospace);
 
+void pci_unmap_iospace(struct resource *res)
+{
+	unsigned long vaddr = (unsigned long)PCI_IOBASE + res->start;
+
+	vunmap_range(vaddr, vaddr + resource_size(res));
+}
+EXPORT_SYMBOL(pci_unmap_iospace);
+
 void __iomem *pci_remap_cfgspace(resource_size_t res_cookie, size_t size)
 {
 	return arch_ioremap_caller(res_cookie, size, MT_UNCACHED,
