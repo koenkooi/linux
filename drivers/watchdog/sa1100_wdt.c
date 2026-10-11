@@ -197,7 +197,15 @@ static int sa1100dog_probe(struct platform_device *pdev)
 	if (!reg_base)
 		return -ENOMEM;
 
-	clk = clk_get(NULL, "OSTIMER0");
+	/*
+	 * On a devicetree system the watchdog is created by the OS timer
+	 * driver and has no node of its own; the counter clock is the
+	 * timer's. Board-code devices keep the clkdev lookup.
+	 */
+	if (dev_of_node(pdev->dev.parent))
+		clk = clk_get(pdev->dev.parent, NULL);
+	else
+		clk = clk_get(NULL, "OSTIMER0");
 	if (IS_ERR(clk)) {
 		pr_err("SA1100/PXA2xx Watchdog Timer: clock not found: %d\n",
 		       (int) PTR_ERR(clk));
