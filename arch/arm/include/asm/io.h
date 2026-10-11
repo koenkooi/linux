@@ -195,6 +195,14 @@ struct resource;
 int pci_remap_iospace(const struct resource *res, phys_addr_t phys_addr);
 
 /*
+ * Overridden as well, so that the PCMCIA (SS_CAP_STATIC_MAP) drivers can
+ * tear an I/O window down without CONFIG_PCI: the generic implementation
+ * lives in drivers/pci/pci.c and is not built when PCI is disabled.
+ */
+#define pci_unmap_iospace pci_unmap_iospace
+void pci_unmap_iospace(struct resource *res);
+
+/*
  * PCI configuration space mapping function.
  *
  * The PCI specification does not allow configuration write
