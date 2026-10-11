@@ -463,6 +463,7 @@ config SERIAL_SA1100_CONSOLE
 	bool "Console on SA1100 serial port"
 	depends on SERIAL_SA1100
 	select SERIAL_CORE_CONSOLE
+	select SERIAL_EARLYCON
 	help
 	  If you have enabled the serial port on the SA1100/SA1110 StrongARM
 	  CPU you can make it the console by answering Y to this option.
