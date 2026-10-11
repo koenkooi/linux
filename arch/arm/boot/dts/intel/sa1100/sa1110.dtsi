@@ -77,6 +77,24 @@
 		};
 
 		/*
+		 * GAFR and GPDR again, as a pin controller. It is a separate
+		 * node and driver from "gpio" above, as on PXA: gpio-sa1100.c
+		 * is registered from IRQCHIP_DECLARE, so of_platform_populate()
+		 * never creates a platform_device for it, and the pinctrl core
+		 * needs a real struct device. The two "reg" windows overlap
+		 * "gpio" on purpose, since GAFR and GPDR are two registers of
+		 * the same block and the pinctrl driver does not claim the
+		 * region exclusively. There is no "gpio-ranges" on "gpio":
+		 * sa1100_init_gpio() adds the gpiochip at IRQCHIP_DECLARE time,
+		 * long before this device exists, and cannot defer.
+		 */
+		pinctrl: pinctrl@9004001c {
+			compatible = "intel,sa1110-pinctrl", "intel,sa1100-pinctrl";
+			reg = <0x9004001c 0x4>, <0x90040004 0x4>;
+			reg-names = "gafr", "gpdr";
+		};
+
+		/*
 		 * The OS timer, which is also the watchdog: with OWER.WME set,
 		 * a match on OSMR3 resets the SoC. The watchdog has no node of
 		 * its own; its registers, counter and clock are this block's.

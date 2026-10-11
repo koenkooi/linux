@@ -273,8 +273,27 @@
 			  "COM_DTR", "NSD_WP";
 };
 
+/*
+ * LDD<15:8>, the upper byte of each RGB565 pixel, are muxed onto GPIO<9:2>
+ * and need both GAFR and GPDR set for the LCD controller to drive them.
+ * h3xxx_map_io() unconditionally does "GPDR = 0", which turns them into
+ * floating alternate-function inputs, so the panel shows a strong colour
+ * cast over an otherwise correct image. The pinctrl default state is applied
+ * before the LCD controller probes. "pins" lists P2..P9 individually because
+ * devicetree has no range syntax; "LDD" is the single function name the
+ * binding gives the whole 8-bit data bus.
+ */
+&pinctrl {
+	lcd_data_pins: lcd-data-pins {
+		pins = "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9";
+		function = "LDD";
+	};
+};
+
 &lcdc {
 	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&lcd_data_pins>;
 
 	port {
 		lcdc_out: endpoint {
