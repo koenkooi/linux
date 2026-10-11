@@ -16,6 +16,7 @@
 #include <linux/of.h>
 #include <linux/platform_data/sa11x0-serial.h>
 #include <linux/platform_device.h>
+#include <linux/regulator/consumer.h>
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
 #include <linux/serial_core.h>
@@ -78,6 +79,8 @@ struct sa1100_port {
 	struct timer_list	timer;
 	unsigned int		old_status;
 	struct mctrl_gpios	*gpios;
+	struct regulator	*vcc;
+	bool			vcc_console;
 };
 
 /*
@@ -340,12 +343,27 @@ static int sa1100_startup(struct uart_port *port)
 	int retval;
 
 	/*
+	 * Power the external line driver on a board where it is switchable.
+	 * This is the per-port replacement for the pm() hook of
+	 * sa1100_register_uart_fns(), which can serve only one board callback
+	 * through a single global.
+	 */
+	if (sport->vcc) {
+		retval = regulator_enable(sport->vcc);
+		if (retval)
+			return retval;
+	}
+
+	/*
 	 * Allocate the IRQ
 	 */
 	retval = request_irq(sport->port.irq, sa1100_int, 0,
 			     "sa11x0-uart", sport);
-	if (retval)
+	if (retval) {
+		if (sport->vcc)
+			regulator_disable(sport->vcc);
 		return retval;
+	}
 
 	/*
 	 * Finally, clear and enable interrupts
@@ -382,6 +400,9 @@ static void sa1100_shutdown(struct uart_port *port)
 	 * Disable all interrupts, port and break condition.
 	 */
 	UART_PUT_UTCR3(sport, 0);
+
+	if (sport->vcc)
+		regulator_disable(sport->vcc);
 }
 
 static void
@@ -835,8 +856,23 @@ static int sa1100_serial_resume(struct platform_device *dev)
 
 static int sa1100_serial_add_one_port(struct sa1100_port *sport, struct platform_device *dev)
 {
+	struct regulator *vcc;
+	int ret;
+
 	sport->port.dev = &dev->dev;
 	sport->port.has_sysrq = IS_ENABLED(CONFIG_SERIAL_SA1100_CONSOLE);
+
+	/*
+	 * Optional: the switchable supply of the external line driver. Most
+	 * boards have none.
+	 */
+	vcc = devm_regulator_get_optional(sport->port.dev, "vcc");
+	if (IS_ERR(vcc)) {
+		if (PTR_ERR(vcc) != -ENODEV)
+			return PTR_ERR(vcc);
+
+		vcc = NULL;
+	}
 
 	// mctrl_gpio_init() requires that the GPIO driver supports interrupts,
 	// but we need to support GPIO drivers for hardware that has no such
@@ -856,7 +892,35 @@ static int sa1100_serial_add_one_port(struct sa1100_port *sport, struct platform
 
 	platform_set_drvdata(dev, sport);
 
-	return uart_add_one_port(&sa1100_reg, &sport->port);
+	/*
+	 * The port array is static, so the managed regulator must not stay
+	 * behind in it when probe fails and the devres core releases it.
+	 */
+	sport->vcc = vcc;
+
+	ret = uart_add_one_port(&sa1100_reg, &sport->port);
+	if (ret) {
+		sport->vcc = NULL;
+		return ret;
+	}
+
+	/*
+	 * startup() and shutdown() switch the line driver with the tty, but
+	 * the console writes whether or not the tty is open. Hold the supply
+	 * for as long as the port is the console, so that console output does
+	 * not depend on a getty keeping the port open.
+	 */
+	if (sport->vcc && uart_console(&sport->port)) {
+		ret = regulator_enable(sport->vcc);
+		if (ret) {
+			uart_remove_one_port(&sa1100_reg, &sport->port);
+			sport->vcc = NULL;
+			return ret;
+		}
+		sport->vcc_console = true;
+	}
+
+	return 0;
 }
 
 /*
@@ -932,8 +996,15 @@ static void sa1100_serial_remove(struct platform_device *pdev)
 {
 	struct sa1100_port *sport = platform_get_drvdata(pdev);
 
-	if (sport)
-		uart_remove_one_port(&sa1100_reg, &sport->port);
+	if (!sport)
+		return;
+
+	uart_remove_one_port(&sa1100_reg, &sport->port);
+	if (sport->vcc_console) {
+		regulator_disable(sport->vcc);
+		sport->vcc_console = false;
+	}
+	sport->vcc = NULL;
 }
 
 static const struct of_device_id sa1100_serial_dt_ids[] = {
