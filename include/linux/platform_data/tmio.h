@@ -8,6 +8,13 @@
 /* TMIO MMC platform flags */
 
 /*
+ * Card presence is reported in the "_A" status bits (CARD_REMOVE_A,
+ * CARD_INSERT_A, SIGSTATE_A) rather than the usual CARD_REMOVE, CARD_INSERT
+ * and SIGSTATE.
+ */
+#define TMIO_MMC_CD_IN_ALT_BITS		BIT(0)
+
+/*
  * Some controllers can support a 2-byte block size when the bus width is
  * configured in 4-bit mode.
  */
