@@ -179,6 +179,29 @@ static void tmio_mmc_set_bus_width(struct tmio_mmc_host *host,
 	sd_ctrl_write16(host, CTL_SD_MEM_CARD_OPT, reg);
 }
 
+/*
+ * Select the card-detect status bits. ASIC3 leaves CARD_INSERT, CARD_REMOVE
+ * and SIGSTATE clear and reports the slot in the "_A" bits instead. Keyed off
+ * a platform flag so other users, such as renesas_sdhi, are unaffected.
+ */
+static inline u32 tmio_mmc_cd_insert_bit(struct tmio_mmc_host *host)
+{
+	return host->pdata->flags & TMIO_MMC_CD_IN_ALT_BITS ?
+		TMIO_STAT_CARD_INSERT_A : TMIO_STAT_CARD_INSERT;
+}
+
+static inline u32 tmio_mmc_cd_remove_bit(struct tmio_mmc_host *host)
+{
+	return host->pdata->flags & TMIO_MMC_CD_IN_ALT_BITS ?
+		TMIO_STAT_CARD_REMOVE_A : TMIO_STAT_CARD_REMOVE;
+}
+
+static inline u32 tmio_mmc_cd_sigstate_bit(struct tmio_mmc_host *host)
+{
+	return host->pdata->flags & TMIO_MMC_CD_IN_ALT_BITS ?
+		TMIO_STAT_SIGSTATE_A : TMIO_STAT_SIGSTATE;
+}
+
 static void tmio_mmc_reset(struct tmio_mmc_host *host, bool preserve)
 {
 	u16 card_opt, clk_ctrl, sdif_mode;
@@ -206,7 +229,8 @@ static void tmio_mmc_reset(struct tmio_mmc_host *host, bool preserve)
 
 	if (host->native_hotplug)
 		tmio_mmc_enable_mmc_irqs(host,
-				TMIO_STAT_CARD_REMOVE | TMIO_STAT_CARD_INSERT);
+				tmio_mmc_cd_remove_bit(host) |
+				tmio_mmc_cd_insert_bit(host));
 
 	tmio_mmc_set_bus_width(host, host->mmc->ios.bus_width);
 
@@ -665,11 +689,11 @@ static bool __tmio_mmc_card_detect_irq(struct tmio_mmc_host *host,
 	struct mmc_host *mmc = host->mmc;
 
 	/* Card insert / remove attempts */
-	if (ireg & (TMIO_STAT_CARD_INSERT | TMIO_STAT_CARD_REMOVE)) {
-		tmio_mmc_ack_mmc_irqs(host, TMIO_STAT_CARD_INSERT |
-			TMIO_STAT_CARD_REMOVE);
-		if ((((ireg & TMIO_STAT_CARD_REMOVE) && mmc->card) ||
-		     ((ireg & TMIO_STAT_CARD_INSERT) && !mmc->card)) &&
+	if (ireg & (tmio_mmc_cd_insert_bit(host) | tmio_mmc_cd_remove_bit(host))) {
+		tmio_mmc_ack_mmc_irqs(host, tmio_mmc_cd_insert_bit(host) |
+			tmio_mmc_cd_remove_bit(host));
+		if ((((ireg & tmio_mmc_cd_remove_bit(host)) && mmc->card) ||
+		     ((ireg & tmio_mmc_cd_insert_bit(host)) && !mmc->card)) &&
 		    !work_pending(&mmc->detect.work))
 			mmc_detect_change(host->mmc, msecs_to_jiffies(100));
 		return true;
@@ -1056,7 +1080,7 @@ static int tmio_mmc_get_cd(struct mmc_host *mmc)
 	struct tmio_mmc_host *host = mmc_priv(mmc);
 
 	return !!(sd_ctrl_read16_and_16_as_32(host, CTL_STATUS) &
-		  TMIO_STAT_SIGSTATE);
+		  tmio_mmc_cd_sigstate_bit(host));
 }
 
 static int tmio_multi_io_quirk(struct mmc_card *card,
