@@ -66,6 +66,8 @@ config SA1100_H3600
 config SA1100_H3800
 	bool "HP iPAQ H3800"
 	select GPIO_SA1100_PPC
+	select PINCTRL
+	select PINCTRL_SA1100
 	select SA1110_SMC
 	select USE_OF
 	help
