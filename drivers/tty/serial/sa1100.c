@@ -12,6 +12,8 @@
 #include <linux/init.h>
 #include <linux/console.h>
 #include <linux/sysrq.h>
+#include <linux/mod_devicetable.h>
+#include <linux/of.h>
 #include <linux/platform_data/sa11x0-serial.h>
 #include <linux/platform_device.h>
 #include <linux/tty.h>
@@ -719,7 +721,7 @@ sa1100_console_write(struct console *co, const char *s, unsigned int count)
  * If the port was already initialised (eg, by a boot loader),
  * try to determine the current setup.
  */
-static void __init
+static void
 sa1100_console_get_options(struct sa1100_port *sport, int *baud,
 			   int *parity, int *bits)
 {
@@ -751,7 +753,7 @@ sa1100_console_get_options(struct sa1100_port *sport, int *baud,
 	}
 }
 
-static int __init
+static int
 sa1100_console_setup(struct console *co, char *options)
 {
 	struct sa1100_port *sport;
@@ -857,6 +859,43 @@ static int sa1100_serial_add_one_port(struct sa1100_port *sport, struct platform
 	return uart_add_one_port(&sa1100_reg, &sport->port);
 }
 
+/*
+ * A devicetree port that machine code did not register takes the line its
+ * "serialN" alias names. The on-chip registers are in the static I/O
+ * mapping that every SA-1100 machine sets up, as for sa1100_register_uart().
+ */
+static int sa1100_serial_of_port(struct platform_device *dev,
+				 struct resource *res)
+{
+	struct sa1100_port *sport;
+	int line, irq;
+
+	line = of_alias_get_id(dev->dev.of_node, "serial");
+	if (line < 0 || line >= NR_PORTS) {
+		dev_err(&dev->dev, "no serial alias for a line below %d\n",
+			NR_PORTS);
+		return -ENODEV;
+	}
+
+	sport = &sa1100_ports[line];
+	if (sport->port.mapbase) {
+		dev_err(&dev->dev, "line %d is already taken by machine code\n",
+			line);
+		return -EBUSY;
+	}
+
+	irq = platform_get_irq(dev, 0);
+	if (irq < 0)
+		return irq;
+
+	sport->port.membase = io_p2v(res->start);
+	sport->port.mapbase = res->start;
+	sport->port.irq = irq;
+	sport->port.flags = UPF_BOOT_AUTOCONF;
+
+	return line;
+}
+
 static int sa1100_serial_probe(struct platform_device *dev)
 {
 	struct resource *res;
@@ -873,8 +912,14 @@ static int sa1100_serial_probe(struct platform_device *dev)
 	for (i = 0; i < NR_PORTS; i++)
 		if (sa1100_ports[i].port.mapbase == res->start)
 			break;
-	if (i == NR_PORTS)
-		return -ENODEV;
+	if (i == NR_PORTS) {
+		if (!dev_of_node(&dev->dev))
+			return -ENODEV;
+
+		i = sa1100_serial_of_port(dev, res);
+		if (i < 0)
+			return i;
+	}
 
 	/*
 	 * Propagate a failure such as -EPROBE_DEFER from
@@ -891,13 +936,21 @@ static void sa1100_serial_remove(struct platform_device *pdev)
 		uart_remove_one_port(&sa1100_reg, &sport->port);
 }
 
+static const struct of_device_id sa1100_serial_dt_ids[] = {
+	{ .compatible = "intel,sa1110-uart" },
+	{ .compatible = "intel,sa1100-uart" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, sa1100_serial_dt_ids);
+
 static struct platform_driver sa11x0_serial_driver = {
 	.probe		= sa1100_serial_probe,
 	.remove		= sa1100_serial_remove,
 	.suspend	= sa1100_serial_suspend,
 	.resume		= sa1100_serial_resume,
 	.driver		= {
-		.name	= "sa11x0-uart",
+		.name		= "sa11x0-uart",
+		.of_match_table	= sa1100_serial_dt_ids,
 	},
 };
 
