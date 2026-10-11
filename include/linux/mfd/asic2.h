@@ -291,6 +291,15 @@ struct asic2_adc_touch_pdata {
 #define ASIC1_MMC_BASE			0x1c00
 #define ASIC1_MMC_SIZE			0x54
 
+/*
+ * Flash Vpp/write-protect enable. It is ASIC2's own register even though
+ * it sits right past the span forwarded to ASIC1, which is why that span
+ * ends at 0x1eff. It takes a raw 0 or 1, not a bit mask. h3800 only: h39xx
+ * gates the Vpp of its NOR flash from a PXA GPIO instead, so the register
+ * is never written there.
+ */
+#define ASIC2_FLASH_WP_VPP_ON		0x1f00
+
 /* Whole-chip register window */
 #define ASIC2_MAP_SIZE			0x2000
 

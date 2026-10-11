@@ -22,7 +22,13 @@
  *    (5, 6, 7, 10, 11: PEN, SD_DETECT, EAR_IN, USB_DETECT, SD_CON_SLT).
  *    KPIO's 12 keypad lines are deliberately not a gpio_chip: they are
  *    interrupt-source bits sharing a register with eight unrelated
- *    peripheral interrupt bits, not addressable GPIO lines.
+ *    peripheral interrupt bits, not addressable GPIO lines. One 17th line,
+ *    at offset ASIC2_GPIO_VPP_OFFSET, is added to the same gpio_chip for
+ *    the Vpp/write-protect enable of the on-board NOR flash of h3800
+ *    (ASIC2_FLASH_WP_VPP_ON). It is a real ASIC2 register, but it has no
+ *    Direction bit and no place in the Data/Direction layout of GPIO2, so
+ *    it is a special case in the callbacks instead of another bit of the
+ *    shared block-offset addressing.
  *  - Clocks: CCF clk_hw gates on the flat Enable register, one per bit a
  *    cell could need, with clkdev aliases. EX0, the clock of the chip's
  *    interrupt controller, is forced on at probe instead of being exposed
@@ -111,7 +117,14 @@
  */
 #define ASIC2_MAX_IRQ_RECHECKS		3
 
-#define ASIC2_GPIO_NR			16
+/*
+ * 16 GPIO2 bits plus one extra line, at ASIC2_GPIO_VPP_OFFSET, for the
+ * flash Vpp/write-protect register of h3800. The line exists on every
+ * board this driver binds to, but only the h3800 devicetree names offset 16;
+ * the h39xx gates the Vpp of its NOR flash from a PXA GPIO.
+ */
+#define ASIC2_GPIO_NR			17
+#define ASIC2_GPIO_VPP_OFFSET		16
 
 enum {
 	ASIC2_GATE_ADC,
@@ -247,6 +260,9 @@ struct asic2 {
 	struct irq_domain *domain;
 	struct gpio_chip gc;
 
+	/* Last value stored to ASIC2_FLASH_WP_VPP_ON, which is not read back */
+	bool vpp_on;
+
 	struct asic2_clk_gate gates[ASIC2_NR_CLK_GATES];
 
 	/* Handed to the "asic2-adc" cell as platform_data -- see
@@ -302,12 +318,27 @@ static int asic2_gpio_get(struct gpio_chip *gc, unsigned int offset)
 {
 	struct asic2 *asic = gpiochip_get_data(gc);
 
+	if (offset == ASIC2_GPIO_VPP_OFFSET)
+		return asic->vpp_on;
+
 	return !!(asic2_read(asic, ASIC2_GPIO_BASE + ASIC2_REG_DATA) & BIT(offset));
 }
 
 static int asic2_gpio_set(struct gpio_chip *gc, unsigned int offset, int value)
 {
 	struct asic2 *asic = gpiochip_get_data(gc);
+
+	/*
+	 * A whole-register store of 0 or 1, not a bit in a register that
+	 * other lines share, so it needs no locked read-modify-write. The
+	 * only writer is this function, so the line is read back from the
+	 * last value stored instead of from the register.
+	 */
+	if (offset == ASIC2_GPIO_VPP_OFFSET) {
+		asic->vpp_on = !!value;
+		asic2_write(asic, ASIC2_FLASH_WP_VPP_ON, !!value);
+		return 0;
+	}
 
 	asic2_rmw(asic, ASIC2_GPIO_BASE + ASIC2_REG_DATA, BIT(offset),
 		  value ? BIT(offset) : 0);
@@ -318,7 +349,13 @@ static int asic2_gpio_set(struct gpio_chip *gc, unsigned int offset, int value)
 static int asic2_gpio_get_direction(struct gpio_chip *gc, unsigned int offset)
 {
 	struct asic2 *asic = gpiochip_get_data(gc);
-	u32 dir = asic2_read(asic, ASIC2_GPIO_BASE + ASIC2_REG_DIRECTION);
+	u32 dir;
+
+	/* A dedicated control register with no Direction bit, always output */
+	if (offset == ASIC2_GPIO_VPP_OFFSET)
+		return GPIO_LINE_DIRECTION_OUT;
+
+	dir = asic2_read(asic, ASIC2_GPIO_BASE + ASIC2_REG_DIRECTION);
 
 	/* The register has 1 for input and 0 for output */
 	return (dir & BIT(offset)) ? GPIO_LINE_DIRECTION_IN : GPIO_LINE_DIRECTION_OUT;
@@ -327,6 +364,10 @@ static int asic2_gpio_get_direction(struct gpio_chip *gc, unsigned int offset)
 static int asic2_gpio_direction_input(struct gpio_chip *gc, unsigned int offset)
 {
 	struct asic2 *asic = gpiochip_get_data(gc);
+
+	/* The register cannot be an input, see asic2_gpio_get_direction() */
+	if (offset == ASIC2_GPIO_VPP_OFFSET)
+		return -EINVAL;
 
 	asic2_rmw(asic, ASIC2_GPIO_BASE + ASIC2_REG_DIRECTION, BIT(offset), BIT(offset));
 
@@ -337,6 +378,10 @@ static int asic2_gpio_direction_output(struct gpio_chip *gc, unsigned int offset
 				       int value)
 {
 	struct asic2 *asic = gpiochip_get_data(gc);
+
+	/* Already an output, and bit 16 of the Direction register is no line */
+	if (offset == ASIC2_GPIO_VPP_OFFSET)
+		return asic2_gpio_set(gc, offset, value);
 
 	/* Set the level before switching direction, to avoid a glitch */
 	asic2_gpio_set(gc, offset, value);
