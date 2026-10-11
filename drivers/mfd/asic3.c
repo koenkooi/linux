@@ -299,6 +299,9 @@ static int asic3_gpio_to_irq(struct gpio_chip *gc, unsigned int offset)
 {
 	struct asic3 *asic = gpiochip_get_data(gc);
 
+	if (!asic->domain)
+		return -ENXIO;
+
 	/*
 	 * irq_create_mapping(), not irq_find_mapping(): nothing pre-creates a
 	 * domain mapping for a GPIO hwirq, so find_mapping() would return 0,
@@ -1315,9 +1318,9 @@ static int asic3_sd_host_init(struct asic3 *asic, struct resource *sd_mem)
  * ds1wm maps its own registers from a MEM resource, unlike leds-asic3 which
  * goes through asic3_read_register()/asic3_write_register(). The resource
  * starts out as an offset in the "core" window's raw convention and is
- * shifted by asic->bus_shift in asic3_probe() before the cells are added,
- * like asic3_sd_cell_resources[], so it cannot be const. The IRQ is a plain
- * hwirq number, resolved in the chip's irq_domain by mfd_add_device().
+ * shifted by asic->bus_shift in a per-probe copy in asic3_probe(). The IRQ
+ * is a plain hwirq number, resolved in the chip's irq_domain by
+ * mfd_add_device().
  *
  * The DS1WM register stride (bus_shift in the platform data) is board
  * wiring and unrelated to the outer ASIC3 bus_shift. The default below is
@@ -1330,24 +1333,10 @@ static const struct ds1wm_driver_data asic3_ds1wm_pdata = {
 	.reset_recover_delay	= 1,
 };
 
-static struct resource asic3_ds1wm_resources[] = {
-	DEFINE_RES_MEM(ASIC3_OWM_BASE, ASIC3_OWM_SIZE),
-	DEFINE_RES_IRQ(ASIC3_IRQ_OWM),
-};
-
 static const struct mfd_cell asic3_leds_cell = {
 	.name		= "leds-asic3",
 	.id		= PLATFORM_DEVID_NONE,
 	.of_compatible	= "htc,asic3-leds",
-};
-
-static const struct mfd_cell asic3_ds1wm_cell = {
-	.name		= "ds1wm",
-	.id		= PLATFORM_DEVID_NONE,
-	.platform_data	= &asic3_ds1wm_pdata,
-	.pdata_size	= sizeof(asic3_ds1wm_pdata),
-	.resources	= asic3_ds1wm_resources,
-	.num_resources	= ARRAY_SIZE(asic3_ds1wm_resources),
 };
 
 /*
@@ -1418,7 +1407,6 @@ static int asic3_probe(struct platform_device *pdev)
 	struct resource *mem, *sd_mem;
 	struct gpio_desc *reset;
 	struct clk *sd_clk;
-	struct mfd_cell owm_cell = asic3_ds1wm_cell;
 	int irq, sd_irq, ret;
 
 	asic = devm_kzalloc(dev, sizeof(*asic), GFP_KERNEL);
@@ -1455,12 +1443,19 @@ static int asic3_probe(struct platform_device *pdev)
 		dev_dbg(dev, "no \"sd\" MEM resource\n");
 
 	sd_irq = platform_get_irq_byname_optional(pdev, "sd");
+	if (sd_irq < 0 && sd_irq != -ENXIO)
+		return dev_err_probe(dev, sd_irq, "failed to get the \"sd\" IRQ\n");
 	if (sd_irq < 0)
 		dev_dbg(dev, "no \"sd\" IRQ resource\n");
 
-	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
+	/*
+	 * The upstream interrupt is optional: a board that only uses ASIC3
+	 * for output has no line to chain from, and then there is no
+	 * irq_domain either.
+	 */
+	irq = platform_get_irq_byname_optional(pdev, "core");
+	if (irq < 0 && irq != -ENXIO)
+		return dev_err_probe(dev, irq, "failed to get the \"core\" IRQ\n");
 	asic->irq = irq;
 
 	/*
@@ -1493,9 +1488,11 @@ static int asic3_probe(struct platform_device *pdev)
 	/* CLOCK_SEL reset to a known state before anything else touches it. */
 	asic3_write_register(asic, ASIC3_CLOCK_BASE + ASIC3_CLOCK_SEL, 0);
 
-	ret = asic3_irq_init(asic);
-	if (ret)
-		return dev_err_probe(dev, ret, "failed to set up IRQ domain\n");
+	if (irq >= 0) {
+		ret = asic3_irq_init(asic);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to set up IRQ domain\n");
+	}
 
 	if (device_property_read_bool(dev, "htc,gpio-default-output-low"))
 		asic3_gpio_set_default_low(asic);
@@ -1520,22 +1517,46 @@ static int asic3_probe(struct platform_device *pdev)
 			return dev_err_probe(dev, ret, "failed to add sub-devices\n");
 	}
 
-	asic3_ds1wm_resources[0].start >>= asic->bus_shift;
-	asic3_ds1wm_resources[0].end   >>= asic->bus_shift;
-
 	/*
-	 * The board's "onewire" node, if any, overrides the compiled-in
-	 * tunables above.
+	 * The ds1wm cell carries a bare hwirq number that only means
+	 * something in this chip's irq_domain. Without a domain, mfd-core
+	 * would hand it to the driver as a Linux interrupt number and the
+	 * driver would claim an unrelated line, so register only the leds
+	 * cell on a board that wires ASIC3 for output only.
+	 *
+	 * The resources are per-probe copies: their MEM range is shifted by
+	 * this chip's bus_shift, which must not accumulate over a re-probe.
 	 */
-	if (asic3_has_child(dev, "htc,asic3-onewire")) {
-		owm_cell.of_compatible = "htc,asic3-onewire";
-		asic3_owm_init(asic);
-	}
+	if (asic->domain) {
+		struct resource owm_res[] = {
+			DEFINE_RES_MEM(ASIC3_OWM_BASE, ASIC3_OWM_SIZE),
+			DEFINE_RES_IRQ(ASIC3_IRQ_OWM),
+		};
+		struct mfd_cell owm_cell = {
+			.name		= "ds1wm",
+			.id		= PLATFORM_DEVID_NONE,
+			.platform_data	= &asic3_ds1wm_pdata,
+			.pdata_size	= sizeof(asic3_ds1wm_pdata),
+			.resources	= owm_res,
+			.num_resources	= ARRAY_SIZE(owm_res),
+		};
 
-	ret = devm_mfd_add_devices(dev, 0, &owm_cell, 1, mem, 0,
-				   asic->domain);
-	if (ret)
-		return dev_err_probe(dev, ret, "failed to add the 1-Wire sub-device\n");
+		/*
+		 * The board's "onewire" node, if any, overrides the compiled-in
+		 * tunables above.
+		 */
+		if (asic3_has_child(dev, "htc,asic3-onewire")) {
+			owm_cell.of_compatible = "htc,asic3-onewire";
+			asic3_owm_init(asic);
+		}
+
+		owm_res[0].start >>= asic->bus_shift;
+		owm_res[0].end >>= asic->bus_shift;
+
+		ret = devm_mfd_add_devices(dev, 0, &owm_cell, 1, mem, 0, asic->domain);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to add the 1-Wire sub-device\n");
+	}
 
 	/*
 	 * SD/MMC: a second devm_mfd_add_devices() call with its own mem_base,
@@ -1578,7 +1599,10 @@ static int asic3_probe(struct platform_device *pdev)
 			return dev_err_probe(dev, ret, "failed to add SD/MMC sub-device\n");
 	}
 
-	dev_dbg(dev, "ASIC3 companion ASIC ready, chained on IRQ %d\n", irq);
+	if (irq >= 0)
+		dev_dbg(dev, "ASIC3 companion ASIC ready, chained on IRQ %d\n", irq);
+	else
+		dev_dbg(dev, "ASIC3 companion ASIC ready, output only\n");
 
 	return 0;
 }
