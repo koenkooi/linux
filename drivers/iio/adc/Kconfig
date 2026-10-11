@@ -802,13 +802,16 @@ config GEHC_PMC_ADC
 	  called gehc-pmc-adc.
 
 config ASIC2_ADC
-	tristate "ASIC2 companion ASIC ADC"
+	tristate "ASIC2 companion ASIC ADC and resistive touchscreen front-end"
 	depends on MFD_ASIC2
+	select IIO_BUFFER
 	help
 	  Say Y here to build support for the general-purpose ADC channels
-	  (light sensor, Imin, battery voltage) inside the Compaq/HTC ASIC2
-	  companion ASIC used on the HP iPAQ h38xx/h39xx series. The
-	  touchpanel channels are not covered by this driver.
+	  (light sensor, Imin, battery voltage) plus the resistive
+	  touchscreen plate-switching state machine inside the Compaq/HTC
+	  ASIC2 companion ASIC used on the HP iPAQ h38xx/h39xx series. Pair
+	  with CONFIG_TOUCHSCREEN_ADC (the generic "resistive-adc-touch"
+	  driver) for touchscreen input events.
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called asic2-adc.
