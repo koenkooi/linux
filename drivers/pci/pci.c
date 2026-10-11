@@ -4149,6 +4149,7 @@ EXPORT_SYMBOL(pci_remap_iospace);
  * architectures that have memory mapped IO functions defined (and the
  * PCI_IOBASE value defined) should call this function.
  */
+#ifndef pci_unmap_iospace
 void pci_unmap_iospace(struct resource *res)
 {
 #if defined(PCI_IOBASE)
@@ -4158,6 +4159,7 @@ void pci_unmap_iospace(struct resource *res)
 #endif
 }
 EXPORT_SYMBOL(pci_unmap_iospace);
+#endif
 
 static void __pci_set_master(struct pci_dev *dev, bool enable)
 {
