@@ -613,11 +613,14 @@ static void __init sa1100_init_ports(void)
 	}
 
 	/*
-	 * make transmit lines outputs, so that when the port
-	 * is closed, the output is in the MARK state.
+	 * Make Ser3's transmit line an output, so that when the port is
+	 * closed, the output is in the MARK state. Ser1's TXD1 is handled by
+	 * sa1100_register_uart(): the pin is not always a UART TX pin, as the
+	 * HP iPAQ h3800 uses it as a plain GPIO and an unconditional write
+	 * here would drive it high on every boot.
 	 */
-	PPDR |= PPC_TXD1 | PPC_TXD3;
-	PPSR |= PPC_TXD1 | PPC_TXD3;
+	PPDR |= PPC_TXD3;
+	PPSR |= PPC_TXD3;
 }
 
 void sa1100_register_uart_fns(struct sa1100_port_fns *fns)
@@ -643,6 +646,10 @@ void __init sa1100_register_uart(int idx, int port)
 
 	switch (port) {
 	case 1:
+		/* Ser1's UART TX idles high (MARK) while the port is closed. */
+		PPDR |= PPC_TXD1;
+		PPSR |= PPC_TXD1;
+
 		sa1100_ports[idx].port.membase = (void __iomem *)&Ser1UTCR0;
 		sa1100_ports[idx].port.mapbase = _Ser1UTCR0;
 		sa1100_ports[idx].port.irq     = IRQ_Ser1UART;
