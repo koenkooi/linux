@@ -187,6 +187,7 @@ struct tmio_mmc_host {
 
 	/* Optional callbacks */
 	void (*clk_disable)(struct tmio_mmc_host *host);
+	void (*set_pwr)(struct tmio_mmc_host *host, bool on);
 	int (*multi_io_quirk)(struct mmc_card *card,
 			      unsigned int direction, int blk_size);
 	int (*write16_hook)(struct tmio_mmc_host *host, int addr);
