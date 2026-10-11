@@ -16,6 +16,7 @@
 #include <asm/mach/arch.h>
 
 #include <mach/h3xxx.h>
+#include <mach/hardware.h>
 #include <mach/irqs.h>
 
 #include "generic.h"
@@ -112,6 +113,14 @@ static struct sa1100fb_mach_info h3600_lcd_info = {
 static void __init h3600_map_io(void)
 {
 	h3xxx_map_io();
+
+	/*
+	 * Ser1 talks to the microcontroller through ipaq-micro, which does
+	 * not register it with the serial driver. Its transmit pin must idle
+	 * high (MARK), as sa1100_init_ports() used to arrange for every board.
+	 */
+	PPDR |= PPC_TXD1;
+	PPSR |= PPC_TXD1;
 }
 
 static void __init h3600_mach_init(void)
