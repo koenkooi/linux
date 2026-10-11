@@ -34,11 +34,15 @@
  *    it with bus_shift = 2), "asic2-spi" (drivers/spi/spi-asic2.c),
  *    "asic2-pwm" (drivers/pwm/pwm-asic2.c), "asic2-keys"
  *    (drivers/input/keyboard/asic2-keys.c, the KPIO keypad, which is not
- *    gpio-keys because its bits are not addressable GPIO lines) and
- *    "asic2-adc" (drivers/iio/adc/asic2-adc.c). The ASIC2 ADC does not
- *    switch the touchscreen plates itself, so GPIO2 bits have to be driven
- *    by software and asic2_touch_gpios_register() hands asic2-adc.c the
- *    GPIO descriptors for them.
+ *    gpio-keys because its bits are not addressable GPIO lines),
+ *    "asic2-adc" (drivers/iio/adc/asic2-adc.c) and "resistive-adc-touch"
+ *    (the generic touchscreen driver, bound to a "touchscreen" child
+ *    node whose io-channels phandles point into the "adc" cell, and added
+ *    only when the board has that child). The
+ *    ASIC2 ADC does not switch the touchscreen plates itself, so GPIO2
+ *    bits have to be driven by software and
+ *    asic2_touch_gpios_register() hands asic2-adc.c the GPIO descriptors
+ *    for them.
  *
  * KPIO's InterruptEnable register (offset 0x001c) must not be read back,
  * so this driver keeps a software shadow of its state instead of doing
@@ -65,6 +69,7 @@
 #include <linux/mfd/core.h>
 #include <linux/mfd/ds1wm.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/property.h>
@@ -1275,6 +1280,48 @@ static struct mfd_cell asic2_cells[ASIC2_NR_CELLS] = {
 		.num_resources	= ARRAY_SIZE(asic2_adc_resources),
 	},
 };
+
+/*
+ * mainline's generic resistive-adc-touch driver -- no register access or IRQ
+ * of its own (asic2-adc.c owns the whole touch state machine and pushes
+ * finished samples to it via an IIO callback buffer), so no resources.
+ *
+ * The cell binds to a board's "touchscreen" child node, whose "io-channels"
+ * phandles point into the "adc" child. The driver's probe rejects a device
+ * without an "io-channel-names" property, so the cell is only added when the
+ * board has such a child. The phandle also turns a probe-ordering race
+ * against asic2-adc.c into an ordinary -EPROBE_DEFER.
+ */
+static const struct mfd_cell asic2_touch_cell = {
+	.name		= "resistive-adc-touch",
+	.id		= PLATFORM_DEVID_NONE,
+	.of_compatible	= "resistive-adc-touch",
+};
+
+/*
+ * Add a cell only when the node has an available child it can bind to.
+ * mfd-core creates a cell whose of_compatible matches no child with only a
+ * warning, and the driver of a cell that needs its child would then fail to
+ * probe on every boot of a board that has none.
+ */
+static int asic2_add_optional_cell(struct asic2 *asic, struct resource *mem,
+				   const struct mfd_cell *cell)
+{
+	struct device_node *np;
+	bool present;
+
+	np = of_get_compatible_child(asic->dev->of_node, cell->of_compatible);
+	if (!np)
+		return 0;
+
+	present = of_device_is_available(np);
+	of_node_put(np);
+	if (!present)
+		return 0;
+
+	return devm_mfd_add_devices(asic->dev, 0, cell, 1, mem, 0, asic->domain);
+}
+
 /*
  * PXA GPIO interrupts are edge-only and ASIC2_INT stays asserted while any
  * enabled source is pending. If the edge that woke the core is not delivered
@@ -1405,6 +1452,11 @@ static int asic2_probe(struct platform_device *pdev)
 				   mem, 0, asic->domain);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to add sub-devices\n");
+
+	ret = asic2_add_optional_cell(asic, mem, &asic2_touch_cell);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to add touchscreen sub-device\n");
 
 	dev_dbg(dev, "ASIC2 core ready, chained on IRQ %d\n", irq);
 
