@@ -175,7 +175,6 @@ void __init pxa25x_map_io(void)
 {
 	pxa_map_io();
 	iotable_init(ARRAY_AND_SIZE(pxa25x_io_desc));
-	pxa25x_get_clk_frequency_khz(1);
 }
 
 static struct platform_device *pxa25x_devices[] __initdata = {

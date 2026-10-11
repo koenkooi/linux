@@ -299,10 +299,18 @@ static void __init pxa25x_register_plls(void)
 
 static void __init pxa25x_base_clocks_init(void)
 {
+	struct clk *memory;
+
 	pxa25x_register_plls();
 	pxa25x_register_core();
-	clkdev_pxa_register(CLK_NONE, "system_bus", NULL,
-			    clk_register_clk_pxa25x_memory());
+
+	/*
+	 * PXA25x has no separate system bus divisor, the bus runs at MEMCLK,
+	 * so unlike pxa27x both names have to resolve to the same clock.
+	 */
+	memory = clk_register_clk_pxa25x_memory();
+	clkdev_pxa_register(CLK_NONE, "system_bus", NULL, memory);
+	clkdev_pxa_register(CLK_NONE, "memory", NULL, memory);
 }
 
 #define DUMMY_CLK(_con_id, _dev_id, _parent) \
@@ -344,10 +352,23 @@ static void __init pxa25x_dummy_clocks_init(void)
 
 int __init pxa25x_clocks_init(void __iomem *regs)
 {
+	int ret;
+
 	clk_regs = regs;
 	pxa25x_base_clocks_init();
 	pxa25x_dummy_clocks_init();
-	return clk_pxa_cken_init(pxa25x_clocks, ARRAY_SIZE(pxa25x_clocks), clk_regs);
+	ret = clk_pxa_cken_init(pxa25x_clocks, ARRAY_SIZE(pxa25x_clocks),
+				clk_regs);
+	if (ret)
+		return ret;
+
+	/*
+	 * Report the rates only once the clkdev aliases above exist; .map_io
+	 * runs in setup_arch(), before of_clk_init() reaches this driver.
+	 */
+	pxa25x_get_clk_frequency_khz(1);
+
+	return 0;
 }
 
 static void __init pxa25x_dt_clocks_init(struct device_node *np)
