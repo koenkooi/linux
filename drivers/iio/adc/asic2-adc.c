@@ -55,7 +55,9 @@
 #include <linux/workqueue.h>
 
 #include <linux/iio/buffer.h>
+#include <linux/iio/driver.h>
 #include <linux/iio/iio.h>
+#include <linux/iio/machine.h>
 
 #define ASIC2_ADC_DATA_MASK		GENMASK(9, 0)	/* 10-bit conversion */
 
@@ -512,11 +514,21 @@ static const struct iio_chan_spec asic2_adc_channels[] = {
 };
 
 /*
+ * Legacy (non-devicetree) iio_map for "vs_mbat" -> "iio_hwmon": the generic
+ * IIO-to-hwmon bridge has no firmware node here, so it looks its channels
+ * up by its device name, which is the driver name since the cell has no
+ * id. No scale is provided, so the hwmon in0_input file reports raw ADC
+ * counts (0-1023).
+ *
  * The touchscreen takes its channels from the "io-channels" property of
- * its devicetree node. Their order there, x then y, must match the
+ * its devicetree node instead. Their order there, x then y, must match the
  * packed sample layout asic2_ts_sweep_work() pushes (buf[0]=x, buf[1]=y),
  * which follows the ascending scan_index of TP_X0 and TP_Y1.
  */
+static const struct iio_map asic2_adc_iio_maps[] = {
+	IIO_MAP("vs_mbat", "iio_hwmon", NULL),
+	{ }
+};
 
 static const struct iio_info asic2_adc_info = {
 	.read_raw = asic2_adc_read_raw,
@@ -599,6 +611,10 @@ static int asic2_adc_probe(struct platform_device *pdev)
 	indio_dev->setup_ops = &asic2_adc_ts_buffer_setup_ops;
 	indio_dev->channels = asic2_adc_channels;
 	indio_dev->num_channels = ARRAY_SIZE(asic2_adc_channels);
+
+	ret = devm_iio_map_array_register(dev, indio_dev, asic2_adc_iio_maps);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to register iio_map\n");
 
 	return devm_iio_device_register(dev, indio_dev);
 }
