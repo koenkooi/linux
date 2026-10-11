@@ -69,6 +69,14 @@ properties:
   vcc-supply:
     description: the card's Vcc rail, switched between off and 3.3 V
 
+  intel,min-io-cycle-ns:
+    description:
+      Shortest I/O access cycle, in nanoseconds, that the socket wiring
+      supports. The MECR I/O timing of the socket is never programmed
+      faster than this, whatever cycle time a card asks for. Without the
+      property the socket runs I/O at the cycle time the card asks for.
+    minimum: 1
+
 required:
   - compatible
   - reg
@@ -91,5 +99,6 @@ examples:
         ready-gpios = <&gpio 21 GPIO_ACTIVE_HIGH>;
         reset-gpios = <&asic2 8 GPIO_ACTIVE_HIGH>;
         vcc-supply = <&cf_vcc>;
+        intel,min-io-cycle-ns = <165>;
     };
 ...
