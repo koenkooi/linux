@@ -14,8 +14,11 @@
 #include <linux/interrupt.h>
 #include <linux/clk.h>
 #include <linux/clockchips.h>
+#include <linux/ioport.h>
+#include <linux/mod_devicetable.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
+#include <linux/platform_device.h>
 #include <linux/sched/clock.h>
 #include <linux/sched_clock.h>
 
@@ -208,6 +211,52 @@ static int __init pxa_timer_dt_init(struct device_node *np)
 	return pxa_timer_common_init(irq, clk_get_rate(clk));
 }
 TIMER_OF_DECLARE(pxa_timer, "marvell,pxa-timer", pxa_timer_dt_init);
+
+/*
+ * On the SA-11x0 the watchdog is match register 3 and OWER of this block
+ * and has no devicetree node of its own, so create it as a child for
+ * sa1100_wdt. PXA SoCs still register their watchdog from machine code
+ * on every boot and are not matched here.
+ */
+static int pxa_timer_probe(struct platform_device *pdev)
+{
+	struct platform_device_info info = {
+		.parent = &pdev->dev,
+		.name = "sa1100_wdt",
+		.id = PLATFORM_DEVID_NONE,
+		.num_res = 1,
+	};
+	struct resource *res, wdt_res;
+	struct platform_device *wdt;
+
+	if (!timer_base)
+		return -ENODEV;
+
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res)
+		return -EINVAL;
+
+	wdt_res = DEFINE_RES_MEM(res->start, resource_size(res));
+	info.res = &wdt_res;
+
+	wdt = platform_device_register_full(&info);
+	return PTR_ERR_OR_ZERO(wdt);
+}
+
+static const struct of_device_id pxa_timer_of_match[] = {
+	{ .compatible = "intel,sa1100-timer" },
+	{ /* sentinel */ }
+};
+
+static struct platform_driver pxa_timer_driver = {
+	.probe = pxa_timer_probe,
+	.driver = {
+		.name = "pxa-timer",
+		.of_match_table = pxa_timer_of_match,
+		.suppress_bind_attrs = true,
+	},
+};
+builtin_platform_driver(pxa_timer_driver);
 
 /*
  * Legacy timer init for non device-tree boards.
