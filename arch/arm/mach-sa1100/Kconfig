@@ -65,6 +65,7 @@ config SA1100_H3600
 
 config SA1100_H3800
 	bool "HP iPAQ H3800"
+	select SA1110_SMC
 	select USE_OF
 	help
 	  Say Y here if you intend to run this kernel on the HP iPAQ h38xx
