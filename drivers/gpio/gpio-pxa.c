@@ -84,6 +84,7 @@ struct pxa_gpio_chip {
 	int irq0;
 	int irq1;
 	int (*set_wake)(unsigned int gpio, unsigned int on);
+	int (*dt_set_wake)(unsigned int gpio, unsigned int type, unsigned int on);
 };
 
 enum pxa_gpio_type {
@@ -105,6 +106,14 @@ struct pxa_gpio_id {
 static DEFINE_SPINLOCK(gpio_lock);
 static struct pxa_gpio_chip *pxa_gpio_chip;
 static enum pxa_gpio_type gpio_type;
+
+/*
+ * NULL on every SoC that has no PWER-programming callback to give a DT boot
+ * (PXA3xx and MMP always, PXA25x and PXA27x until their DT interrupt init
+ * sets it).
+ */
+int (*pxa_gpio_dt_set_wake)(unsigned int gpio, unsigned int type,
+			    unsigned int on);
 
 static struct pxa_gpio_id pxa25x_id = {
 	.type		= PXA25X_GPIO,
@@ -506,10 +515,11 @@ static int pxa_gpio_set_wake(struct irq_data *d, unsigned int on)
 	struct pxa_gpio_chip *pchip = irq_data_get_irq_chip_data(d);
 	unsigned int gpio = irqd_to_hwirq(d);
 
+	if (pchip->dt_set_wake)
+		return pchip->dt_set_wake(gpio, irqd_get_trigger_type(d), on);
 	if (pchip->set_wake)
 		return pchip->set_wake(gpio, on);
-	else
-		return 0;
+	return 0;
 }
 
 static void pxa_unmask_muxed_gpio(struct irq_data *d)
@@ -601,6 +611,10 @@ static int pxa_gpio_probe_dt(struct platform_device *pdev,
 		dev_err(&pdev->dev, "Failed to allocate IRQ numbers\n");
 		return irq_base;
 	}
+
+	/* NULL on every SoC type that never publishes one */
+	pchip->dt_set_wake = pxa_gpio_dt_set_wake;
+
 	return irq_base;
 }
 #else
