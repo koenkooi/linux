@@ -153,6 +153,13 @@ pxa25x_dt_init_irq(struct device_node *node, struct device_node *parent)
 	pxa_dt_irq_init(pxa25x_set_wake);
 	set_handle_irq(icip_handle_irq);
 
+	/*
+	 * This runs at of_irq_init() time, well before the gpio-pxa platform
+	 * driver probes and picks the callback up. Without it a DT boot never
+	 * programs PWER/PRER/PFER for any GPIO wake source.
+	 */
+	pxa_gpio_dt_set_wake = pxa2xx_gpio_dt_set_wake;
+
 	return 0;
 }
 IRQCHIP_DECLARE(pxa25x_intc, "marvell,pxa-intc", pxa25x_dt_init_irq);
