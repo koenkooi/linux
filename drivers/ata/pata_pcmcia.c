@@ -29,6 +29,74 @@
 #define DRV_NAME "pata_pcmcia"
 #define DRV_VERSION "0.3.5"
 
+/*
+ * ATA PIO command pulse width (t2, the DIOR-/DIOW- asserted time) per mode,
+ * in nanoseconds, from ATA/ATAPI-6 table 14; the CF+/CompactFlash
+ * specification repeats the figures for True IDE mode.
+ *
+ * t2, not the t0 bus cycle time, is what the PCMCIA layer wants:
+ * pccard_io_map.speed is the I/O command width (twIORD/twIOWR), and the
+ * PC Card default of 165ns equals the PIO mode 0 t2.
+ *
+ * Requesting a mode's t2 is a floor, not a target. Socket drivers round it
+ * up to whole memory-controller clocks and add their own setup and hold
+ * phases. For example, on a PXA255 with a 99.53MHz memory clock, 70ns
+ * yields MCIO setup/assert/hold of 8/15/4 MEMCLKs, a 271ns cycle against
+ * the PIO4 minima of t1 25ns, t2 70ns and t0 120ns.
+ */
+static const unsigned int pcmcia_pio_t2_ns[] = {
+	[XFER_PIO_0 - XFER_PIO_0] = 165,
+	[XFER_PIO_1 - XFER_PIO_0] = 125,
+	[XFER_PIO_2 - XFER_PIO_0] = 100,
+	[XFER_PIO_3 - XFER_PIO_0] =  80,
+	[XFER_PIO_4 - XFER_PIO_0] =  70,
+};
+
+/*
+ * Map the PIO mode of a device to the I/O command width to request. Any
+ * mode outside the table, including the 0xff "no PIO support" marker and
+ * a device slot that was never probed, gets the PIO 0 figure.
+ */
+static unsigned int pcmcia_pio_ns(const struct ata_device *dev)
+{
+	unsigned int idx = dev->pio_mode - XFER_PIO_0;
+
+	if (idx >= ARRAY_SIZE(pcmcia_pio_t2_ns))
+		return pcmcia_pio_t2_ns[0];
+
+	return pcmcia_pio_t2_ns[idx];
+}
+
+/*
+ * Hand the PCMCIA socket the I/O access time the negotiated PIO mode needs,
+ * replacing the generic default pcmcia_enable_device() had to guess before
+ * the card was identified.
+ *
+ * The socket has one I/O window pair shared by every device behind it, so
+ * the slowest device wins: @adev seeds the figure and every other enabled
+ * device on the host can only slow it down. Seeding from @adev keeps the
+ * reset path correct: ata_eh_reset() sets all devices back to PIO 0 and
+ * calls here so that the controller slows down before the bus is touched.
+ */
+static void pcmcia_set_piomode(struct ata_port *ap, struct ata_device *adev)
+{
+	struct pcmcia_device *pdev = to_pcmcia_dev(ap->host->dev);
+	unsigned int speed_ns = pcmcia_pio_ns(adev);
+	struct ata_device *dev;
+	unsigned int i;
+
+	for (i = 0; i < ap->host->n_ports; i++) {
+		struct ata_port *port = ap->host->ports[i];
+
+		ata_for_each_dev(dev, &port->link, ENABLED)
+			speed_ns = max(speed_ns, pcmcia_pio_ns(dev));
+	}
+
+	if (pcmcia_fixup_iospeed(pdev, speed_ns) == 0)
+		ata_port_dbg(ap, "I/O window access time set to %uns\n",
+			     speed_ns);
+}
+
 /**
  *	pcmcia_set_mode	-	PCMCIA specific mode setup
  *	@link: link
@@ -141,6 +209,7 @@ static struct ata_port_operations pcmcia_port_ops = {
 	.sff_data_xfer	= ata_sff_data_xfer32,
 	.cable_detect	= ata_cable_40wire,
 	.set_mode	= pcmcia_set_mode,
+	.set_piomode	= pcmcia_set_piomode,
 };
 
 static struct ata_port_operations pcmcia_8bit_port_ops = {
@@ -253,7 +322,14 @@ static int pcmcia_init_one(struct pcmcia_device *pdev)
 		ap = host->ports[p];
 
 		ap->ops = ops;
-		ap->pio_mask = ATA_PIO0;	/* ISA so PIO 0 cycles */
+		/*
+		 * pcmcia_set_piomode() reprograms the I/O window for the
+		 * negotiated mode, and libata still clamps to what the card
+		 * identifies, so a PIO 0 card gets the timing it always had.
+		 * PIO 3 and 4 are IORDY modes, which assumes the socket routes
+		 * the card's nWAIT line to its memory controller, as is normal.
+		 */
+		ap->pio_mask = ATA_PIO4;
 		ap->flags |= ATA_FLAG_SLAVE_POSS;
 		ap->ioaddr.cmd_addr = io_addr + 0x10 * p;
 		ap->ioaddr.altstatus_addr = ctl_addr + 0x10 * p;
