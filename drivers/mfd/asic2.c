@@ -1217,6 +1217,7 @@ enum {
 	ASIC2_CELL_PWM,
 	ASIC2_CELL_KEYS,
 	ASIC2_CELL_ADC,
+	ASIC2_CELL_HWMON,
 	ASIC2_NR_CELLS,
 };
 
@@ -1288,6 +1289,16 @@ static struct mfd_cell asic2_cells[ASIC2_NR_CELLS] = {
 		.of_compatible	= "htc,asic2-adc",
 		.resources	= asic2_adc_resources,
 		.num_resources	= ARRAY_SIZE(asic2_adc_resources),
+	},
+	[ASIC2_CELL_HWMON] = {
+		/*
+		 * drivers/hwmon/iio_hwmon.c, surfacing the "vs_mbat" channel
+		 * of asic2-adc.c as a hwmon input. It has no registers or
+		 * interrupt of its own, its channel is found through the
+		 * iio_map of asic2-adc.c by this cell's name.
+		 */
+		.name		= "iio_hwmon",
+		.id		= PLATFORM_DEVID_NONE,
 	},
 };
 
