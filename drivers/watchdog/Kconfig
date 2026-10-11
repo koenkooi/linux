@@ -615,7 +615,7 @@ config S3C2410_WATCHDOG
 
 config SA1100_WATCHDOG
 	tristate "SA1100/PXA2xx watchdog"
-	depends on ARCH_SA1100 || ARCH_PXA || COMPILE_TEST
+	depends on ARCH_SA1100 || ARCH_PXA || (ARM && COMPILE_TEST)
 	help
 	  Watchdog timer embedded into SA11x0 and PXA2xx chips. This will
 	  reboot your system when timeout is reached.

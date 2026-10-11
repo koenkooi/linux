@@ -80,7 +80,11 @@ static int sa1100dog_open(struct inode *inode, struct file *file)
 	sa1100_wr(sa1100_rd(REG_OSCR) + pre_margin, REG_OSMR3);
 	sa1100_wr(OSSR_M3, REG_OSSR);
 	sa1100_wr(OWER_WME, REG_OWER);
-	sa1100_wr(sa1100_rd(REG_OIER) | OIER_E3, REG_OIER);
+	/*
+	 * OIER is shared with the OS timer, which updates E0 from interrupt
+	 * context.
+	 */
+	atomic_io_modify_relaxed(reg_base + REG_OIER, OIER_E3, OIER_E3);
 	return stream_open(inode, file);
 }
 
