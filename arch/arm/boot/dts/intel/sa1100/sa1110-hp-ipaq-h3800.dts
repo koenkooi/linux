@@ -77,6 +77,19 @@
 	};
 
 	/*
+	 * The CF card's Vcc rail. The sleeve has no per-card Vcc switch, so
+	 * this is a fixed, always-on 3.3 V supply with no gpio, present so
+	 * that "&pcmcia0" below has a real supply to consume.
+	 */
+	cf_vcc: regulator-vcc-cf {
+		compatible = "regulator-fixed";
+		regulator-name = "sleeve-cf-vcc";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-always-on;
+	};
+
+	/*
 	 * AC adapter presence. GPIO12 is AC_IN, which reads low when an
 	 * adapter is present, so it is active low.
 	 *
@@ -752,4 +765,23 @@
 
 &udc {
 	status = "okay";
+};
+
+/*
+ * CF card in the expansion sleeve, on PC Card socket 0. "detect" (GPIO17,
+ * CD0) and "ready" (GPIO21, RDY0/IRQ0) are the SoC-side lines, the same
+ * pair on every h3xxx generation; the socket's interrupts are derived from
+ * these two GPIOs by gpiod_to_irq() in the PCMCIA core, which is why there
+ * is no "interrupts" property. "reset" is ASIC2 GPIO2 bit 8 (OPT_PCM_RESET),
+ * the per-card reset as distinct from the whole-jacket OPT_RESET at bit 9
+ * that the "sleeve" node owns. Until ASIC2 has probed, that phandle leaves
+ * the socket in deferred probe.
+ */
+&pcmcia0 {
+	status = "okay";
+
+	detect-gpios = <&gpio 17 GPIO_ACTIVE_LOW>;
+	ready-gpios = <&gpio 21 GPIO_ACTIVE_HIGH>;
+	reset-gpios = <&asic2 8 GPIO_ACTIVE_HIGH>;
+	vcc-supply = <&cf_vcc>;
 };
