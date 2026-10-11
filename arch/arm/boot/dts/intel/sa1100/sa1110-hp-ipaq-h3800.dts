@@ -776,6 +776,11 @@
  * the per-card reset as distinct from the whole-jacket OPT_RESET at bit 9
  * that the "sleeve" node owns. Until ASIC2 has probed, that phandle leaves
  * the socket in deferred probe.
+ *
+ * A CF card read its IDENTIFY data correctly at the 165 ns default I/O
+ * cycle and returned a reproducible single-bit corruption at a negotiated
+ * 70 ns and 80 ns on one h3800 unit, so the socket's I/O cycle is held at
+ * 165 ns or more.
  */
 &pcmcia0 {
 	status = "okay";
@@ -784,4 +789,5 @@
 	ready-gpios = <&gpio 21 GPIO_ACTIVE_HIGH>;
 	reset-gpios = <&asic2 8 GPIO_ACTIVE_HIGH>;
 	vcc-supply = <&cf_vcc>;
+	intel,min-io-cycle-ns = <165>;
 };
