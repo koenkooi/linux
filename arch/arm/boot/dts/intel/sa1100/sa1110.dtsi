@@ -95,5 +95,39 @@
 			interrupt-names = "rtc 1Hz", "rtc alarm";
 			clocks = <&clk32768>;
 		};
+
+		/*
+		 * MSC0/MSC1/MSC2, the static memory half of the memory
+		 * controller, with one 16-bit timing half per chip select. The
+		 * three "reg" entries are separate because the registers are not
+		 * contiguous: MECR (PCMCIA) and MDREFR (DRAM refresh and the
+		 * cpufreq path) sit between MSC1 and MSC2 and belong to other
+		 * code, so one window would claim them too.
+		 *
+		 * "ranges" carries all six chip selects. Where each one decodes
+		 * is fixed by the silicon, 128 MiB apart, and is not a board
+		 * choice; a board describes only which of them it populates, as
+		 * child nodes with their own timing.
+		 *
+		 * It is disabled until a board opts in: with no child on any chip
+		 * select there is nothing to program, and leaving every chip
+		 * select as the firmware set it is the correct behaviour.
+		 */
+		smc: memory-controller@a0000010 {
+			compatible = "intel,sa1110-smc";
+			reg = <0xa0000010 0x4>,
+			      <0xa0000014 0x4>,
+			      <0xa000002c 0x4>;
+			reg-names = "msc0", "msc1", "msc2";
+			#address-cells = <2>;
+			#size-cells = <1>;
+			ranges = <0 0 0x00000000 0x08000000>,
+				 <1 0 0x08000000 0x08000000>,
+				 <2 0 0x10000000 0x08000000>,
+				 <3 0 0x18000000 0x08000000>,
+				 <4 0 0x40000000 0x08000000>,
+				 <5 0 0x48000000 0x08000000>;
+			status = "disabled";
+		};
 	};
 };
