@@ -247,6 +247,9 @@ pxa27x_dt_init_irq(struct device_node *node, struct device_node *parent)
 	pxa_dt_irq_init(pxa27x_set_wake);
 	set_handle_irq(ichp_handle_irq);
 
+	/* See pxa25x_dt_init_irq() for why this is needed here. */
+	pxa_gpio_dt_set_wake = pxa2xx_gpio_dt_set_wake;
+
 	return 0;
 }
 IRQCHIP_DECLARE(pxa27x_intc, "marvell,pxa-intc", pxa27x_dt_init_irq);

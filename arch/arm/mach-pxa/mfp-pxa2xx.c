@@ -15,6 +15,7 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/io.h>
+#include <linux/irq.h>
 #include <linux/syscore_ops.h>
 #include <linux/soc/pxa/cpu.h>
 
@@ -218,6 +219,52 @@ int gpio_set_wake(unsigned int gpio, unsigned int on)
 			PFER &= ~d->mask;
 		}
 	}
+	return 0;
+}
+
+/*
+ * A pad no MFP table marked as a wake source wakes on the edges its
+ * interrupt was requested with, which are the edges its consumer
+ * already waits for while running. The wake detector has no level mode.
+ */
+int pxa2xx_gpio_dt_set_wake(unsigned int gpio, unsigned int type,
+			    unsigned int on)
+{
+	struct gpio_desc *d;
+
+	if (gpio > mfp_to_gpio(MFP_PIN_GPIO127))
+		return -EINVAL;
+
+	d = &gpio_desc[gpio];
+	if (d->config & MFP_LPM_CAN_WAKEUP)
+		return gpio_set_wake(gpio, on);
+
+	/* PXA27x keypad pads wake through PKWR, which needs the MFP entry */
+	if (!d->valid || !d->can_wakeup || d->keypad_gpio)
+		return -EINVAL;
+
+	if (!on) {
+		PWER &= ~d->mask;
+		PRER &= ~d->mask;
+		PFER &= ~d->mask;
+		return 0;
+	}
+
+	if (!(type & IRQ_TYPE_EDGE_BOTH))
+		return -EINVAL;
+	if (PWER & d->mux_mask & ~d->mask)
+		return -EBUSY;
+
+	PWER = (PWER & ~d->mux_mask) | d->mask;
+	if (type & IRQ_TYPE_EDGE_RISING)
+		PRER |= d->mask;
+	else
+		PRER &= ~d->mask;
+	if (type & IRQ_TYPE_EDGE_FALLING)
+		PFER |= d->mask;
+	else
+		PFER &= ~d->mask;
+
 	return 0;
 }
 
