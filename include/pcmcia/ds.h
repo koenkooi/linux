@@ -216,6 +216,7 @@ int pcmcia_map_mem_page(struct pcmcia_device *p_dev, struct resource *res,
 
 int pcmcia_fixup_vpp(struct pcmcia_device *p_dev, unsigned char new_vpp);
 int pcmcia_fixup_iowidth(struct pcmcia_device *p_dev);
+int pcmcia_fixup_iospeed(struct pcmcia_device *p_dev, unsigned int speed_ns);
 
 void pcmcia_disable_device(struct pcmcia_device *p_dev);
 

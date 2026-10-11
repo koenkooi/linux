@@ -292,6 +292,103 @@ EXPORT_SYMBOL(pcmcia_fixup_iowidth);
 
 
 /**
+ * pcmcia_fixup_iospeed() - re-program the I/O window access time
+ * @p_dev: pcmcia device
+ * @speed_ns: I/O command width (twIORD/twIOWR) in nanoseconds, or 0 to
+ *	      fall back to the socket driver's generic default
+ *
+ * pcmcia_fixup_iospeed() allows a PCMCIA device driver to replace the
+ * access time of its already-configured I/O windows after having called
+ * pcmcia_enable_device().
+ *
+ * pcmcia_enable_device() has to pick an access time before the card has
+ * been identified, so all it can use is the generic PC Card default (see
+ * the @io_speed module parameter and SOC_PCMCIA_IO_ACCESS in
+ * drivers/pcmcia/soc_common.h, both 165ns-class figures). A driver that has
+ * since learned what the card can take, for instance libata negotiating a
+ * PIO mode with a CF card in True IDE mode, can hand the socket driver a
+ * figure derived from that.
+ *
+ * Only the socket's own I/O windows are touched; attribute and common memory
+ * timings are left alone. Whether the figure has any effect is up to the
+ * socket driver: soc_common based sockets use it in their memory controller
+ * timing calculation, whereas bridges such as yenta ignore
+ * pccard_io_map.speed, so this is a hint a driver must not depend on.
+ *
+ * This re-derives the window data path width from the requested resources
+ * as pcmcia_enable_device() does, so it must not be used by a driver that
+ * has narrowed its windows with pcmcia_fixup_iowidth(); that would be undone.
+ *
+ * An explicit @io_speed module parameter takes precedence over the request.
+ */
+int pcmcia_fixup_iospeed(struct pcmcia_device *p_dev, unsigned int speed_ns)
+{
+	struct pcmcia_socket *s = p_dev->socket;
+	pccard_io_map io_off = { 0, 0, 0, 0, 1 };
+	pccard_io_map io;
+	int i, ret = 0;
+
+	if (io_speed)
+		return 0;
+
+	mutex_lock(&s->ops_mutex);
+
+	dev_dbg(&p_dev->dev, "fixup io access time to %uns\n", speed_ns);
+
+	/*
+	 * Unlike pcmcia_fixup_iowidth(), which runs once while the driver is
+	 * configuring the card, this can be called at any time -- pata_pcmcia
+	 * calls it from libata's ->set_piomode, which libata re-runs on every
+	 * error-handling/revalidate cycle. Those can race card teardown, where
+	 * pcmcia_disable_device() has already dropped function_config, so it
+	 * has to be checked rather than assumed non-NULL.
+	 */
+	if (!(s->state & SOCKET_PRESENT) || !p_dev->function_config ||
+	    !(p_dev->function_config->state & CONFIG_LOCKED)) {
+		dev_dbg(&p_dev->dev, "No card? Config not locked?\n");
+		ret = -EACCES;
+		goto unlock;
+	}
+
+	for (i = 0; i < MAX_IO_WIN; i++) {
+		if (!s->io[i].res)
+			continue;
+
+		io_off.map = i;
+		io.map = i;
+		io.speed = speed_ns;
+		io.flags = MAP_ACTIVE;
+		switch (s->io[i].res->flags & IO_DATA_PATH_WIDTH) {
+		case IO_DATA_PATH_WIDTH_16:
+			io.flags |= MAP_16BIT; break;
+		case IO_DATA_PATH_WIDTH_AUTO:
+			io.flags |= MAP_AUTOSZ; break;
+		default:
+			break;
+		}
+		io.start = s->io[i].res->start;
+		io.stop = s->io[i].res->end;
+
+		/*
+		 * Deactivate before reprogramming, exactly as
+		 * pcmcia_fixup_iowidth() does. Socket drivers are only
+		 * required to cope with timing changes on an inactive window;
+		 * rewriting a live one leaves the card addressable while the
+		 * controller's setup/hold phases are mid-change.
+		 */
+		s->ops->set_io_map(s, &io_off);
+		msleep(40);
+		s->ops->set_io_map(s, &io);
+	}
+unlock:
+	mutex_unlock(&s->ops_mutex);
+
+	return ret;
+}
+EXPORT_SYMBOL(pcmcia_fixup_iospeed);
+
+
+/**
  * pcmcia_fixup_vpp() - set Vpp to a new voltage level
  * @p_dev: pcmcia device
  * @new_vpp: new Vpp voltage
