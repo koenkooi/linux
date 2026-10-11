@@ -80,6 +80,7 @@
 #include <linux/kernel.h>
 #include <linux/mfd/asic3.h>
 #include <linux/mfd/core.h>
+#include <linux/mfd/ds1wm.h>
 #include <linux/mmc/host.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -1303,17 +1304,50 @@ static int asic3_sd_host_init(struct asic3 *asic, struct resource *sd_mem)
 /* ---------------------------------------------------------------------
  * Sub-devices. The LED blink controller (drivers/leds/leds-asic3.c) is
  * matched by of_compatible against a child device tree node, so that board
- * policy (LED names and triggers) stays in the device tree. The SD/MMC
- * host (drivers/mmc/host/tmio_mmc.c) gets an .of_compatible only when the
- * board describes it, so that mfd-core does not warn on a board that does
- * not.
+ * policy (LED names and triggers) stays in the device tree. The DS1WM
+ * 1-Wire master (drivers/w1/masters/ds1wm.c) and the SD/MMC host
+ * (drivers/mmc/host/tmio_mmc.c) get an .of_compatible only when the board
+ * describes them, so that mfd-core does not warn on a board that does not.
  * ---------------------------------------------------------------------
  */
+
+/*
+ * ds1wm maps its own registers from a MEM resource, unlike leds-asic3 which
+ * goes through asic3_read_register()/asic3_write_register(). The resource
+ * starts out as an offset in the "core" window's raw convention and is
+ * shifted by asic->bus_shift in asic3_probe() before the cells are added,
+ * like asic3_sd_cell_resources[], so it cannot be const. The IRQ is a plain
+ * hwirq number, resolved in the chip's irq_domain by mfd_add_device().
+ *
+ * The DS1WM register stride (bus_shift in the platform data) is board
+ * wiring and unrelated to the outer ASIC3 bus_shift. The default below is
+ * meant to be overridden by the board's "onewire" node; on the hx4700,
+ * where the OWM block is five 8-bit registers on 16-bit bus words, it is 1.
+ */
+static const struct ds1wm_driver_data asic3_ds1wm_pdata = {
+	.bus_shift		= 0,
+	.active_high		= 1,
+	.reset_recover_delay	= 1,
+};
+
+static struct resource asic3_ds1wm_resources[] = {
+	DEFINE_RES_MEM(ASIC3_OWM_BASE, ASIC3_OWM_SIZE),
+	DEFINE_RES_IRQ(ASIC3_IRQ_OWM),
+};
 
 static const struct mfd_cell asic3_leds_cell = {
 	.name		= "leds-asic3",
 	.id		= PLATFORM_DEVID_NONE,
 	.of_compatible	= "htc,asic3-leds",
+};
+
+static const struct mfd_cell asic3_ds1wm_cell = {
+	.name		= "ds1wm",
+	.id		= PLATFORM_DEVID_NONE,
+	.platform_data	= &asic3_ds1wm_pdata,
+	.pdata_size	= sizeof(asic3_ds1wm_pdata),
+	.resources	= asic3_ds1wm_resources,
+	.num_resources	= ARRAY_SIZE(asic3_ds1wm_resources),
 };
 
 /*
@@ -1334,6 +1368,44 @@ static bool asic3_has_child(struct device *dev, const char *compatible)
 	return present;
 }
 
+/*
+ * ds1wm only ungates the OWM clock. The block also needs its reset bit
+ * pulsed with that clock running, and EXTCF_SELECT.OWM_EN set with OWM_SMB
+ * clear, or its registers do not answer. The two crystal enables are held
+ * on by the critical gates, ds1wm derives its clock divisor from the gate
+ * rate, and the OWM interrupt is unmasked when ds1wm requests it, so none
+ * of those is repeated here.
+ *
+ * Only done for a board that describes a "onewire" node; others keep the
+ * block in reset.
+ */
+static void asic3_owm_init(struct asic3 *asic)
+{
+	struct clk *owm_clk;
+
+	owm_clk = clk_hw_get_clk(&asic->gates[ASIC3_GATE_OWM].hw, "owm");
+	if (IS_ERR(owm_clk) || clk_prepare_enable(owm_clk)) {
+		dev_warn(asic->dev, "cannot ungate the OWM clock, 1-Wire reset skipped\n");
+		if (!IS_ERR(owm_clk))
+			clk_put(owm_clk);
+		return;
+	}
+
+	asic3_rmw(asic, ASIC3_EXTCF_BASE + ASIC3_EXTCF_RESET,
+		  ASIC3_EXTCF_OWM_RESET, ASIC3_EXTCF_OWM_RESET);
+	usleep_range(1000, 2000);
+	asic3_rmw(asic, ASIC3_EXTCF_BASE + ASIC3_EXTCF_RESET,
+		  ASIC3_EXTCF_OWM_RESET, 0);
+
+	asic3_rmw(asic, ASIC3_EXTCF_BASE + ASIC3_EXTCF_SELECT,
+		  ASIC3_EXTCF_OWM_SMB | ASIC3_EXTCF_OWM_EN,
+		  ASIC3_EXTCF_OWM_EN);
+
+	/* ds1wm takes its own reference when it probes. */
+	clk_disable_unprepare(owm_clk);
+	clk_put(owm_clk);
+}
+
 /* ---------------------------------------------------------------------
  * Probe/lifecycle
  * ---------------------------------------------------------------------
@@ -1346,6 +1418,7 @@ static int asic3_probe(struct platform_device *pdev)
 	struct resource *mem, *sd_mem;
 	struct gpio_desc *reset;
 	struct clk *sd_clk;
+	struct mfd_cell owm_cell = asic3_ds1wm_cell;
 	int irq, sd_irq, ret;
 
 	asic = devm_kzalloc(dev, sizeof(*asic), GFP_KERNEL);
@@ -1446,6 +1519,23 @@ static int asic3_probe(struct platform_device *pdev)
 		if (ret)
 			return dev_err_probe(dev, ret, "failed to add sub-devices\n");
 	}
+
+	asic3_ds1wm_resources[0].start >>= asic->bus_shift;
+	asic3_ds1wm_resources[0].end   >>= asic->bus_shift;
+
+	/*
+	 * The board's "onewire" node, if any, overrides the compiled-in
+	 * tunables above.
+	 */
+	if (asic3_has_child(dev, "htc,asic3-onewire")) {
+		owm_cell.of_compatible = "htc,asic3-onewire";
+		asic3_owm_init(asic);
+	}
+
+	ret = devm_mfd_add_devices(dev, 0, &owm_cell, 1, mem, 0,
+				   asic->domain);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to add the 1-Wire sub-device\n");
 
 	/*
 	 * SD/MMC: a second devm_mfd_add_devices() call with its own mem_base,

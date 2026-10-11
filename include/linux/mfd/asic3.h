@@ -198,8 +198,13 @@
 #define ASIC3_EXTCF_SD_MEM_ENABLE        BIT(14)
 #define ASIC3_EXTCF_CF_SLEEP             BIT(15)
 
-/* The 1-Wire interface (DS1WM) is handled by drivers/w1/masters/ds1wm.c */
+/*
+ * The 1-Wire interface (DS1WM) is handled by drivers/w1/masters/ds1wm.c.
+ * The register window is 0x14 bytes, in the "core" window's raw offset
+ * convention; drivers/mfd/asic3.c shifts it by the bus_shift of the chip.
+ */
 #define ASIC3_OWM_BASE		0xC00
+#define ASIC3_OWM_SIZE		0x14
 
 /*
  * The SD configuration registers are in a second, physically disjoint
