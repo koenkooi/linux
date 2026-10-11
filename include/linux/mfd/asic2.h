@@ -172,8 +172,9 @@
 
 /* ---------------------------------------------------------------------
  * ADC + resistive touchscreen front-end: an interrupt-driven sample state
- * machine, with the touchscreen driven through the GPIO2 bits
- * ASIC2_GPIO2_IN_{Y1,X0,Y0,X1}.
+ * machine (light sensor, Imin, Vs/Mbat and the TP_X0/TP_Y1 touchpanel
+ * channels), with the touchscreen plates driven through the GPIO2 bits
+ * ASIC2_GPIO2_IN_{Y1_N,X0,Y0,X1_N}.
  * ---------------------------------------------------------------------
  */
 #define ASIC2_ADC_BASE			0x1200
@@ -221,6 +222,25 @@
  */
 #define ASIC2_INTCPS_CPS(x)		((x) & 0x0f)	/* 4 bits, max 14 */
 #define ASIC2_INTCPS_SET		BIT(4)		/* time base enable */
+
+struct gpio_desc;
+
+/*
+ * Touch-plate and pen GPIO handles that drivers/mfd/asic2.c passes to
+ * drivers/iio/adc/asic2-adc.c as the platform data of the "asic2-adc" cell.
+ * They are requested by asic2.c against its own gpio_chip (GPIO2 offsets
+ * 0-3 and 5, the ASIC2_GPIO2_IN_{Y1_N,X0,Y0,X1_N} and _PEN_IRQ bits), so
+ * that both drivers serialize on the lock that guards every GPIO2 register
+ * access instead of asic2-adc.c mapping the same data register a second
+ * time.
+ */
+struct asic2_adc_touch_pdata {
+	struct gpio_desc *gpio_y1_n;
+	struct gpio_desc *gpio_x0;
+	struct gpio_desc *gpio_y0;
+	struct gpio_desc *gpio_x1_n;
+	struct gpio_desc *gpio_pen;
+};
 
 /* ---------------------------------------------------------------------
  * 1-Wire: the register layout (4-byte stride, with Command/Data/Interrupt/

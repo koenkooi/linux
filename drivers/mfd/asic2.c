@@ -35,7 +35,10 @@
  *    "asic2-pwm" (drivers/pwm/pwm-asic2.c), "asic2-keys"
  *    (drivers/input/keyboard/asic2-keys.c, the KPIO keypad, which is not
  *    gpio-keys because its bits are not addressable GPIO lines) and
- *    "asic2-adc" (drivers/iio/adc/asic2-adc.c).
+ *    "asic2-adc" (drivers/iio/adc/asic2-adc.c). The ASIC2 ADC does not
+ *    switch the touchscreen plates itself, so GPIO2 bits have to be driven
+ *    by software and asic2_touch_gpios_register() hands asic2-adc.c the
+ *    GPIO descriptors for them.
  *
  * KPIO's InterruptEnable register (offset 0x001c) must not be read back,
  * so this driver keeps a software shadow of its state instead of doing
@@ -50,7 +53,9 @@
 #include <linux/clkdev.h>
 #include <linux/device.h>
 #include <linux/err.h>
+#include <linux/gpio/consumer.h>
 #include <linux/gpio/driver.h>
+#include <linux/gpio/machine.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/irq.h>
@@ -224,6 +229,11 @@ struct asic2 {
 	struct gpio_chip gc;
 
 	struct asic2_clk_gate gates[ASIC2_NR_CLK_GATES];
+
+	/* Handed to the "asic2-adc" cell as platform_data -- see
+	 * asic2_touch_gpios_register()'s own comment.
+	 */
+	struct asic2_adc_touch_pdata touch_gpios;
 };
 
 static inline u32 asic2_read(struct asic2 *asic, u32 reg)
@@ -347,6 +357,84 @@ static int asic2_gpio_register(struct asic2 *asic)
 	asic->gc.can_sleep = false;
 
 	return devm_gpiochip_add_data(asic->dev, &asic->gc, asic);
+}
+
+static void asic2_touch_gpio_free(void *desc)
+{
+	gpiochip_free_own_desc(desc);
+}
+
+/*
+ * Each line is released through devm, so that a later probe failure or an
+ * unbind frees it before devm_gpiochip_add_data() removes the chip.
+ */
+static struct gpio_desc *asic2_touch_gpio_request(struct asic2 *asic,
+						  unsigned int hwnum,
+						  const char *label,
+						  enum gpiod_flags flags)
+{
+	struct gpio_desc *desc;
+	int ret;
+
+	desc = gpiochip_request_own_desc(&asic->gc, hwnum, label,
+					 GPIO_LOOKUP_FLAGS_DEFAULT, flags);
+	if (IS_ERR(desc))
+		return desc;
+
+	ret = devm_add_action_or_reset(asic->dev, asic2_touch_gpio_free, desc);
+	if (ret)
+		return ERR_PTR(ret);
+
+	return desc;
+}
+
+/*
+ * The 4 touch-plate lines (GPIO2 offsets 0-3) and the pen-contact line
+ * (offset 5) are requested here, by the gpio_chip's own driver, through
+ * gpiochip_request_own_desc(), rather than by asic2-adc.c: that cell has no
+ * of_node and no gpiod_lookup_table exists for GPIO2, so a gpiod_get() from
+ * asic2-adc.c would have nothing to resolve against. The descriptors are
+ * ordinary ones backed by this gpio_chip, so asic2-adc.c's
+ * gpiod_set_value() calls still serialize through the same raw spinlock as
+ * every other GPIO2 access in this file. A second mapping of the GPIO2 data
+ * register in asic2-adc.c would have to read-modify-write the plate bits
+ * without disturbing the unrelated bits of that register, unsynchronized
+ * with this driver.
+ *
+ * The plate lines start as outputs driven low, an inert starting point
+ * until asic2-adc.c configures the plates. The pen line is an input used
+ * for the level poll at the end of a sweep; its falling-edge interrupt is
+ * configured separately, through ASIC2_IRQ_PEN.
+ */
+static int asic2_touch_gpios_register(struct asic2 *asic)
+{
+	struct asic2_adc_touch_pdata *tp = &asic->touch_gpios;
+
+	tp->gpio_y1_n = asic2_touch_gpio_request(asic, 0, "touch-y1-n",
+						 GPIOD_OUT_LOW);
+	if (IS_ERR(tp->gpio_y1_n))
+		return PTR_ERR(tp->gpio_y1_n);
+
+	tp->gpio_x0 = asic2_touch_gpio_request(asic, 1, "touch-x0",
+					       GPIOD_OUT_LOW);
+	if (IS_ERR(tp->gpio_x0))
+		return PTR_ERR(tp->gpio_x0);
+
+	tp->gpio_y0 = asic2_touch_gpio_request(asic, 2, "touch-y0",
+					       GPIOD_OUT_LOW);
+	if (IS_ERR(tp->gpio_y0))
+		return PTR_ERR(tp->gpio_y0);
+
+	tp->gpio_x1_n = asic2_touch_gpio_request(asic, 3, "touch-x1-n",
+						 GPIOD_OUT_LOW);
+	if (IS_ERR(tp->gpio_x1_n))
+		return PTR_ERR(tp->gpio_x1_n);
+
+	tp->gpio_pen = asic2_touch_gpio_request(asic, 5, "touch-pen", GPIOD_IN);
+	if (IS_ERR(tp->gpio_pen))
+		return PTR_ERR(tp->gpio_pen);
+
+	return 0;
 }
 
 /* ---------------------------------------------------------------------
@@ -1093,17 +1181,32 @@ static const struct resource asic2_keys_resources[] = {
 };
 
 /*
- * Only ASIC2_IRQ_ADC, the conversion-complete interrupt, is requested; the
- * pen interrupt (ASIC2_IRQ_PEN) belongs to the touchscreen path, which this
- * cell does not cover.
+ * Two IRQ resources: ASIC2_IRQ_ADC, the conversion-complete interrupt
+ * (platform_get_irq(pdev, 0) in asic2-adc.c), and ASIC2_IRQ_PEN, GPIO2's
+ * falling-edge "pen just touched" line (platform_get_irq(pdev, 1)).
  */
 static const struct resource asic2_adc_resources[] = {
 	DEFINE_RES_MEM(ASIC2_ADC_BASE, 0x0c),
 	DEFINE_RES_IRQ(ASIC2_IRQ_ADC),
+	DEFINE_RES_IRQ(ASIC2_IRQ_PEN),
 };
 
-static struct mfd_cell asic2_cells[] = {
-	{
+/*
+ * Named indices into asic2_cells[]: asic2_probe() has to reach the
+ * "asic2-adc" entry at run time to attach the per-probe touch GPIO pointer
+ * as its platform data.
+ */
+enum {
+	ASIC2_CELL_DS1WM,
+	ASIC2_CELL_SPI,
+	ASIC2_CELL_PWM,
+	ASIC2_CELL_KEYS,
+	ASIC2_CELL_ADC,
+	ASIC2_NR_CELLS,
+};
+
+static struct mfd_cell asic2_cells[ASIC2_NR_CELLS] = {
+	[ASIC2_CELL_DS1WM] = {
 		/*
 		 * drivers/w1/masters/ds1wm.c. MMIO and IRQ come from
 		 * asic2_ds1wm_resources[]; the of_compatible only gives a
@@ -1119,14 +1222,14 @@ static struct mfd_cell asic2_cells[] = {
 		.resources	= asic2_ds1wm_resources,
 		.num_resources	= ARRAY_SIZE(asic2_ds1wm_resources),
 	},
-	{
+	[ASIC2_CELL_SPI] = {
 		/* drivers/spi/spi-asic2.c */
 		.name		= "asic2-spi",
 		.id		= PLATFORM_DEVID_NONE,
 		.resources	= asic2_spi_resources,
 		.num_resources	= ARRAY_SIZE(asic2_spi_resources),
 	},
-	{
+	[ASIC2_CELL_PWM] = {
 		/*
 		 * drivers/pwm/pwm-asic2.c. The of_compatible gives the cell a
 		 * device node when the board has a "pwm" child: of_pwm_get()
@@ -1141,7 +1244,7 @@ static struct mfd_cell asic2_cells[] = {
 		.resources	= asic2_pwm_resources,
 		.num_resources	= ARRAY_SIZE(asic2_pwm_resources),
 	},
-	{
+	[ASIC2_CELL_KEYS] = {
 		/*
 		 * drivers/input/keyboard/asic2-keys.c. The MMIO and IRQ come
 		 * from asic2_keys_resources[], not from the node. The
@@ -1154,12 +1257,11 @@ static struct mfd_cell asic2_cells[] = {
 		.resources	= asic2_keys_resources,
 		.num_resources	= ARRAY_SIZE(asic2_keys_resources),
 	},
-	{
+	[ASIC2_CELL_ADC] = {
 		/*
 		 * drivers/iio/adc/asic2-adc.c: the light sensor, Imin and
-		 * battery channels only. The touchpanel channels would need
-		 * the four GPIO2 touchscreen bits driven in a plate-switching
-		 * sequence, which this cell does not do.
+		 * battery channels plus the TP_X0/TP_Y1 touchpanel channels.
+		 * .platform_data is filled in at run time in asic2_probe().
 		 *
 		 * The of_compatible gives the ADC a firmware node, which the
 		 * driver does not need itself. Consumers that resolve an
@@ -1281,9 +1383,23 @@ static int asic2_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to register gpio_chip\n");
 
+	ret = asic2_touch_gpios_register(asic);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to request touch GPIOs\n");
+
 	ret = asic2_clocks_register(asic);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to register clocks\n");
+
+	/*
+	 * Per-probe pointer, not a compile-time initializer -- see
+	 * asic2_cells[]'s own ASIC2_CELL_ADC comment. Safe to mutate the
+	 * shared static array in place: ASIC2 is singleton hardware on
+	 * every board this project supports, this probe() only ever runs
+	 * once.
+	 */
+	asic2_cells[ASIC2_CELL_ADC].platform_data = &asic->touch_gpios;
+	asic2_cells[ASIC2_CELL_ADC].pdata_size = sizeof(asic->touch_gpios);
 
 	ret = devm_mfd_add_devices(dev, 0, asic2_cells, ARRAY_SIZE(asic2_cells),
 				   mem, 0, asic->domain);
