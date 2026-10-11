@@ -49,6 +49,11 @@ struct soc_pcmcia_socket {
 	 * negotiated figure.
 	 */
 	bool			spd_io_negotiated[MAX_IO_WIN];
+	/*
+	 * Shortest I/O cycle in ns the socket wiring supports, or 0 for no
+	 * limit; the socket driver never programs a faster I/O timing.
+	 */
+	unsigned short		min_io_ns;
 	unsigned short		spd_mem[MAX_WIN];
 	unsigned short		spd_attr[MAX_WIN];
 
