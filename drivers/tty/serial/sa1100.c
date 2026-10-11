@@ -698,6 +698,40 @@ void __init sa1100_register_uart(int idx, int port)
 	}
 }
 
+#ifdef CONFIG_SERIAL_EARLYCON
+/*
+ * Use the port as the boot loader left it instead of reprogramming
+ * UTCR0-2: re-clocking the UART this early can garble output the boot
+ * loader is still transmitting.
+ */
+static void sa1100_earlycon_putchar(struct uart_port *port, unsigned char ch)
+{
+	while (!(readl_relaxed(port->membase + UTSR1) & UTSR1_TNF))
+		cpu_relax();
+	writel_relaxed(ch, port->membase + UTDR);
+}
+
+static void sa1100_earlycon_write(struct console *con, const char *s,
+				  unsigned int n)
+{
+	struct earlycon_device *dev = con->data;
+
+	uart_console_write(&dev->port, s, n, sa1100_earlycon_putchar);
+}
+
+static int __init sa1100_earlycon_setup(struct earlycon_device *dev,
+					const char *opt)
+{
+	if (!dev->port.membase)
+		return -ENODEV;
+
+	dev->con->write = sa1100_earlycon_write;
+	return 0;
+}
+
+OF_EARLYCON_DECLARE(sa1110, "intel,sa1110-uart", sa1100_earlycon_setup);
+OF_EARLYCON_DECLARE(sa1100, "intel,sa1100-uart", sa1100_earlycon_setup);
+#endif
 
 #ifdef CONFIG_SERIAL_SA1100_CONSOLE
 static void sa1100_console_putchar(struct uart_port *port, unsigned char ch)
