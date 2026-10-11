@@ -859,15 +859,21 @@ static int sa1100_serial_probe(struct platform_device *dev)
 	if (!res)
 		return -EINVAL;
 
+	/*
+	 * Machine code claims a port with sa1100_register_uart(), and the
+	 * device is matched to it by its register address.
+	 */
 	for (i = 0; i < NR_PORTS; i++)
 		if (sa1100_ports[i].port.mapbase == res->start)
 			break;
 	if (i == NR_PORTS)
 		return -ENODEV;
 
-	sa1100_serial_add_one_port(&sa1100_ports[i], dev);
-
-	return 0;
+	/*
+	 * Propagate a failure such as -EPROBE_DEFER from
+	 * mctrl_gpio_init_noauto(), so the port can be probed again.
+	 */
+	return sa1100_serial_add_one_port(&sa1100_ports[i], dev);
 }
 
 static void sa1100_serial_remove(struct platform_device *pdev)
