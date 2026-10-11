@@ -1157,6 +1157,10 @@ patternProperties:
     description: Mundo Reader S.L.
   "^murata,.*":
     description: Murata Manufacturing Co., Ltd.
+  "^mvrl,.*":
+    description: Marvell Technology Group Ltd. (misspelling of mrvl, used
+      by the PXA SSP compatibles)
+    deprecated: true
   "^mxic,.*":
     description: Macronix International Co., Ltd.
     deprecated: true
