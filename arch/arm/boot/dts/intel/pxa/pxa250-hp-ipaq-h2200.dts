@@ -272,10 +272,11 @@
 	};
 
 	/*
-	 * Buttons and joypad, all active low. All but the power key are on
-	 * HAMCOP's GPIO A/B banks. GPIO 7 is the battery fault input, not a
-	 * button, hence the gap. The power button is the board's one wakeup
-	 * source.
+	 * Power and application buttons, all active low. The application
+	 * buttons are on HAMCOP's GPIO A/B banks. GPIO 7 is the battery fault
+	 * input, not a button, hence the gap; the 5-way pad on GPIO 5, 6, 8, 9
+	 * and 10 is the keypad node below. The power button is the board's one
+	 * wakeup source.
 	 */
 	gpio-keys {
 		compatible = "gpio-keys";
@@ -316,35 +317,83 @@
 			linux,code = <KEY_HOMEPAGE>;
 			gpios = <&hamcop 4 GPIO_ACTIVE_LOW>;
 		};
+	};
 
-		key-joypad-left {
-			label = "Joypad Left";
-			linux,code = <KEY_LEFT>;
-			gpios = <&hamcop 5 GPIO_ACTIVE_LOW>;
-		};
+	/*
+	 * The four direction contacts sit on the diagonals of the pad and the
+	 * centre contact closes with every press, so a direction is the
+	 * combination of contacts, decoded exactly as the stock firmware's
+	 * table does. Contacts of one press close up to ~30 ms apart, hence
+	 * the 50 ms settle.
+	 */
+	keypad {
+		compatible = "gpio-combo-keys";
+		label = "Joypad";
+		line-gpios = <&hamcop 5 GPIO_ACTIVE_LOW>,	/* 0: up-left contact */
+			     <&hamcop 6 GPIO_ACTIVE_LOW>,	/* 1: down-right */
+			     <&hamcop 8 GPIO_ACTIVE_LOW>,	/* 2: down-left */
+			     <&hamcop 9 GPIO_ACTIVE_LOW>,	/* 3: up-right */
+			     <&hamcop 10 GPIO_ACTIVE_LOW>;	/* 4: centre */
+		debounce-delay-ms = <50>;
 
-		key-joypad-right {
-			label = "Joypad Right";
-			linux,code = <KEY_RIGHT>;
-			gpios = <&hamcop 6 GPIO_ACTIVE_LOW>;
-		};
-
-		key-joypad-down {
-			label = "Joypad Down";
-			linux,code = <KEY_DOWN>;
-			gpios = <&hamcop 8 GPIO_ACTIVE_LOW>;
-		};
-
-		key-joypad-up {
-			label = "Joypad Up";
-			linux,code = <KEY_UP>;
-			gpios = <&hamcop 9 GPIO_ACTIVE_LOW>;
-		};
-
-		key-joypad-select {
+		key-select {
 			label = "Joypad Select";
+			active-lines = <4>;
 			linux,code = <KEY_ENTER>;
-			gpios = <&hamcop 10 GPIO_ACTIVE_LOW>;
+		};
+
+		key-up {
+			label = "Joypad Up";
+			active-lines = <0 3 4>;
+			linux,code = <KEY_UP>;
+		};
+
+		key-down {
+			label = "Joypad Down";
+			active-lines = <1 2 4>;
+			linux,code = <KEY_DOWN>;
+		};
+
+		key-right {
+			label = "Joypad Right";
+			active-lines = <1 3 4>;
+			linux,code = <KEY_RIGHT>;
+		};
+
+		key-left {
+			label = "Joypad Left";
+			active-lines = <0 2 4>;
+			linux,code = <KEY_LEFT>;
+		};
+
+		key-up-left {
+			label = "Joypad Up-Left";
+			active-lines = <0 4>;
+			linux,keycodes = <KEY_LEFT KEY_UP>;
+		};
+
+		key-down-left {
+			label = "Joypad Down-Left";
+			active-lines = <2 4>;
+			linux,keycodes = <KEY_LEFT KEY_DOWN>;
+		};
+
+		key-up-right {
+			label = "Joypad Up-Right";
+			active-lines = <3 4>;
+			linux,keycodes = <KEY_UP KEY_RIGHT>;
+		};
+
+		key-down-right {
+			label = "Joypad Down-Right";
+			active-lines = <1 4>;
+			linux,keycodes = <KEY_RIGHT KEY_DOWN>;
+		};
+
+		key-all {
+			label = "Joypad All";
+			active-lines = <0 1 2 3 4>;
+			linux,code = <KEY_5>;
 		};
 	};
 
