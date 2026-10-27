@@ -1,0 +1,179 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/gpio-combo-keys.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: GPIO combination keys
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: |
+  A set of switch contacts, each on its own GPIO line, where a key is
+  identified by the combination of lines that are active rather than by a
+  single line. A typical example is a rocker or 5-way navigation pad whose
+  contacts sit between the directions, so that one direction closes two
+  contacts and a centre contact closes with every press.
+
+  Each child node describes one combination. A combination matches when every
+  line listed in its active-lines is active and every other line in line-gpios
+  is inactive. No two children may describe the same combination.
+
+  The contacts of one press close and open at slightly different times, so the
+  device reports a combination only after all lines have been unchanged for
+  debounce-delay-ms. Intermediate combinations seen while a press or release
+  is still settling are not reported. Releases are settled the same way.
+
+allOf:
+  - $ref: input.yaml#
+
+properties:
+  compatible:
+    const: gpio-combo-keys
+
+  line-gpios:
+    description:
+      The GPIO lines making up the combinations, in the order the children
+      index them. The active level of each line is given by its GPIO flags.
+    minItems: 2
+    maxItems: 32
+
+  debounce-delay-ms:
+    description:
+      Time all lines must stay unchanged before the current combination is
+      reported. It applies to presses and releases alike and restarts on every
+      line change. When absent, 50 milliseconds are used.
+
+  autorepeat: true
+
+  label:
+    description: Name of the input device.
+
+  wakeup-source: true
+
+patternProperties:
+  "^key-[a-z0-9-]+$":
+    type: object
+    additionalProperties: false
+
+    properties:
+      label:
+        description: Descriptive name of the key.
+
+      active-lines:
+        description:
+          Indices into line-gpios of the lines that are active for this
+          combination. All other lines must be inactive.
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+        minItems: 1
+        maxItems: 32
+        items:
+          maximum: 31
+
+      linux,code:
+        description: Key code reported when the combination matches.
+        $ref: /schemas/types.yaml#/definitions/uint32
+
+      linux,keycodes:
+        description:
+          Key codes reported together, as one simultaneous press, when the
+          combination matches.
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+        minItems: 1
+        maxItems: 4
+
+    required:
+      - active-lines
+
+    oneOf:
+      - required: [ "linux,code" ]
+      - required: [ "linux,keycodes" ]
+
+required:
+  - compatible
+  - line-gpios
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/input/input.h>
+
+    /*
+     * 5-way pad with its four direction contacts on the diagonals: line 0
+     * closes for up-left, 1 for down-right, 2 for down-left, 3 for up-right,
+     * and line 4 (centre) closes with every press.
+     */
+    keypad {
+        compatible = "gpio-combo-keys";
+        label = "Navigation pad";
+        line-gpios = <&gpio 5 GPIO_ACTIVE_LOW>,
+                     <&gpio 6 GPIO_ACTIVE_LOW>,
+                     <&gpio 8 GPIO_ACTIVE_LOW>,
+                     <&gpio 9 GPIO_ACTIVE_LOW>,
+                     <&gpio 10 GPIO_ACTIVE_LOW>;
+        debounce-delay-ms = <50>;
+
+        key-select {
+            label = "Select";
+            active-lines = <4>;
+            linux,code = <KEY_ENTER>;
+        };
+
+        key-up {
+            label = "Up";
+            active-lines = <0 3 4>;
+            linux,code = <KEY_UP>;
+        };
+
+        key-down {
+            label = "Down";
+            active-lines = <1 2 4>;
+            linux,code = <KEY_DOWN>;
+        };
+
+        key-right {
+            label = "Right";
+            active-lines = <1 3 4>;
+            linux,code = <KEY_RIGHT>;
+        };
+
+        key-left {
+            label = "Left";
+            active-lines = <0 2 4>;
+            linux,code = <KEY_LEFT>;
+        };
+
+        key-up-left {
+            label = "Up-left";
+            active-lines = <0 4>;
+            linux,keycodes = <KEY_LEFT KEY_UP>;
+        };
+
+        key-down-left {
+            label = "Down-left";
+            active-lines = <2 4>;
+            linux,keycodes = <KEY_LEFT KEY_DOWN>;
+        };
+
+        key-up-right {
+            label = "Up-right";
+            active-lines = <3 4>;
+            linux,keycodes = <KEY_UP KEY_RIGHT>;
+        };
+
+        key-down-right {
+            label = "Down-right";
+            active-lines = <1 4>;
+            linux,keycodes = <KEY_RIGHT KEY_DOWN>;
+        };
+
+        key-all {
+            label = "All contacts";
+            active-lines = <0 1 2 3 4>;
+            linux,code = <KEY_5>;
+        };
+    };
+...
