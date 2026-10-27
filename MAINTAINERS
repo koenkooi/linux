@@ -11222,6 +11222,13 @@ S:	Supported
 F:	Documentation/admin-guide/gpio/gpio-aggregator.rst
 F:	drivers/gpio/gpio-aggregator.c
 
+GPIO COMBINATION KEYS DRIVER
+M:	Koen Kooi <koen@dominion.thruhere.net>
+L:	linux-input@vger.kernel.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/input/gpio-combo-keys.yaml
+F:	drivers/input/keyboard/gpio_combo_keys.c
+
 GPIO IR Transmitter
 M:	Sean Young <sean@mess.org>
 L:	linux-media@vger.kernel.org
