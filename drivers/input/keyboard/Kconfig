@@ -237,6 +237,17 @@ config KEYBOARD_GPIO_POLLED
 	  To compile this driver as a module, choose M here: the
 	  module will be called gpio_keys_polled.
 
+config KEYBOARD_GPIO_COMBO
+	tristate "GPIO combination keys"
+	depends on GPIOLIB || COMPILE_TEST
+	help
+	  Say Y here to support keys that are decoded from the combination
+	  of several active GPIO lines, such as a 5-way navigation pad whose
+	  contacts sit between the directions.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called gpio_combo_keys.
+
 config KEYBOARD_TCA8418
 	tristate "TCA8418 Keypad Support"
 	depends on I2C
