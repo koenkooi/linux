@@ -84,5 +84,6 @@
 #define SERIO_RAINSHADOW_CEC	0x41
 #define SERIO_FSIA6B	0x42
 #define SERIO_EXTRON_DA_HD_4K_PLUS	0x43
+#define SERIO_IPAQ_KBD	0x44
 
 #endif /* _UAPI_SERIO_H */
