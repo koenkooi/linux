@@ -85,6 +85,7 @@
  *     say which of them are required, so they are used as-is.
  */
 
+#include <linux/auxiliary_bus.h>
 #include <linux/backlight.h>
 #include <linux/bitfield.h>
 #include <linux/bitrev.h>
@@ -2282,14 +2283,11 @@ static const struct pwm_ops mq11xx_pwm_ops = {
 };
 
 /*
- * Best effort, not fatal to probe(): the display works with the brightness
- * that the fp0f entry of mq11xx_h5xxx_init_regs[] left in the register, so a
- * failure to register the pwm_chip, which realistically means memory
- * exhaustion, must not turn a working display into a probe failure. The
- * platform device has no devicetree node yet, so no consumer can be wired
- * to it from the devicetree either.
+ * Fatal to probe(): a backlight using this PWM can never bind without it, and
+ * the display waits for its backlight in mq11xx_display_probe(), so carrying
+ * on would leave the display deferred for ever with no error to show for it.
  */
-static void mq11xx_pwm_chip_register(struct mq11xx_device *mq, struct device *dev)
+static int mq11xx_pwm_chip_register(struct mq11xx_device *mq, struct device *dev)
 {
 	struct pwm_chip *chip;
 	int ret;
@@ -2300,18 +2298,16 @@ static void mq11xx_pwm_chip_register(struct mq11xx_device *mq, struct device *de
 	mutex_unlock(&mq->hw_lock);
 
 	chip = devm_pwmchip_alloc(dev, 1, 0);
-	if (IS_ERR(chip)) {
-		drm_warn(&mq->drm, "devm_pwmchip_alloc failed (%ld), backlight brightness stays fixed\n",
-			 PTR_ERR(chip));
-		return;
-	}
+	if (IS_ERR(chip))
+		return dev_err_probe(dev, PTR_ERR(chip), "failed to allocate PWM chip\n");
 
 	chip->ops = &mq11xx_pwm_ops;
 
 	ret = devm_pwmchip_add(dev, chip);
 	if (ret)
-		drm_warn(&mq->drm, "devm_pwmchip_add failed (%d), backlight brightness stays fixed\n",
-			 ret);
+		return dev_err_probe(dev, ret, "failed to add PWM chip\n");
+
+	return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -4037,10 +4033,6 @@ static int mq11xx_probe(struct platform_device *pdev)
 	if (IS_ERR(mq->panel))
 		return dev_err_probe(dev, PTR_ERR(mq->panel), "failed to get panel supply\n");
 
-	mq->backlight = devm_of_find_backlight(dev);
-	if (IS_ERR(mq->backlight))
-		return dev_err_probe(dev, PTR_ERR(mq->backlight), "failed to get backlight\n");
-
 	ret = drmm_mutex_init(drm, &mq->hw_lock);
 	if (ret)
 		return ret;
@@ -4079,12 +4071,47 @@ static int mq11xx_probe(struct platform_device *pdev)
 	if (mq->envee_applied && mq->variant->envee_mode)
 		mq->mode = mq->variant->envee_mode;
 
-	if (mq->variant->has_internal_pwm)
-		mq11xx_pwm_chip_register(mq, dev);
-
 	ret = mq11xx_irq_init(mq, pdev);
 	if (ret)
 		return ret;
+
+	if (mq->variant->has_internal_pwm) {
+		ret = mq11xx_pwm_chip_register(mq, dev);
+		if (ret)
+			return ret;
+	}
+
+	/*
+	 * The rest of the bring-up needs the backlight, which on h5xxx needs
+	 * the pwm_chip just registered. Waiting for it here would defer this
+	 * probe, whose unwind removes that pwm_chip again, so neither side
+	 * could ever finish. A device of its own lets the waiting part defer
+	 * while this one stays bound, as in ti-sn65dsi86.
+	 */
+	if (!devm_auxiliary_device_create(dev, "display", NULL))
+		return dev_err_probe(dev, -ENODEV, "failed to add display device\n");
+
+	return 0;
+}
+
+static int mq11xx_display_probe(struct auxiliary_device *adev,
+				const struct auxiliary_device_id *id)
+{
+	struct device *dev = &adev->dev;
+	struct mq11xx_device *mq = dev_get_drvdata(dev->parent);
+	struct drm_device *drm = &mq->drm;
+	struct backlight_device *backlight;
+	int ret;
+
+	/*
+	 * First, and the only step here that can defer: the steps below set
+	 * up DRM state tied to the parent's drm_device, which a second run
+	 * could not set up again.
+	 */
+	backlight = devm_of_find_backlight(dev);
+	if (IS_ERR(backlight))
+		return dev_err_probe(dev, PTR_ERR(backlight), "failed to get backlight\n");
+	mq->backlight = backlight;
 
 	ret = mq11xx_mode_config_init(mq);
 	if (ret)
@@ -4098,6 +4125,7 @@ static int mq11xx_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	/* On this device, so it outlives mq11xx_display_remove() as it must. */
 	if (mq->irq) {
 		ret = devm_request_irq(dev, mq->irq, mq11xx_irq_handler, 0,
 				       DRIVER_NAME, mq);
@@ -4118,16 +4146,14 @@ static int mq11xx_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void mq11xx_remove(struct platform_device *pdev)
+static void mq11xx_display_remove(struct auxiliary_device *adev)
 {
-	struct mq11xx_device *mq = platform_get_drvdata(pdev);
+	struct mq11xx_device *mq = dev_get_drvdata(adev->dev.parent);
 
 	drm_dev_unplug(&mq->drm);
 	drm_atomic_helper_shutdown(&mq->drm);
 	/* Unplugged, so no commit can be using the channel any more. */
 	mq11xx_present_dma_fini(mq);
-
-	/* mq11xx_power_down_action() runs via devm after .remove() returns. */
 }
 
 /*
@@ -4137,10 +4163,16 @@ static void mq11xx_remove(struct platform_device *pdev)
  * reprogrammed by mq11xx_hw_init() on resume, exactly as at probe. The
  * settle times after suspending and resuming are those of the vendor
  * display driver.
+ *
+ * These belong to the display device: there is no mode config to suspend
+ * until it has bound. Its last probe attempt also moved it behind the
+ * backlight in the suspend order, so it blanks first and unblanks last,
+ * and the backlight's own resume finds the light off, not an undriven
+ * panel to shine through.
  */
 static int mq11xx_pm_suspend(struct device *dev)
 {
-	struct mq11xx_device *mq = dev_get_drvdata(dev);
+	struct mq11xx_device *mq = dev_get_drvdata(dev->parent);
 	int ret;
 
 	ret = drm_mode_config_helper_suspend(&mq->drm);
@@ -4154,7 +4186,7 @@ static int mq11xx_pm_suspend(struct device *dev)
 
 static int mq11xx_pm_resume(struct device *dev)
 {
-	struct mq11xx_device *mq = dev_get_drvdata(dev);
+	struct mq11xx_device *mq = dev_get_drvdata(dev->parent);
 
 	drm_mode_config_helper_resume(&mq->drm);
 
@@ -4165,16 +4197,54 @@ static int mq11xx_pm_resume(struct device *dev)
 
 static DEFINE_SIMPLE_DEV_PM_OPS(mq11xx_pm_ops, mq11xx_pm_suspend, mq11xx_pm_resume);
 
+static const struct auxiliary_device_id mq11xx_display_id_table[] = {
+	{ .name = DRIVER_NAME ".display" },
+	{ }
+};
+MODULE_DEVICE_TABLE(auxiliary, mq11xx_display_id_table);
+
+static struct auxiliary_driver mq11xx_display_driver = {
+	.name = "display",
+	.probe = mq11xx_display_probe,
+	.remove = mq11xx_display_remove,
+	.id_table = mq11xx_display_id_table,
+	.driver = {
+		.pm = pm_sleep_ptr(&mq11xx_pm_ops),
+		/* mq11xx_display_probe() can only run to completion once. */
+		.suppress_bind_attrs = true,
+	},
+};
+
 static struct platform_driver mq11xx_platform_driver = {
 	.probe	= mq11xx_probe,
-	.remove	= mq11xx_remove,
 	.driver	= {
 		.name = DRIVER_NAME,
 		.of_match_table = mq11xx_of_match,
-		.pm = pm_sleep_ptr(&mq11xx_pm_ops),
 	},
 };
-module_platform_driver(mq11xx_platform_driver);
+
+static int __init mq11xx_init(void)
+{
+	int ret;
+
+	ret = auxiliary_driver_register(&mq11xx_display_driver);
+	if (ret)
+		return ret;
+
+	ret = platform_driver_register(&mq11xx_platform_driver);
+	if (ret)
+		auxiliary_driver_unregister(&mq11xx_display_driver);
+
+	return ret;
+}
+module_init(mq11xx_init);
+
+static void __exit mq11xx_exit(void)
+{
+	platform_driver_unregister(&mq11xx_platform_driver);
+	auxiliary_driver_unregister(&mq11xx_display_driver);
+}
+module_exit(mq11xx_exit);
 
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");
