@@ -183,6 +183,18 @@ static bool mq11xx_page_flip = true;
 module_param_named(page_flip, mq11xx_page_flip, bool, 0644);
 MODULE_PARM_DESC(page_flip, "Double-buffer frames that fit twice in video memory (C8 or pixel-doubled) and flip between them; may be changed at run time (default: on)");
 
+/*
+ * Panel power order of the h5550's WinCE display driver (ddi.dll), for the
+ * Sharp panel: panel supply, then scanout, then the panel enable on MediaQ
+ * GPIO1 (cc02 bit 7) with 40 ms on each side; on the way down the data pins
+ * are driven to fixed levels for about 63 ms, GPIO1 drops, and the supply
+ * goes about 63 ms later. The register table otherwise raises GPIO1 at load,
+ * before the panel has a supply. Off by default until tested on a panel.
+ */
+static bool mq11xx_panel_seq;
+module_param_named(panel_seq, mq11xx_panel_seq, bool, 0644);
+MODULE_PARM_DESC(panel_seq, "h5xxx Sharp panel: WinCE power-on and power-off order (default N)");
+
 #define DRIVER_MAJOR 1
 #define DRIVER_MINOR 0
 
@@ -267,6 +279,11 @@ MODULE_PARM_DESC(page_flip, "Double-buffer frames that fit twice in video memory
 #define MQ11XX_GC_CURSOR_BG	(MQ11XX_REG_GC + 0x4c)	/* gc13 */
 #define MQ11XX_GC_VERTICAL_PARAMETER (MQ11XX_REG_GC + 0x74)	/* gc1d */
 #define MQ11XX_FP_OUTPUT_CONTROL (MQ11XX_REG_FP + 0x08)
+#define MQ11XX_CC_GPIO_CONTROL	(MQ11XX_REG_CC + 0x08)	/* cc02 */
+#define MQ11XX_CC_GPIO1_HIGH	BIT(7)	/* h5xxx Sharp panel enable */
+#define MQ11XX_FP_PIN_CONTROL_1	(MQ11XX_REG_FP + 0x04)	/* fp01 */
+#define MQ11XX_FP_GPIO_CONTROL_0 (MQ11XX_REG_FP + 0x1c)	/* fp07 */
+#define MQ11XX_FP_GPIO_CONTROL_1 (MQ11XX_REG_FP + 0x20)	/* fp08 */
 /*
  * FP.input_control and FP.pin_input_data. ENVEE is bit 1 of both: set in
  * input_control to enable readback of the pin, then read from
@@ -2010,6 +2027,12 @@ static int mq11xx_hw_init(struct mq11xx_device *mq)
  * reset and fully programmed by mq11xx_hw_init() before any of the
  * scanout and flat-panel writes below touch it.
  */
+static bool mq11xx_use_panel_seq(struct mq11xx_device *mq)
+{
+	return READ_ONCE(mq11xx_panel_seq) && mq->variant->envee_regs &&
+	       !mq->envee_applied;
+}
+
 static void mq11xx_output_enable(struct mq11xx_device *mq)
 {
 	u32 val;
@@ -2024,6 +2047,31 @@ static void mq11xx_output_enable(struct mq11xx_device *mq)
 				ret);
 			goto out_unlock;
 		}
+	}
+
+	if (mq11xx_use_panel_seq(mq)) {
+		val = readl(mq->regs + MQ11XX_CC_GPIO_CONTROL);
+		writel(val & ~MQ11XX_CC_GPIO1_HIGH,
+		       mq->regs + MQ11XX_CC_GPIO_CONTROL);
+		ret = regulator_enable(mq->panel);
+		if (ret) {
+			drm_err(&mq->drm, "failed to enable panel supply (%d), display stays off\n",
+				ret);
+			mq11xx_power_down(mq);
+			mq->powered = false;
+			goto out_unlock;
+		}
+		writel(mq->variant->fp_output_control,
+		       mq->regs + MQ11XX_FP_OUTPUT_CONTROL);
+		val = readl(mq->regs + MQ11XX_GC_CONTROL);
+		writel(val | MQ11XX_GC_CONTROL_ENABLE, mq->regs + MQ11XX_GC_CONTROL);
+		val = readl(mq->regs + MQ11XX_DC_CONFIG_5);
+		writel(val | MQ11XX_CONFIG_GE_ENABLE, mq->regs + MQ11XX_DC_CONFIG_5);
+		msleep(40);
+		val = readl(mq->regs + MQ11XX_CC_GPIO_CONTROL);
+		writel(val | MQ11XX_CC_GPIO1_HIGH, mq->regs + MQ11XX_CC_GPIO_CONTROL);
+		msleep(40);
+		goto live;
 	}
 
 	val = readl(mq->regs + MQ11XX_GC_CONTROL);
@@ -2059,6 +2107,7 @@ static void mq11xx_output_enable(struct mq11xx_device *mq)
 	writel(mq->variant->fp_output_control,
 	       mq->regs + MQ11XX_FP_OUTPUT_CONTROL);
 
+live:
 	mq11xx_irq_set_live(mq, true);
 
 	mutex_unlock(&mq->hw_lock);
@@ -2099,10 +2148,30 @@ static void mq11xx_output_disable(struct mq11xx_device *mq)
 
 	mq11xx_irq_set_live(mq, false);
 
-	/* Blank the panel before tearing down scanout -- see the mirrored
-	 * comment in mq11xx_output_enable() above.
-	 */
-	regulator_disable(mq->panel);
+	if (mq11xx_use_panel_seq(mq)) {
+		val = readl(mq->regs + MQ11XX_FP_OUTPUT_CONTROL);
+		writel(val & ~BIT(28), mq->regs + MQ11XX_FP_OUTPUT_CONTROL);
+		val = readl(mq->regs + MQ11XX_FP_PIN_CONTROL_1);
+		writel(val & ~BIT(3), mq->regs + MQ11XX_FP_PIN_CONTROL_1);
+		writel(0x00fcfcfd, mq->regs + MQ11XX_FP_GPIO_CONTROL_0);
+		val = readl(mq->regs + MQ11XX_FP_GPIO_CONTROL_1);
+		writel((val & 1) | 0x00fcfcfc, mq->regs + MQ11XX_FP_GPIO_CONTROL_1);
+		msleep(63);
+		val = readl(mq->regs + MQ11XX_CC_GPIO_CONTROL);
+		writel(val & ~MQ11XX_CC_GPIO1_HIGH, mq->regs + MQ11XX_CC_GPIO_CONTROL);
+		msleep(63);
+		regulator_disable(mq->panel);
+		writel(0xfffcfcfd, mq->regs + MQ11XX_FP_GPIO_CONTROL_0);
+		val = readl(mq->regs + MQ11XX_FP_GPIO_CONTROL_1);
+		writel(val & 0x00030302, mq->regs + MQ11XX_FP_GPIO_CONTROL_1);
+		val = readl(mq->regs + MQ11XX_FP_PIN_CONTROL_1);
+		writel(val | BIT(0), mq->regs + MQ11XX_FP_PIN_CONTROL_1);
+	} else {
+		/* Blank the panel before tearing down scanout -- see the
+		 * mirrored comment in mq11xx_output_enable() above.
+		 */
+		regulator_disable(mq->panel);
+	}
 
 	/*
 	 * The cursor goes with scanout; the cursor plane turns it back on
