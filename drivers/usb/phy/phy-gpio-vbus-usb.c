@@ -5,6 +5,7 @@
  * Copyright (c) 2008 Philipp Zabel <philipp.zabel@gmail.com>
  */
 
+#include <linux/devm-helpers.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
 #include <linux/gpio/consumer.h>
@@ -93,17 +94,20 @@ static void gpio_vbus_work(struct work_struct *work)
 {
 	struct gpio_vbus_data *gpio_vbus =
 		container_of(work, struct gpio_vbus_data, work.work);
+	struct usb_gadget *gadget = gpio_vbus->phy.otg->gadget;
 	int status, vbus;
-
-	if (!gpio_vbus->phy.otg->gadget)
-		return;
 
 	vbus = is_vbus_powered(gpio_vbus);
 	if ((vbus ^ gpio_vbus->vbus) == 0)
 		return;
 	gpio_vbus->vbus = vbus;
 
-	/* Peripheral controllers which manage the pullup themselves won't have
+	/*
+	 * VBUS is tracked and reported with no gadget bound as well, so that a
+	 * charger listening on the notifier sees a cable that only charges.
+	 * The gadget side catches up in gpio_vbus_set_peripheral().
+	 *
+	 * Peripheral controllers which manage the pullup themselves won't have
 	 * a pullup GPIO configured here.  If it's configured here, we'll do
 	 * what isp1301_omap::b_peripheral() does and enable the pullup here...
 	 * although that may complicate usb_gadget_{,dis}connect() support.
@@ -111,35 +115,40 @@ static void gpio_vbus_work(struct work_struct *work)
 
 	if (vbus) {
 		status = USB_EVENT_VBUS;
-		gpio_vbus->phy.otg->state = OTG_STATE_B_PERIPHERAL;
 		gpio_vbus->phy.last_event = status;
-		usb_gadget_vbus_connect(gpio_vbus->phy.otg->gadget);
+		if (gadget) {
+			gpio_vbus->phy.otg->state = OTG_STATE_B_PERIPHERAL;
+			usb_gadget_vbus_connect(gadget);
 
-		/* drawing a "unit load" is *always* OK, except for OTG */
-		set_vbus_draw(gpio_vbus, 100);
+			/* drawing a "unit load" is *always* OK, except for OTG */
+			set_vbus_draw(gpio_vbus, 100);
 
-		/* optionally enable D+ pullup */
-		if (gpio_vbus->pullup_gpiod)
-			gpiod_set_value(gpio_vbus->pullup_gpiod, 1);
+			/* optionally enable D+ pullup */
+			if (gpio_vbus->pullup_gpiod)
+				gpiod_set_value(gpio_vbus->pullup_gpiod, 1);
+		}
 
 		atomic_notifier_call_chain(&gpio_vbus->phy.notifier,
-					   status, gpio_vbus->phy.otg->gadget);
-		usb_phy_set_event(&gpio_vbus->phy, USB_EVENT_ENUMERATED);
+					   status, gadget);
+		if (gadget)
+			usb_phy_set_event(&gpio_vbus->phy,
+					  USB_EVENT_ENUMERATED);
 	} else {
-		/* optionally disable D+ pullup */
-		if (gpio_vbus->pullup_gpiod)
-			gpiod_set_value(gpio_vbus->pullup_gpiod, 0);
+		if (gadget) {
+			/* optionally disable D+ pullup */
+			if (gpio_vbus->pullup_gpiod)
+				gpiod_set_value(gpio_vbus->pullup_gpiod, 0);
 
-		set_vbus_draw(gpio_vbus, 0);
+			set_vbus_draw(gpio_vbus, 0);
 
-		usb_gadget_vbus_disconnect(gpio_vbus->phy.otg->gadget);
+			usb_gadget_vbus_disconnect(gadget);
+			gpio_vbus->phy.otg->state = OTG_STATE_B_IDLE;
+		}
 		status = USB_EVENT_NONE;
-		gpio_vbus->phy.otg->state = OTG_STATE_B_IDLE;
 		gpio_vbus->phy.last_event = status;
 
 		atomic_notifier_call_chain(&gpio_vbus->phy.notifier,
-					   status, gpio_vbus->phy.otg->gadget);
-		usb_phy_set_event(&gpio_vbus->phy, USB_EVENT_NONE);
+					   status, gadget);
 	}
 }
 
@@ -154,8 +163,7 @@ static irqreturn_t gpio_vbus_irq(int irq, void *data)
 		is_vbus_powered(gpio_vbus) ? "supplied" : "inactive",
 		otg->gadget ? otg->gadget->name : "none");
 
-	if (otg->gadget)
-		schedule_delayed_work(&gpio_vbus->work, msecs_to_jiffies(100));
+	schedule_delayed_work(&gpio_vbus->work, msecs_to_jiffies(100));
 
 	return IRQ_HANDLED;
 }
@@ -188,6 +196,9 @@ static int gpio_vbus_set_peripheral(struct usb_otg *otg,
 		otg->gadget = NULL;
 		return 0;
 	}
+
+	/* A work run that saw no gadget must not race the reset below. */
+	cancel_delayed_work_sync(&gpio_vbus->work);
 
 	otg->gadget = gadget;
 	dev_dbg(&pdev->dev, "registered gadget '%s'\n", gadget->name);
@@ -295,6 +306,15 @@ static int gpio_vbus_probe(struct platform_device *pdev)
 	if (gpio_vbus->pullup_gpiod)
 		gpiod_set_consumer_name(gpio_vbus->pullup_gpiod, "udc_pullup");
 
+	/*
+	 * Before the IRQ: the handler now queues the work with no gadget
+	 * bound, and a shared line can call it as soon as it is requested.
+	 */
+	err = devm_delayed_work_autocancel(&pdev->dev, &gpio_vbus->work,
+					   gpio_vbus_work);
+	if (err)
+		return err;
+
 	err = devm_request_irq(&pdev->dev, irq, gpio_vbus_irq, irqflags,
 			       "vbus_detect", pdev);
 	if (err) {
@@ -303,8 +323,6 @@ static int gpio_vbus_probe(struct platform_device *pdev)
 		return err;
 	}
 
-	INIT_DELAYED_WORK(&gpio_vbus->work, gpio_vbus_work);
-
 	gpio_vbus->vbus_draw = devm_regulator_get(&pdev->dev, "vbus_draw");
 	if (IS_ERR(gpio_vbus->vbus_draw)) {
 		dev_dbg(&pdev->dev, "can't get vbus_draw regulator, err: %ld\n",
@@ -312,13 +330,15 @@ static int gpio_vbus_probe(struct platform_device *pdev)
 		gpio_vbus->vbus_draw = NULL;
 	}
 
-	/* only active when a gadget is registered */
 	err = usb_add_phy(&gpio_vbus->phy, USB_PHY_TYPE_USB2);
 	if (err) {
 		dev_err(&pdev->dev, "can't register transceiver, err: %d\n",
 			err);
 		return err;
 	}
+
+	/* An edge before this point was dropped: pick up a cable already in. */
+	schedule_delayed_work(&gpio_vbus->work, 0);
 
 	/* TODO: wakeup could be enabled here with device_init_wakeup(dev, 1) */
 
