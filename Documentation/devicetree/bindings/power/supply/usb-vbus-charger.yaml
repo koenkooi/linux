@@ -1,0 +1,104 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/usb-vbus-charger.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: USB VBUS charge input sensed through a USB PHY
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description:
+  A USB device port whose VBUS feeds a battery charger, with VBUS presence
+  reported by the USB PHY rather than by a GPIO of its own. The supply is
+  online while the PHY reports VBUS. An optional GPIO switches VBUS into
+  the charger input; it is closed while VBUS is present and the optional
+  priority charger, typically a mains adapter input of the same charger,
+  is offline. Optional GPIOs select the charge current drawn from VBUS.
+  While VBUS feeds the charger this is the highest current in the mapping
+  that does not exceed what the configuration accepted by the USB host
+  allows, and otherwise the default current.
+
+allOf:
+  - $ref: power-supply.yaml#
+
+properties:
+  compatible:
+    const: usb-vbus-charger
+
+  enable-gpios:
+    maxItems: 1
+    description:
+      Switch that connects VBUS to the charger input, asserted to connect.
+
+  usb-phy:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      USB PHY that senses VBUS. Without it the system's USB2 PHY is used.
+
+  priority-charger:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Power supply whose input takes precedence over VBUS. While it is
+      online the enable switch is kept open.
+
+  charge-current-limit-gpios:
+    minItems: 1
+    maxItems: 32
+    description:
+      GPIOs that select the charge current taken from VBUS.
+
+  charge-current-limit-mapping:
+    description:
+      List of tuples with a current in uA and a GPIO bitmap, in that
+      order, sorted by descending current.
+    $ref: /schemas/types.yaml#/definitions/uint32-matrix
+    items:
+      items:
+        - description:
+            Current limit in uA
+        - description:
+            Encoded GPIO setting. Bit 0 represents the last GPIO of
+            charge-current-limit-gpios, bit 1 the second to last, and so
+            on.
+
+  charge-current-limit-default-microamp:
+    description:
+      Current selected at probe and whenever no configuration accepted by
+      the USB host allows more, including while VBUS is absent or the
+      priority charger is online. Must be listed in
+      charge-current-limit-mapping. Without it the lowest current in the
+      mapping is used.
+
+dependencies:
+  charge-current-limit-gpios: [ charge-current-limit-mapping ]
+  charge-current-limit-mapping: [ charge-current-limit-gpios ]
+  charge-current-limit-default-microamp: [ charge-current-limit-mapping ]
+
+required:
+  - compatible
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    charger-usb {
+        compatible = "usb-vbus-charger";
+        enable-gpios = <&gpio 59 GPIO_ACTIVE_HIGH>;
+        usb-phy = <&usb_vbus>;
+        priority-charger = <&charger_ac>;
+    };
+
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    charger-usb {
+        compatible = "usb-vbus-charger";
+        usb-phy = <&usb_vbus>;
+        charge-current-limit-gpios = <&gpio 96 GPIO_ACTIVE_HIGH>;
+        charge-current-limit-mapping = <500000 0x1>, <100000 0x0>;
+        charge-current-limit-default-microamp = <100000>;
+    };
