@@ -105,6 +105,11 @@ patternProperties:
 
     additionalProperties: false
 
+  "^(hog-[0-9]+|.+-hog(-[0-9]+)?)$":
+    type: object
+    required:
+      - gpio-hog
+
 required:
   - compatible
   - '#address-cells'
@@ -122,6 +127,7 @@ additionalProperties: false
 examples:
   - |
     #include <dt-bindings/clock/pxa-clock.h>
+    #include <dt-bindings/gpio/gpio.h>
     gpio@40e00000 {
         compatible = "intel,pxa3xx-gpio";
         #address-cells = <1>;
@@ -134,6 +140,13 @@ examples:
         clocks = <&clks CLK_GPIO>;
         interrupt-controller;
         #interrupt-cells = <2>;
+
+        rs232-on-hog {
+            gpio-hog;
+            gpios = <32 GPIO_ACTIVE_HIGH>;
+            output-high;
+            line-name = "rs232-on";
+        };
     };
   - |
     #include <dt-bindings/clock/marvell,pxa910.h>
