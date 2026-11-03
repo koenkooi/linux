@@ -1596,6 +1596,10 @@ static int pxa_udc_phy_event(struct notifier_block *nb, unsigned long action,
 {
 	struct usb_gadget *gadget = data;
 
+	/* A transceiver may report VBUS before any gadget driver is bound. */
+	if (!gadget)
+		return NOTIFY_DONE;
+
 	switch (action) {
 	case USB_EVENT_VBUS:
 		usb_gadget_vbus_connect(gadget);
