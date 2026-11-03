@@ -268,6 +268,14 @@ MODULE_PARM_DESC(page_flip, "Double-buffer frames that fit twice in video memory
 #define MQ11XX_GC_VERTICAL_PARAMETER (MQ11XX_REG_GC + 0x74)	/* gc1d */
 #define MQ11XX_FP_OUTPUT_CONTROL (MQ11XX_REG_FP + 0x08)
 /*
+ * FP.input_control and FP.pin_input_data. ENVEE is bit 1 of both: set in
+ * input_control to enable readback of the pin, then read from
+ * pin_input_data. Sharp panels read it clear and Philips panels set.
+ */
+#define MQ11XX_FP_INPUT_CONTROL (MQ11XX_REG_FP + 0x0c)
+#define MQ11XX_FP_PIN_INPUT_DATA (MQ11XX_REG_FP + 0x24)
+#define MQ11XX_FP_ENVEE	BIT(1)
+/*
  * FP.pulse_width_mod_control (fp0f): two independent 8-bit duty fields for the
  * internal two-channel PWM generator of the chip, channel 0 in bits 15:8 and
  * channel 1 in bits 31:24. Only channel 0 has a known consumer, the backlight
@@ -570,9 +578,8 @@ struct mq11xx_variant {
 	u32 dc_config_8;
 	/*
 	 * Optional second-panel register delta, applied on top of .init_regs
-	 * when the panel decision of the board selects it (see
-	 * .envee_default_philips and mq11xx_apply_envee_delta()). NULL for
-	 * variants with a single panel.
+	 * when the ENVEE pin reports a Philips panel (see
+	 * mq11xx_apply_envee_delta()). NULL for variants with a single panel.
 	 */
 	const struct mq11xx_reg *envee_regs;
 	size_t n_envee_regs;
@@ -581,15 +588,6 @@ struct mq11xx_variant {
 	 * .mode when the delta is applied at probe.
 	 */
 	const struct drm_display_mode *envee_mode;
-	/*
-	 * Fixed per-board panel decision, consulted when envee_regs is set:
-	 * true applies the Philips delta, false keeps the Sharp base table.
-	 * The vendor display driver does not read the ENVEE pin either, it
-	 * uses a decision that the platform code latched earlier. This is the
-	 * fixed stand-in for it, because the pin read at probe has returned
-	 * the wrong panel on a unit that runs the Philips table.
-	 */
-	bool envee_default_philips;
 	/*
 	 * True if the channel 0 duty field of the PWM register is the
 	 * backlight brightness control of the board, so that the variant
@@ -1119,7 +1117,7 @@ static const struct mq11xx_reg mq11xx_h5xxx_init_regs[] = {
 /*
  * Register values of the Philips panel that differ from the Sharp table
  * above (cc02, gc00, gc02-gc05, gc0b, fp01, fp05 and fp06), applied on top
- * of it when the board selects the Philips panel
+ * of it when the ENVEE pin reports a Philips panel
  * (mq11xx_apply_envee_delta()). fp08 is 0x00040004 for both panels and is
  * therefore not part of the delta.
  */
@@ -1152,18 +1150,11 @@ static const struct mq11xx_variant mq11xx_variant_h5xxx = {
 	 * same registers on both and one table is correct for either, which
 	 * is also why a detected 1100 is tolerated silently.
 	 *
-	 * The same unit is a Philips panel: as the previous firmware had
-	 * left them, FP.pin_control_1 read 0x00bcc02c and FP.polarity_control
-	 * read 0xc3000000, which are the fp01 and fp05 entries of
-	 * mq11xx_h5xxx_philips_regs[] and not the Sharp values, and fp00,
-	 * fp02, fp03 and fp04 read as the shared base table. fp0f differed
-	 * only in the backlight duty bits, which are live state. A read of
-	 * the ENVEE pin at probe reported a Sharp panel on that unit, though,
-	 * and that would program the Sharp CRT and timing registers onto the
-	 * Philips panel. The variant therefore uses a fixed decision,
-	 * .envee_default_philips below, as the vendor display driver uses a
-	 * cached one and not the pin. The Sharp table has not been compared
-	 * with hardware.
+	 * The panel is chosen at every bring-up from the ENVEE pin (see
+	 * mq11xx_apply_envee_delta()). On an h5550 the pin reads clear, i.e.
+	 * Sharp, and Sharp timing is the one that gives a readable picture
+	 * there. A Philips FP register read left by the previous firmware does
+	 * not decide this unit, since it may come from a different h5550.
 	 */
 	.expect_device_id = MQ11XX_PCI_DEVICE_1132,
 	.tolerate_device_id = MQ11XX_PCI_DEVICE_1100,
@@ -1182,11 +1173,6 @@ static const struct mq11xx_variant mq11xx_variant_h5xxx = {
 	.envee_regs = mq11xx_h5xxx_philips_regs,
 	.n_envee_regs = ARRAY_SIZE(mq11xx_h5xxx_philips_regs),
 	.envee_mode = &mq11xx_mode_h5xxx_philips,
-	/*
-	 * The only real unit is a Philips one. A future h5xxx model with a
-	 * Sharp panel would need its own variant.
-	 */
-	.envee_default_philips = true,
 	/* The only backlight brightness path of the h5xxx */
 	.has_internal_pwm = true,
 };
@@ -1244,14 +1230,11 @@ static int mq11xx_load_regs(struct mq11xx_device *mq)
  * delta (mq->variant->envee_regs, only h5xxx so far). A no-op for the
  * others.
  *
- * mq->variant->init_regs always holds the Sharp values, so when the board's
- * decision, mq->variant->envee_default_philips, is Sharp nothing is done,
- * and when it is Philips the differing registers are overwritten with the
- * Philips values on top of the table that mq11xx_load_regs() just loaded.
- * The ENVEE pin is deliberately not read: it reported a Sharp panel on a
- * unit that runs the Philips table, which would program Sharp CRT and
- * timing registers onto Philips silicon, and the vendor display driver does
- * not read it either.
+ * mq->variant->init_regs always holds the Sharp values, so when the ENVEE
+ * pin reads clear nothing is done, and when it reads set the differing
+ * registers are overwritten with the Philips values on top of the table that
+ * mq11xx_load_regs() just loaded. The pin read is the one bootldr does, and
+ * hackndev's h5400_init_lcd_info() before it.
  *
  * The vendor driver chose the whole table before loading anything. Loading
  * the Sharp table first and correcting it afterwards means that a Philips
@@ -1263,18 +1246,21 @@ static int mq11xx_apply_envee_delta(struct mq11xx_device *mq)
 {
 	const struct mq11xx_reg *regs = mq->variant->envee_regs;
 	unsigned int i;
+	u32 ctl, pin;
 	int ret;
 
 	mq->envee_applied = false;
 	if (!regs)
 		return 0;
 
-	if (!mq->variant->envee_default_philips) {
-		mq11xx_init_info(mq, "%s: Sharp panel timing\n", mq->variant->name);
+	ctl = readl(mq->regs + MQ11XX_FP_INPUT_CONTROL);
+	writel(ctl | MQ11XX_FP_ENVEE, mq->regs + MQ11XX_FP_INPUT_CONTROL);
+	pin = readl(mq->regs + MQ11XX_FP_PIN_INPUT_DATA);
+	mq11xx_init_info(mq, "%s: ENVEE pin_input_data = %#010x, %s panel timing\n",
+			 mq->variant->name, pin,
+			 pin & MQ11XX_FP_ENVEE ? "Philips" : "Sharp");
+	if (!(pin & MQ11XX_FP_ENVEE))
 		return 0;
-	}
-
-	mq11xx_init_info(mq, "%s: Philips panel timing\n", mq->variant->name);
 
 	for (i = 0; i < mq->variant->n_envee_regs; i++) {
 		ret = mq11xx_write_verify(mq, regs[i].offset, regs[i].value);
