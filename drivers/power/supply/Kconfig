@@ -593,6 +593,20 @@ config CHARGER_GPIO
 	  This driver can be build as a module. If so, the module will be
 	  called gpio-charger.
 
+config CHARGER_USB_VBUS
+	tristate "USB VBUS charge input sensed through a USB PHY"
+	depends on USB_PHY
+	help
+	  Say Y to report a USB device port that feeds the battery charger
+	  as a USB power supply, online while the USB PHY reports VBUS.
+	  An optional GPIO connecting VBUS to the charger input is closed
+	  while VBUS is present and a mains charger is offline, and GPIOs
+	  can select the charge current taken from VBUS. HP iPAQ h5000 and
+	  hx4700 handhelds charge from USB this way.
+
+	  This driver can be built as a module. If so, the module will be
+	  called usb-vbus-charger.
+
 config CHARGER_MANAGER
 	tristate "Battery charger manager for multiple chargers"
 	depends on REGULATOR
