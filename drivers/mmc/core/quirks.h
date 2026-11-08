@@ -211,6 +211,9 @@ static const struct mmc_fixup __maybe_unused sdio_fixup_methods[] = {
 	SDIO_FIXUP(SDIO_VENDOR_ID_NXP, SDIO_DEVICE_ID_NXP_IW61X_BASE,
 		   add_quirk, MMC_QUIRK_BLKSZ_FOR_BYTE_MODE),
 
+	SDIO_FIXUP(SDIO_VENDOR_ID_VEO, SDIO_DEVICE_ID_VEO_CAMERA,
+		   add_quirk, MMC_QUIRK_BROKEN_SDIO_4BIT),
+
 	END_FIXUP
 };
 

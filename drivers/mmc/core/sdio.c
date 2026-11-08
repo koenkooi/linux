@@ -266,6 +266,9 @@ static int sdio_enable_wide(struct mmc_card *card)
 	if (!(card->host->caps & MMC_CAP_4_BIT_DATA))
 		return 0;
 
+	if (card->quirks & MMC_QUIRK_BROKEN_SDIO_4BIT)
+		return 0;
+
 	if (card->cccr.low_speed && !card->cccr.wide_bus)
 		return 0;
 
