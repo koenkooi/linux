@@ -49,6 +49,14 @@ MODULE_PARM_DESC(current_accum, "current accumulator value");
 
 #define W1_FAMILY_DS2760		0x30
 
+/*
+ * How long ds2760_battery_work() retries at the short interval before it warns
+ * and falls back to the monitoring interval: a supplier that is a module can
+ * take most of a slow boot to appear.
+ */
+#define DS2760_RETRY_INTERVAL		(2 * HZ)
+#define DS2760_RETRIES_BEFORE_WARN	30
+
 /* Known commands to the DS2760 chip */
 #define W1_DS2760_SWAP			0xAA
 #define W1_DS2760_READ_DATA		0x69
@@ -108,6 +116,8 @@ struct ds2760_device_info {
 	int charge_status;		/* POWER_SUPPLY_STATUS_* */
 
 	int full_counter;
+	int start_attempts;
+	bool gauge_configured;
 	char name[32];
 	struct power_supply *bat;
 	struct power_supply_desc bat_desc;
@@ -482,26 +492,6 @@ static void ds2760_battery_write_active_full(struct ds2760_device_info *di,
 	di->raw[DS2760_ACTIVE_FULL + 1] = tmp[1];
 }
 
-static void ds2760_battery_work(struct work_struct *work)
-{
-	struct ds2760_device_info *di = container_of(work,
-		struct ds2760_device_info, monitor_work.work);
-	const int interval = HZ * 60;
-
-	dev_dbg(di->dev, "%s\n", __func__);
-
-	/*
-	 * A supplier can notify the battery as soon as it is registered,
-	 * before add_slave has the pointer. add_slave queues this work again
-	 * once it does.
-	 */
-	if (!di->bat)
-		return;
-
-	ds2760_battery_update_status(di);
-	queue_delayed_work(di->monitor_wqueue, &di->monitor_work, interval);
-}
-
 static void ds2760_battery_external_power_changed(struct power_supply *psy)
 {
 	struct ds2760_device_info *di = power_supply_get_drvdata(psy);
@@ -658,14 +648,103 @@ static void ds2760_battery_stop_monitor(struct ds2760_device_info *di)
 	destroy_workqueue(di->monitor_wqueue);
 }
 
-static int w1_ds2760_add_slave(struct w1_slave *sl)
+static int ds2760_battery_start(struct ds2760_device_info *di)
 {
 	struct power_supply_config psy_cfg = {};
-	struct ds2760_device_info *di;
-	struct device *dev = &sl->dev;
 	struct power_supply *bat;
 	int retval;
 	char status;
+
+	/* A retry must not repeat the EEPROM and accumulator writes below. */
+	if (!di->gauge_configured) {
+		/*
+		 * The status byte below goes to EEPROM when it differs from
+		 * the stored one, so it must never be computed from a raw[]
+		 * that was not read.
+		 */
+		retval = ds2760_battery_read_status(di);
+		if (retval)
+			return retval;
+
+		/* enable sleep mode feature */
+		status = di->raw[DS2760_STATUS_REG];
+		if (pmod_enabled)
+			status |= DS2760_STATUS_PMOD;
+		else
+			status &= ~DS2760_STATUS_PMOD;
+
+		ds2760_battery_write_status(di, status);
+
+		/* set rated capacity from module param or device tree */
+		if (rated_capacity)
+			ds2760_battery_write_rated_capacity(di, rated_capacity);
+
+		/*
+		 * set current accumulator if given as parameter.
+		 * this should only be done for bootstrapping the value
+		 */
+		if (current_accum)
+			ds2760_battery_set_current_accum(di, current_accum);
+
+		di->gauge_configured = true;
+	}
+
+	psy_cfg.drv_data = di;
+	psy_cfg.fwnode = dev_fwnode(di->dev);
+
+	bat = devm_power_supply_register(di->dev, &di->bat_desc, &psy_cfg);
+	if (IS_ERR(bat))
+		return PTR_ERR(bat);
+
+	di->bat = bat;
+
+	di->pm_notifier.notifier_call = ds2760_pm_notifier;
+	register_pm_notifier(&di->pm_notifier);
+
+	return 0;
+}
+
+static void ds2760_battery_work(struct work_struct *work)
+{
+	struct ds2760_device_info *di = container_of(work,
+		struct ds2760_device_info, monitor_work.work);
+	const int interval = HZ * 60;
+
+	dev_dbg(di->dev, "%s\n", __func__);
+
+	if (!di->bat) {
+		int ret = ds2760_battery_start(di);
+
+		if (ret == -EPROBE_DEFER || ret == -EIO) {
+			if (++di->start_attempts == DS2760_RETRIES_BEFORE_WARN)
+				dev_warn(di->dev,
+					 "no battery after %d attempts (%pe), waiting for the supplier or gauge\n",
+					 di->start_attempts, ERR_PTR(ret));
+
+			queue_delayed_work(di->monitor_wqueue, &di->monitor_work,
+					   di->start_attempts < DS2760_RETRIES_BEFORE_WARN ?
+					   DS2760_RETRY_INTERVAL : interval);
+			return;
+		}
+
+		if (ret) {
+			dev_err(di->dev, "failed to register battery: %pe\n",
+				ERR_PTR(ret));
+			return;
+		}
+
+		queue_delayed_work(di->monitor_wqueue, &di->monitor_work, HZ);
+		return;
+	}
+
+	ds2760_battery_update_status(di);
+	queue_delayed_work(di->monitor_wqueue, &di->monitor_work, interval);
+}
+
+static int w1_ds2760_add_slave(struct w1_slave *sl)
+{
+	struct ds2760_device_info *di;
+	struct device *dev = &sl->dev;
 
 	di = devm_kzalloc(dev, sizeof(*di), GFP_KERNEL);
 	if (!di)
@@ -684,9 +763,6 @@ static int w1_ds2760_add_slave(struct w1_slave *sl)
 				  ds2760_battery_property_is_writeable;
 	di->bat_desc.external_power_changed =
 				  ds2760_battery_external_power_changed;
-
-	psy_cfg.drv_data = di;
-	psy_cfg.fwnode = dev_fwnode(dev);
 
 	if (dev->of_node) {
 		u32 tmp;
@@ -711,53 +787,18 @@ static int w1_ds2760_add_slave(struct w1_slave *sl)
 	if (!di->monitor_wqueue)
 		return -ENOMEM;
 
-	/*
-	 * The status byte below goes to EEPROM when it differs from the
-	 * stored one, so it must never be computed from a raw[] that was not
-	 * read.
-	 */
-	retval = ds2760_battery_read_status(di);
-	if (retval)
-		goto err_stop_monitor;
-
-	/* enable sleep mode feature */
-	status = di->raw[DS2760_STATUS_REG];
-	if (pmod_enabled)
-		status |= DS2760_STATUS_PMOD;
-	else
-		status &= ~DS2760_STATUS_PMOD;
-
-	ds2760_battery_write_status(di, status);
-
-	/* set rated capacity from module param or device tree */
-	if (rated_capacity)
-		ds2760_battery_write_rated_capacity(di, rated_capacity);
-
-	/* set current accumulator if given as parameter.
-	 * this should only be done for bootstrapping the value */
-	if (current_accum)
-		ds2760_battery_set_current_accum(di, current_accum);
-
-	bat = devm_power_supply_register(dev, &di->bat_desc, &psy_cfg);
-	if (IS_ERR(bat)) {
-		dev_err(di->dev, "failed to register battery\n");
-		retval = PTR_ERR(bat);
-		goto err_stop_monitor;
-	}
-	di->bat = bat;
-
 	sl->family_data = di;
 
-	queue_delayed_work(di->monitor_wqueue, &di->monitor_work, HZ * 1);
-
-	di->pm_notifier.notifier_call = ds2760_pm_notifier;
-	register_pm_notifier(&di->pm_notifier);
+	/*
+	 * w1 discards the return value of add_slave and never calls it again
+	 * for a slave that stays attached, so a supplier that is not there
+	 * yet can only be waited for from here. Doing all of the start-up in
+	 * the work leaves one path to get right, and the ordered workqueue
+	 * keeps it from overlapping a supplier notification.
+	 */
+	queue_delayed_work(di->monitor_wqueue, &di->monitor_work, 0);
 
 	return 0;
-
-err_stop_monitor:
-	ds2760_battery_stop_monitor(di);
-	return retval;
 }
 
 static void w1_ds2760_remove_slave(struct w1_slave *sl)
@@ -768,8 +809,15 @@ static void w1_ds2760_remove_slave(struct w1_slave *sl)
 	if (!di)
 		return;
 
-	unregister_pm_notifier(&di->pm_notifier);
+	/*
+	 * The work may be in the middle of registering the battery and the
+	 * notifier, so it has to stop first. After that di->bat says whether
+	 * the notifier was registered, and if it fires before it is gone its
+	 * mod_delayed_work() does nothing.
+	 */
 	ds2760_battery_stop_monitor(di);
+	if (di->bat)
+		unregister_pm_notifier(&di->pm_notifier);
 }
 
 #ifdef CONFIG_OF
