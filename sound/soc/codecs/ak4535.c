@@ -92,6 +92,7 @@ static const struct snd_kcontrol_new ak4535_snd_controls[] = {
 	SOC_SINGLE("ALC 2 Switch", AK4535_ALC1, 6, 1, 0),
 	SOC_SINGLE("ALC Volume", AK4535_ALC2, 0, 127, 0),
 	SOC_SINGLE("Capture Volume", AK4535_PGA, 0, 127, 0),
+	SOC_DOUBLE_R("Master Playback Volume", AK4535_LATT, AK4535_RATT, 0, 127, 1),
 	SOC_SINGLE("Left Playback Volume", AK4535_LATT, 0, 127, 1),
 	SOC_SINGLE("Right Playback Volume", AK4535_RATT, 0, 127, 1),
 	SOC_SINGLE("AUX Bypass Volume", AK4535_VOL, 0, 15, 0),
