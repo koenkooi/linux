@@ -23,6 +23,19 @@
  * AIN0 is the ambient light sensor on the h5000; AIN1 and AIN2 are
  * exposed as plain voltage channels.
  *
+ * The sensor has its own switched supply, the optional "light-sensor"
+ * regulator. Runtime PM of this device gates only that supply, and only
+ * AIN0 reads take a runtime PM reference: touch sampling never powers
+ * the sensor. The supply's settle time is the regulator's startup delay,
+ * so it lives in the devicetree. The autosuspend delay is longer than the
+ * factory firmware's 3 s polling period, so a polling client keeps the
+ * sensor powered and pays the settle time once, as that firmware does.
+ *
+ * Each AIN0 read is the factory firmware's sequence: five conversions,
+ * the first two discarded, the truncated mean of the last three returned.
+ * The value is raw counts, 0..1023, with no scale: the firmware maps it
+ * to backlight levels through a fixed table and has no lux conversion.
+ *
  * Copyright (C) 2026 Koen Kooi
  */
 
@@ -39,6 +52,8 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
+#include <linux/regulator/consumer.h>
 #include <linux/workqueue.h>
 
 #include <linux/iio/buffer.h>
@@ -107,6 +122,14 @@
  */
 #define SAMCOP_ADC_DELAY_DEFAULT		500
 
+/*
+ * The factory firmware's light sensor read: 2 conversions thrown away,
+ * then the mean of 3, presumably to let AIN0 settle after the mux change.
+ */
+#define SAMCOP_ADC_LIGHT_DISCARD		2
+#define SAMCOP_ADC_LIGHT_SAMPLES		3
+#define SAMCOP_ADC_LIGHT_AUTOSUSPEND_MS		5000
+
 enum samcop_adc_channel {
 	SAMCOP_ADC_X,
 	SAMCOP_ADC_Y,
@@ -123,6 +146,7 @@ struct samcop_adc {
 	struct iio_dev *indio_dev;
 	void __iomem *regs;
 	struct clk *clk;
+	struct regulator *light_supply;
 	int irq_adcts;
 
 	/* PRESCALER_ENABLE | prescaler value, computed once from adc->clk's
@@ -301,6 +325,40 @@ static const struct iio_buffer_setup_ops samcop_adc_buffer_setup_ops = {
 	.predisable	= samcop_adc_buffer_predisable,
 };
 
+/*
+ * Converts analog input @ain @discard + @samples times and returns the
+ * mean of the last @samples, truncated as the factory firmware does.
+ */
+static int samcop_adc_read_ain(struct samcop_adc *adc, unsigned int ain,
+			       unsigned int discard, unsigned int samples,
+			       int *val)
+{
+	u16 sel = ain << SAMCOP_ADC_CONTROL_SEL_SHIFT;
+	unsigned int i, sum = 0;
+	u16 data0, data1;
+	int ret = 0;
+
+	guard(mutex)(&adc->lock);
+
+	for (i = 0; i < discard + samples; i++) {
+		ret = samcop_adc_convert(adc, SAMCOP_ADC_TSC_SAMPLE_AIN, sel,
+					 &data0, &data1);
+		if (ret)
+			break;
+
+		if (i >= discard)
+			sum += data0 & SAMCOP_ADC_DATA_MASK;
+	}
+
+	samcop_adc_idle(adc, adc->tsc_idle);
+	if (ret)
+		return ret;
+
+	*val = sum / samples;
+
+	return IIO_VAL_INT;
+}
+
 static int samcop_adc_read_raw(struct iio_dev *indio_dev,
 			       struct iio_chan_spec const *chan,
 				int *val, int *val2, long mask)
@@ -347,26 +405,26 @@ static int samcop_adc_read_raw(struct iio_dev *indio_dev,
 		ret = IIO_VAL_INT;
 		break;
 	}
-	case SAMCOP_ADC_AIN0 ... SAMCOP_ADC_AIN2: {
-		unsigned int ain = chan->address - SAMCOP_ADC_AIN0;
-		u16 sel = ain << SAMCOP_ADC_CONTROL_SEL_SHIFT;
-
-		/*
-		 * No direct mode claim: AIN reads interleave with the touch
-		 * poll chain under adc->lock, so they keep working while the
-		 * touchscreen is open.
-		 */
-		guard(mutex)(&adc->lock);
-		ret = samcop_adc_convert(adc, SAMCOP_ADC_TSC_SAMPLE_AIN, sel,
-					 &data0, &data1);
-		samcop_adc_idle(adc, adc->tsc_idle);
+	/*
+	 * No direct mode claim for the AIN channels: they interleave with the
+	 * touch poll chain under adc->lock, so they keep working while the
+	 * touchscreen is open.
+	 */
+	case SAMCOP_ADC_AIN0:
+		/* Before the lock: the supply's settle time must not stall touch. */
+		ret = pm_runtime_resume_and_get(adc->dev);
 		if (ret)
-			break;
+			return ret;
 
-		*val = data0 & SAMCOP_ADC_DATA_MASK;
-		ret = IIO_VAL_INT;
+		ret = samcop_adc_read_ain(adc, 0, SAMCOP_ADC_LIGHT_DISCARD,
+					  SAMCOP_ADC_LIGHT_SAMPLES, val);
+		pm_runtime_put_autosuspend(adc->dev);
 		break;
-	}
+	case SAMCOP_ADC_AIN1:
+	case SAMCOP_ADC_AIN2:
+		ret = samcop_adc_read_ain(adc, chan->address - SAMCOP_ADC_AIN0,
+					  0, 1, val);
+		break;
 	default:
 		ret = -EINVAL;
 		break;
@@ -395,10 +453,7 @@ static const struct iio_chan_spec samcop_adc_channels[] = {
 	SAMCOP_ADC_CHAN(SAMCOP_ADC_Y,    IIO_POSITIONRELATIVE, 1, "y"),
 	SAMCOP_ADC_CHAN(SAMCOP_ADC_Z1,   IIO_PRESSURE,         0, "z1"),
 	SAMCOP_ADC_CHAN(SAMCOP_ADC_Z2,   IIO_PRESSURE,         1, "z2"),
-	/* AIN0: real H5000 light sensor, h5400.c:132-149 -- see this file's
-	 * header comment for why the power gate that feeds it is not wired
-	 * here.
-	 */
+	/* AIN0: real H5000 light sensor, h5400.c:132-149; raw counts only. */
 	SAMCOP_ADC_CHAN(SAMCOP_ADC_AIN0, IIO_LIGHT,            0, "light"),
 	SAMCOP_ADC_CHAN(SAMCOP_ADC_AIN1, IIO_VOLTAGE,          0, "ain1"),
 	SAMCOP_ADC_CHAN(SAMCOP_ADC_AIN2, IIO_VOLTAGE,          1, "ain2"),
@@ -407,6 +462,34 @@ static const struct iio_chan_spec samcop_adc_channels[] = {
 static const struct iio_info samcop_adc_info = {
 	.read_raw = samcop_adc_read_raw,
 };
+
+static int samcop_adc_runtime_suspend(struct device *dev)
+{
+	struct samcop_adc *adc = iio_priv(dev_get_drvdata(dev));
+
+	if (!adc->light_supply)
+		return 0;
+
+	return regulator_disable(adc->light_supply);
+}
+
+static int samcop_adc_runtime_resume(struct device *dev)
+{
+	struct samcop_adc *adc = iio_priv(dev_get_drvdata(dev));
+
+	if (!adc->light_supply)
+		return 0;
+
+	return regulator_enable(adc->light_supply);
+}
+
+static DEFINE_RUNTIME_DEV_PM_OPS(samcop_adc_pm_ops, samcop_adc_runtime_suspend,
+				 samcop_adc_runtime_resume, NULL);
+
+static void samcop_adc_light_off(void *data)
+{
+	regulator_disable(data);
+}
 
 static int samcop_adc_probe(struct platform_device *pdev)
 {
@@ -424,6 +507,7 @@ static int samcop_adc_probe(struct platform_device *pdev)
 	adc = iio_priv(indio_dev);
 	adc->dev = dev;
 	adc->indio_dev = indio_dev;
+	platform_set_drvdata(pdev, indio_dev);
 	adc->tsc_idle = SAMCOP_ADC_TSC_SUSPEND;
 	init_completion(&adc->done);
 	INIT_DELAYED_WORK(&adc->poll_work, samcop_adc_poll_work);
@@ -463,6 +547,14 @@ static int samcop_adc_probe(struct platform_device *pdev)
 	if (IS_ERR(adc->clk))
 		return dev_err_probe(dev, PTR_ERR(adc->clk), "failed to get clock\n");
 
+	adc->light_supply = devm_regulator_get_optional(dev, "light-sensor");
+	if (IS_ERR(adc->light_supply)) {
+		if (PTR_ERR(adc->light_supply) != -ENODEV)
+			return dev_err_probe(dev, PTR_ERR(adc->light_supply),
+					     "failed to get light sensor supply\n");
+		adc->light_supply = NULL;
+	}
+
 	rate = clk_get_rate(adc->clk);
 	if (!rate)
 		return dev_err_probe(dev, -EINVAL, "clock rate is 0\n");
@@ -495,6 +587,26 @@ static int samcop_adc_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to request pen IRQ\n");
 
+	/* The device starts runtime-suspended: light sensor supply off. */
+	pm_runtime_set_autosuspend_delay(dev, SAMCOP_ADC_LIGHT_AUTOSUSPEND_MS);
+	pm_runtime_use_autosuspend(dev);
+	ret = devm_pm_runtime_enable(dev);
+	if (ret)
+		return ret;
+
+	/* Without runtime PM nothing would ever switch the sensor on. */
+	if (!IS_ENABLED(CONFIG_PM) && adc->light_supply) {
+		ret = regulator_enable(adc->light_supply);
+		if (ret)
+			return dev_err_probe(dev, ret,
+					     "failed to enable light sensor supply\n");
+
+		ret = devm_add_action_or_reset(dev, samcop_adc_light_off,
+					       adc->light_supply);
+		if (ret)
+			return ret;
+	}
+
 	indio_dev->name = "samcop-adc";
 	indio_dev->info = &samcop_adc_info;
 	indio_dev->modes = INDIO_DIRECT_MODE | INDIO_BUFFER_SOFTWARE;
@@ -515,6 +627,7 @@ static struct platform_driver samcop_adc_driver = {
 	.driver = {
 		.name = "samcop-adc",
 		.of_match_table = samcop_adc_of_match,
+		.pm = pm_ptr(&samcop_adc_pm_ops),
 	},
 	.probe	= samcop_adc_probe,
 };
