@@ -11986,6 +11986,12 @@ L:	platform-driver-x86@vger.kernel.org
 S:	Orphan
 F:	drivers/platform/x86/hp/tc1100-wmi.c
 
+HP IPAQ SERIAL KEYBOARD DRIVER
+M:	Koen Kooi <koen@dominion.thruhere.net>
+L:	linux-input@vger.kernel.org
+S:	Maintained
+F:	drivers/input/keyboard/ipaq-serial-kbd*
+
 HP WMI HARDWARE MONITOR DRIVER
 M:	James Seo <james@equiv.tech>
 L:	linux-hwmon@vger.kernel.org
