@@ -9,6 +9,7 @@
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/slab.h>
@@ -33,6 +34,9 @@ struct gpio_charger {
 	struct gpio_desc *gpiod;
 	struct gpio_desc *charge_status;
 	struct gpio_desc *charge_enable;
+	/* Serialises charge_enable and charge_inhibited. */
+	struct mutex charge_lock;
+	bool charge_inhibited;
 
 	struct gpio_descs *current_limit_gpios;
 	struct gpio_mapping *current_limit_map;
@@ -92,6 +96,40 @@ static int set_charge_current_limit(struct gpio_charger *gpio_charger, int val)
 	return 0;
 }
 
+/*
+ * charge-enable-gpios is asserted when charging is allowed. The line is the
+ * only control there is: the charger circuit (or its timer) does the actual
+ * charging, so "inhibit-charge" deasserts it and "auto" asserts it. The
+ * policy (temperature, charge time, full detection) is for userspace; the
+ * kernel only offers the standard sysfs switch.
+ */
+static int set_charge_behaviour(struct gpio_charger *gpio_charger, int behaviour)
+{
+	bool inhibit;
+
+	switch (behaviour) {
+	case POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO:
+		inhibit = false;
+		break;
+	case POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE:
+		inhibit = true;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	mutex_lock(&gpio_charger->charge_lock);
+	gpiod_set_value_cansleep(gpio_charger->charge_enable, !inhibit);
+	gpio_charger->charge_inhibited = inhibit;
+	mutex_unlock(&gpio_charger->charge_lock);
+
+	dev_dbg(gpio_charger->dev, "charge behaviour %s\n",
+		inhibit ? "inhibit-charge" : "auto");
+	power_supply_changed(gpio_charger->charger);
+
+	return 0;
+}
+
 static int gpio_charger_get_property(struct power_supply *psy,
 		enum power_supply_property psp, union power_supply_propval *val)
 {
@@ -110,6 +148,13 @@ static int gpio_charger_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
 		val->intval = gpio_charger->charge_current_limit;
 		break;
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		mutex_lock(&gpio_charger->charge_lock);
+		val->intval = gpio_charger->charge_inhibited ?
+			POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE :
+			POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO;
+		mutex_unlock(&gpio_charger->charge_lock);
+		break;
 	default:
 		return -EINVAL;
 	}
@@ -125,6 +170,8 @@ static int gpio_charger_set_property(struct power_supply *psy,
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
 		return set_charge_current_limit(gpio_charger, val->intval);
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		return set_charge_behaviour(gpio_charger, val->intval);
 	default:
 		return -EINVAL;
 	}
@@ -137,6 +184,7 @@ static int gpio_charger_property_is_writeable(struct power_supply *psy,
 {
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
 		return 1;
 	default:
 		break;
@@ -269,6 +317,7 @@ static enum power_supply_property gpio_charger_properties[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX,
+	POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
 };
 
 static int gpio_charger_probe(struct platform_device *pdev)
@@ -320,15 +369,24 @@ static int gpio_charger_probe(struct platform_device *pdev)
 	}
 
 	/*
-	 * Optional single-line charge enable, requested asserted and left
-	 * asserted for the lifetime of the device: the charge timeout is
-	 * handled by the charger circuit itself.
+	 * Optional single-line charge enable. Requested asserted (charging
+	 * allowed) and left that way until userspace writes "inhibit-charge"
+	 * to charge_behaviour; the driver applies no charging policy of its
+	 * own, the charge timeout is handled by the charger circuit itself.
 	 */
 	gpio_charger->charge_enable = devm_gpiod_get_optional(dev, "charge-enable",
 							      GPIOD_OUT_HIGH);
 	if (IS_ERR(gpio_charger->charge_enable))
 		return dev_err_probe(dev, PTR_ERR(gpio_charger->charge_enable),
 				     "error getting charge-enable GPIO\n");
+	if (gpio_charger->charge_enable) {
+		ret = devm_mutex_init(dev, &gpio_charger->charge_lock);
+		if (ret)
+			return ret;
+		gpio_charger_properties[num_props] =
+			POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR;
+		num_props++;
+	}
 
 	ret = init_charge_current_limit(dev, gpio_charger);
 	if (ret < 0)
@@ -346,6 +404,10 @@ static int gpio_charger_probe(struct platform_device *pdev)
 	charger_desc->set_property = gpio_charger_set_property;
 	charger_desc->property_is_writeable =
 					gpio_charger_property_is_writeable;
+	if (gpio_charger->charge_enable)
+		charger_desc->charge_behaviours =
+			BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO) |
+			BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE);
 
 	psy_cfg.fwnode = dev_fwnode(dev);
 	psy_cfg.drv_data = gpio_charger;
