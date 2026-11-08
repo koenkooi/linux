@@ -44,8 +44,8 @@ enum {
 
 static int sa1100_gpio_get(struct gpio_chip *chip, unsigned offset)
 {
-	return readl_relaxed(sa1100_gpio_chip(chip)->membase + R_GPLR) &
-		BIT(offset);
+	return !!(readl_relaxed(sa1100_gpio_chip(chip)->membase + R_GPLR) &
+		  BIT(offset));
 }
 
 static int sa1100_gpio_set(struct gpio_chip *chip, unsigned int offset,
