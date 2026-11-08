@@ -5,6 +5,8 @@
  * Copyright (C) 2026 Koen Kooi
  */
 
+#include <dt-bindings/clock/intel,sa1100-clocks.h>
+
 / {
 	#address-cells = <1>;
 	#size-cells = <1>;
@@ -94,6 +96,20 @@
 			interrupts = <30>, <31>;
 			interrupt-names = "rtc 1Hz", "rtc alarm";
 			clocks = <&clk32768>;
+		};
+
+		/*
+		 * PPCR of the power manager and TUCR of the reset controller,
+		 * the only two clock controls of the chip, each a single word
+		 * in a block that has other owners.
+		 */
+		clks: clock-controller@90020014 {
+			compatible = "intel,sa1110-clocks", "intel,sa1100-clocks";
+			reg = <0x90020014 0x4>, <0x90030008 0x4>;
+			reg-names = "ppcr", "tucr";
+			clocks = <&clk3686400>, <&clk32768>;
+			clock-names = "pxtal", "txtal";
+			#clock-cells = <1>;
 		};
 
 		/*
