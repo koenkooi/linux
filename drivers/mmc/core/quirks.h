@@ -214,6 +214,9 @@ static const struct mmc_fixup __maybe_unused sdio_fixup_methods[] = {
 	SDIO_FIXUP(SDIO_VENDOR_ID_VEO, SDIO_DEVICE_ID_VEO_CAMERA,
 		   add_quirk, MMC_QUIRK_BROKEN_SDIO_4BIT),
 
+	SDIO_FIXUP(SDIO_VENDOR_ID_VEO, SDIO_DEVICE_ID_VEO_CAMERA,
+		   add_limit_rate_quirk, 20000000),
+
 	END_FIXUP
 };
 
