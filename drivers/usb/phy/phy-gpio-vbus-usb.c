@@ -36,6 +36,7 @@ struct gpio_vbus_data {
 	struct regulator       *vbus_draw;
 	int			vbus_draw_enabled;
 	unsigned		mA;
+	unsigned int		granted_mA;
 	struct delayed_work	work;
 	int			vbus;
 	int			irq;
@@ -101,6 +102,7 @@ static void gpio_vbus_work(struct work_struct *work)
 	if ((vbus ^ gpio_vbus->vbus) == 0)
 		return;
 	gpio_vbus->vbus = vbus;
+	gpio_vbus->granted_mA = 0;
 
 	/*
 	 * VBUS is tracked and reported with no gadget bound as well, so that a
@@ -130,9 +132,6 @@ static void gpio_vbus_work(struct work_struct *work)
 
 		atomic_notifier_call_chain(&gpio_vbus->phy.notifier,
 					   status, gadget);
-		if (gadget)
-			usb_phy_set_event(&gpio_vbus->phy,
-					  USB_EVENT_ENUMERATED);
 	} else {
 		if (gadget) {
 			/* optionally disable D+ pullup */
@@ -170,6 +169,36 @@ static irqreturn_t gpio_vbus_irq(int irq, void *data)
 
 /* OTG transceiver interface */
 
+/*
+ * Only a draw set while the gadget is configured is a current the host
+ * accepted: before that the gadget is held to the 100 mA unit load, and
+ * 2 mA is the suspend limit. A bus reset sets its 100 mA while the gadget
+ * still reads configured, which is never more than an unconfigured device
+ * may draw.
+ *
+ * USB_EVENT_ENUMERATED carries a pointer to the granted current in mA, 0
+ * once the grant is withdrawn. This is called from SET_CONFIGURATION with
+ * the gadget driver's lock held, so USB_EVENT_VBUS, whose listeners may
+ * restart the controller, is not raised from here.
+ */
+static void gpio_vbus_report_draw(struct gpio_vbus_data *gpio_vbus,
+				  unsigned int mA)
+{
+	struct usb_phy *phy = &gpio_vbus->phy;
+	struct usb_gadget *gadget = phy->otg->gadget;
+
+	if (mA > 2 && gadget && gadget->state == USB_STATE_CONFIGURED) {
+		gpio_vbus->granted_mA = mA;
+		phy->last_event = USB_EVENT_ENUMERATED;
+	} else {
+		gpio_vbus->granted_mA = 0;
+		phy->last_event = USB_EVENT_VBUS;
+	}
+
+	atomic_notifier_call_chain(&phy->notifier, USB_EVENT_ENUMERATED,
+				   &gpio_vbus->granted_mA);
+}
+
 /* bind/unbind the peripheral controller */
 static int gpio_vbus_set_peripheral(struct usb_otg *otg,
 					struct usb_gadget *gadget)
@@ -189,6 +218,8 @@ static int gpio_vbus_set_peripheral(struct usb_otg *otg,
 			gpiod_set_value(gpio_vbus->pullup_gpiod, 0);
 
 		set_vbus_draw(gpio_vbus, 0);
+		if (gpio_vbus->phy.last_event == USB_EVENT_ENUMERATED)
+			gpio_vbus_report_draw(gpio_vbus, 0);
 
 		usb_gadget_vbus_disconnect(otg->gadget);
 		otg->state = OTG_STATE_UNDEFINED;
@@ -216,8 +247,10 @@ static int gpio_vbus_set_power(struct usb_phy *phy, unsigned mA)
 
 	gpio_vbus = container_of(phy, struct gpio_vbus_data, phy);
 
-	if (phy->otg->state == OTG_STATE_B_PERIPHERAL)
+	if (phy->otg->state == OTG_STATE_B_PERIPHERAL) {
 		set_vbus_draw(gpio_vbus, mA);
+		gpio_vbus_report_draw(gpio_vbus, mA);
+	}
 	return 0;
 }
 
