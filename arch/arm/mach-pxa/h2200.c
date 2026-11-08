@@ -26,7 +26,9 @@
 #include <linux/gpio/legacy.h>
 #include <linux/init.h>
 #include <linux/io.h>
+#include <linux/kstrtox.h>
 #include <linux/of.h>
+#include <linux/printk.h>
 
 #include "generic.h"
 #include "h2200.h"
@@ -39,9 +41,42 @@
  * precedent is the deleted mainline h5000.c's own fix_msc(), same shape,
  * sibling PXA25x iPAQ, same MediaQ chip on CS1.
  */
+#define H2200_MSC0_DEFAULT	0x246c7ffc
+
+/*
+ * nCS_1 (MediaQ) half of MSC0, overridable as h2200.msc0_cs1=0xNNNN so the
+ * strobe widths that bound host writes into video memory can be tried
+ * without a rebuild. The nCS_0 half stays at the HAMCOP value above. A
+ * VLIO cycle ends only when the chip asserts RDY and the static memory
+ * controller has no bus-error timeout, so a value that is too fast for
+ * the chip corrupts video memory or hangs the machine inside one store.
+ */
+static u32 h2200_msc0_cs1 = H2200_MSC0_DEFAULT >> 16;
+
+static int __init h2200_msc0_cs1_setup(char *str)
+{
+	u32 val;
+
+	if (kstrtou32(str, 0, &val) || val > 0xffff)
+		return -EINVAL;
+
+	/* RT and RBW are the bus protocol, not timing: refuse to change them. */
+	if ((val & 0xf) != ((H2200_MSC0_DEFAULT >> 16) & 0xf)) {
+		pr_warn("h2200: msc0_cs1=%#x changes nCS_1 ROM type or bus width, ignored\n",
+			val);
+		return -EINVAL;
+	}
+
+	h2200_msc0_cs1 = val;
+	return 0;
+}
+early_param("h2200.msc0_cs1", h2200_msc0_cs1_setup);
+
 static void __init fix_msc(void)
 {
-	__raw_writel(0x246c7ffc, MSC0);
+	u32 cs0 = H2200_MSC0_DEFAULT & 0xffff;
+
+	__raw_writel(cs0 | (h2200_msc0_cs1 << 16), MSC0);
 	__raw_writel(0x7ff07ff0, MSC1);
 	__raw_writel(0x7ff07ff0, MSC2);
 }
