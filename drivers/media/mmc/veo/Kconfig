@@ -18,3 +18,15 @@ config VIDEO_VEO_SDIOCAM
 
 	  To compile this driver as a module, choose M here: the module will
 	  be called veo_sdiocam.
+
+config VIDEO_VEO_SDIOCAM_KUNIT_TEST
+	bool "KUnit tests for the Veo SDIO camera JPEG helpers" if !KUNIT_ALL_TESTS
+	depends on KUNIT && VIDEO_VEO_SDIOCAM
+	depends on KUNIT=y || VIDEO_VEO_SDIOCAM=m
+	default KUNIT_ALL_TESTS
+	help
+	  Tests for the JPEG header builder and the frame validator of the
+	  veo_sdiocam driver, built into that module. They use synthetic
+	  scans only and need no camera.
+
+	  If unsure, say N.
