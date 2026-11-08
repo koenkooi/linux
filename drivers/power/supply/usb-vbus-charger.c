@@ -36,7 +36,7 @@ struct usb_vbus_charger {
 	struct power_supply *priority;
 	struct power_supply *psy;
 	struct power_supply_desc desc;
-	enum power_supply_property props[2];
+	enum power_supply_property props[3];
 
 	struct gpio_descs *current_gpios;
 	struct usb_vbus_charger_current *current_map;
@@ -52,6 +52,8 @@ struct usb_vbus_charger {
 	/* serialises the probe-time update, the work and sysfs writes */
 	struct mutex lock;
 	bool online;
+	bool inhibit;
+	bool feeds;
 	int enabled;
 	unsigned int current_index;
 	unsigned int auto_index;
@@ -150,8 +152,14 @@ static void usb_vbus_charger_update(struct usb_vbus_charger *chg)
 	chg->online = online;
 	lost = test_and_clear_bit(0, &chg->vbus_lost) || !online;
 
-	enable = online && !usb_vbus_charger_priority_online(chg);
+	/*
+	 * Inhibiting holds the input switch open and the current at its
+	 * default whatever VBUS does, so the host is not drawn from.
+	 */
+	enable = online && !chg->inhibit &&
+		 !usb_vbus_charger_priority_online(chg);
 	vbus_feeds = enable;
+	chg->feeds = vbus_feeds;
 
 	/* Lower the current before the input switches, raise it after. */
 	if (chg->current_gpios && !vbus_feeds)
@@ -226,6 +234,11 @@ static int usb_vbus_charger_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_ONLINE:
 		val->intval = READ_ONCE(chg->online);
 		return 0;
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		val->intval = READ_ONCE(chg->inhibit) ?
+			POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE :
+			POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO;
+		return 0;
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
 		mutex_lock(&chg->lock);
 		val->intval = chg->current_map[chg->current_index].limit_ua;
@@ -245,14 +258,31 @@ static int usb_vbus_charger_set_property(struct power_supply *psy,
 	int ret = 0;
 
 	switch (psp) {
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		switch (val->intval) {
+		case POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO:
+		case POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE:
+			break;
+		default:
+			return -EINVAL;
+		}
+		mutex_lock(&chg->lock);
+		chg->inhibit = val->intval ==
+			       POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE;
+		mutex_unlock(&chg->lock);
+		/* Re-evaluates against the current VBUS state. */
+		usb_vbus_charger_update(chg);
+		power_supply_changed(chg->psy);
+		return 0;
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
 		index = usb_vbus_charger_current_index(chg, val->intval);
 		mutex_lock(&chg->lock);
 		/*
-		 * Only the host that is present can grant more than the
-		 * default, and the default is restored when it goes away.
+		 * Only a host that feeds the charger can grant more than the
+		 * default; on the priority input the rate pins stay at their
+		 * default, and the default is restored when VBUS goes away.
 		 */
-		if (chg->online)
+		if (chg->feeds)
 			usb_vbus_charger_set_current(chg, index);
 		else
 			ret = -EAGAIN;
@@ -266,7 +296,8 @@ static int usb_vbus_charger_set_property(struct power_supply *psy,
 static int usb_vbus_charger_property_is_writeable(struct power_supply *psy,
 						  enum power_supply_property psp)
 {
-	return psp == POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX;
+	return psp == POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX ||
+	       psp == POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR;
 }
 
 static int usb_vbus_charger_init_current(struct usb_vbus_charger *chg)
@@ -434,9 +465,17 @@ static int usb_vbus_charger_probe(struct platform_device *pdev)
 	chg->desc.name = dev->of_node ? dev->of_node->name : dev_name(dev);
 	chg->desc.type = POWER_SUPPLY_TYPE_USB;
 	chg->props[chg->desc.num_properties++] = POWER_SUPPLY_PROP_ONLINE;
-	if (chg->current_gpios) {
+	if (chg->enable) {
+		chg->props[chg->desc.num_properties++] =
+			POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR;
+		chg->desc.charge_behaviours =
+			BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO) |
+			BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE);
+	}
+	if (chg->current_gpios)
 		chg->props[chg->desc.num_properties++] =
 			POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX;
+	if (chg->enable || chg->current_gpios) {
 		chg->desc.set_property = usb_vbus_charger_set_property;
 		chg->desc.property_is_writeable =
 			usb_vbus_charger_property_is_writeable;
