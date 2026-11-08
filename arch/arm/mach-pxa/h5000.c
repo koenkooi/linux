@@ -10,12 +10,12 @@
  *
  * Author: Jamey Hicks.
  *
- * This is not a MACHINE_START board port: the board boots as a plain
- * "marvell,pxa250" devicetree machine via arch/arm/mach-pxa/pxa-dt.c, and
- * this file only patches in what the devicetree does not describe -- the
- * pin muxing, the static memory timings and the GPIO hogs. All of it is
- * gated behind of_machine_is_compatible(), since the generic PXA25x DT
- * machine has no per-board hook to call into.
+ * The board is a devicetree machine like the generic "marvell,pxa250" one
+ * of arch/arm/mach-pxa/pxa-dt.c, with a machine descriptor of its own at
+ * the end of this file that only sizes SDRAM. The rest of this file
+ * patches in what the devicetree does not describe -- the pin muxing, the
+ * static memory timings and the GPIO hogs -- from initcalls gated behind
+ * of_machine_is_compatible(), since the descriptor has no init hook.
  *
  * No device is registered from here: the board's devices belong in the
  * devicetree, where the generic PXA25x DT machine populates them.
@@ -29,14 +29,23 @@
  * sleep table; each is marked [!=std LPM].
  */
 
+#include <linux/bitfield.h>
+#include <linux/bits.h>
 #include <linux/clk/pxa.h>
+#include <linux/ctype.h>
 #include <linux/gpio/legacy.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kstrtox.h>
+#include <linux/memblock.h>
 #include <linux/of.h>
 #include <linux/printk.h>
+#include <linux/sizes.h>
 #include <linux/soc/pxa/cpu.h>
+#include <linux/string.h>
+
+#include <asm/early_ioremap.h>
+#include <asm/mach/arch.h>
 
 #include "generic.h"
 #include "h5000.h"
@@ -311,3 +320,137 @@ static int __init h5000_late_init(void)
 	return 0;
 }
 late_initcall(h5000_late_init);
+
+/*
+ * SDRAM sizing. bootldr's ATAG_MEM only ever describes the first 64 MiB
+ * partition (its RAM probe is capped at 64 MiB per bank on PXA), and
+ * ARM_ATAG_DTB_COMPAT lets that tag replace the /memory reg of the
+ * appended DTB, so a 128 MiB h55xx boots with half of its RAM unless the
+ * command line carries mem=. The memory controller was programmed by the
+ * boot firmware for the RAM that is actually fitted, so read the geometry
+ * back from it instead.
+ *
+ * The decompressor's dt_fixup runs before the MMU and fixmap exist and the
+ * ATAG merge has no board knowledge, so this is done from .reserve, the
+ * first board hook that runs after the ATAG memory has been added to
+ * memblock and before lowmem is mapped. early_ioremap() is usable there.
+ */
+#define H5000_SDRAM_BASE	0xa0000000
+#define H5000_SDRAM_STRIDE	SZ_64M	/* address space of one nSDCS */
+#define H5000_SDRAM_PROBE_WORDS	16
+
+#define H5000_MDCNFG_DWID0	BIT(2)		/* set: 16 bit bus, clear: 32 bit */
+#define H5000_MDCNFG_DCAC0	GENMASK(4, 3)	/* column bits - 8 */
+#define H5000_MDCNFG_DRAC0	GENMASK(6, 5)	/* row bits - 11 */
+#define H5000_MDCNFG_DNB0	BIT(7)		/* set: 4 banks, clear: 2 */
+
+static bool __init h5000_cmdline_has_mem(void)
+{
+	const char *p = boot_command_line;
+
+	while ((p = strstr(p, "mem="))) {
+		if (p == boot_command_line || isspace(p[-1]))
+			return true;
+		p += 4;
+	}
+
+	return false;
+}
+
+/*
+ * The boot firmware enables both partitions of the pair without asking
+ * what is fitted, so DE1 alone does not prove that there is RAM behind
+ * it. Write a distinct value to every word of a page and read it back,
+ * twice with opposite polarity: a floating bus cannot return sixteen
+ * different values. The words are restored afterwards because a boot
+ * loader or HaRET may have left data in the partition.
+ */
+static bool __init h5000_sdram_page_ok(phys_addr_t phys)
+{
+	u32 saved[H5000_SDRAM_PROBE_WORDS];
+	void __iomem *va;
+	bool ok = true;
+	int i, pass;
+
+	va = early_ioremap(phys, SZ_4K);
+	if (!va)
+		return false;
+
+	for (i = 0; i < H5000_SDRAM_PROBE_WORDS; i++)
+		saved[i] = readl(va + i * 4);
+
+	for (pass = 0; pass < 2 && ok; pass++) {
+		for (i = 0; i < H5000_SDRAM_PROBE_WORDS; i++)
+			writel((0x9e3779b9 * (i + 1)) ^ (pass ? ~0U : 0),
+			       va + i * 4);
+		for (i = 0; i < H5000_SDRAM_PROBE_WORDS; i++)
+			if (readl(va + i * 4) !=
+			    ((0x9e3779b9 * (i + 1)) ^ (pass ? ~0U : 0)))
+				ok = false;
+	}
+
+	for (i = 0; i < H5000_SDRAM_PROBE_WORDS; i++)
+		writel(saved[i], va + i * 4);
+
+	early_iounmap(va, SZ_4K);
+
+	return ok;
+}
+
+static void __init h5000_reserve(void)
+{
+	phys_addr_t end = 0, size;
+	void __iomem *smemc;
+	u32 mdcnfg;
+	int i, shift;
+
+	/* An explicit mem= has already replaced the firmware's memory map. */
+	if (h5000_cmdline_has_mem())
+		return;
+
+	smemc = early_ioremap(PXA2XX_SMEMC_BASE, SZ_4K);
+	if (!smemc)
+		return;
+	mdcnfg = readl(smemc);
+	early_iounmap(smemc, SZ_4K);
+
+	/* Partition 0 holds the kernel; without it the register is not usable. */
+	if (!(mdcnfg & MDCNFG_DE0))
+		return;
+
+	shift = 8 + FIELD_GET(H5000_MDCNFG_DCAC0, mdcnfg) +
+		11 + FIELD_GET(H5000_MDCNFG_DRAC0, mdcnfg) +
+		(mdcnfg & H5000_MDCNFG_DNB0 ? 2 : 1) +
+		(mdcnfg & H5000_MDCNFG_DWID0 ? 1 : 2);
+	size = min_t(phys_addr_t, BIT_ULL(shift), H5000_SDRAM_STRIDE);
+
+	for (i = 0; i < 2; i++) {
+		phys_addr_t base = H5000_SDRAM_BASE + i * H5000_SDRAM_STRIDE;
+
+		if (!(mdcnfg & (MDCNFG_DE0 << i)))
+			break;
+		if (i && (!h5000_sdram_page_ok(base) ||
+			  !h5000_sdram_page_ok(base + size - SZ_4K)))
+			break;
+
+		memblock_add(base, size);
+		end = base + size;
+	}
+
+	if (end && memblock_end_of_DRAM() > end)
+		memblock_remove(end, memblock_end_of_DRAM() - end);
+
+	pr_info("h5000: MDCNFG %08x, SDRAM ends at %pa\n", mdcnfg, &end);
+}
+
+static const char * const h5000_dt_compat[] __initconst = {
+	"hp,ipaq-h5000",
+	NULL
+};
+
+DT_MACHINE_START(H5000_DT, "HP iPAQ h5000")
+	.map_io		= pxa25x_map_io,
+	.reserve	= h5000_reserve,
+	.restart	= pxa_restart,
+	.dt_compat	= h5000_dt_compat,
+MACHINE_END
