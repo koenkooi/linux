@@ -21,6 +21,7 @@
 #include <linux/module.h>
 #include <linux/sched.h>
 #include <linux/init.h>
+#include <linux/clk/pxa.h>
 #include <linux/cpufreq.h>
 #include <linux/err.h>
 #include <linux/regulator/consumer.h>
@@ -84,6 +85,8 @@ static const struct pxa_freqs pxa255_turbo_freqs[] =
 	{398131, -1, -1},	/* 199,  398,   99,   99  */
 };
 
+#define PXA255_RUN398_KHZ	398131
+
 #define NUM_PXA25x_RUN_FREQS ARRAY_SIZE(pxa255_run_freqs)
 #define NUM_PXA25x_TURBO_FREQS ARRAY_SIZE(pxa255_turbo_freqs)
 
@@ -95,6 +98,19 @@ static struct cpufreq_frequency_table
 static unsigned int pxa255_turbo_table;
 module_param(pxa255_turbo_table, uint, 0);
 MODULE_PARM_DESC(pxa255_turbo_table, "Selects the frequency table (0 = run table, !0 = turbo table)");
+
+/*
+ * The 398 MHz entry can be reached in two CCCR states on a PXA255: turbo
+ * (run 199 MHz, peripheral bus 99.5 MHz) and run mode (everything at 398 MHz,
+ * peripheral bus 199 MHz), the state the boot loader and the factory kernels
+ * leave. Which one is faster depends on the load and has to be measured, and
+ * it cannot be a fixed value until it has been: the parameter is read each
+ * time the 398 MHz entry is selected, so it can be flipped at run time between
+ * two measurements. Ignored on a PXA250, which has no run mode at that speed.
+ */
+static bool pxa255_run_mode_398 = true;
+module_param(pxa255_run_mode_398, bool, 0644);
+MODULE_PARM_DESC(pxa255_run_mode_398, "Enter the 398 MHz entry in PXA255 run mode (CCCR 0x161) instead of turbo mode (CCCR 0x241)");
 
 static struct pxa_freqs pxa27x_freqs[] = {
 	{104000,  900000, 1705000 },
@@ -192,6 +208,12 @@ static unsigned int pxa_cpufreq_get(unsigned int cpu)
 	return (unsigned int) clk_get_rate(data->clk_core) / 1000;
 }
 
+static bool pxa_enter_run_mode_398(unsigned int khz)
+{
+	return cpu_is_pxa25x() && pxa255_run_mode_398 &&
+	       khz == PXA255_RUN398_KHZ && !pxa255_clk_enter_run_mode_398();
+}
+
 static int pxa_set_target(struct cpufreq_policy *policy, unsigned int idx)
 {
 	struct cpufreq_frequency_table *pxa_freqs_table;
@@ -221,7 +243,8 @@ static int pxa_set_target(struct cpufreq_policy *policy, unsigned int idx)
 	 * exactly 398131 kHz would land on the 298.6 MHz row below 398131.2.
 	 * Ask for the end of the kHz instead.
 	 */
-	clk_set_rate(data->clk_core, new_freq_cpu * 1000 + 999);
+	if (!pxa_enter_run_mode_398(new_freq_cpu))
+		clk_set_rate(data->clk_core, new_freq_cpu * 1000 + 999);
 
 	/*
 	 * Even if voltage setting fails, we don't report it, as the frequency
