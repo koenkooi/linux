@@ -28692,6 +28692,12 @@ F:	drivers/media/v4l2-core/v4l2-isp.c
 F:	include/media/v4l2-isp.h
 F:	include/uapi/linux/media/v4l2-isp.h
 
+VEO SDIO CAMERA DRIVER
+M:	Koen Kooi <koen@dominion.thruhere.net>
+L:	linux-media@vger.kernel.org
+S:	Maintained
+F:	drivers/media/mmc/veo/
+
 VERISILICON IOMMU DRIVER
 M:	Benjamin Gaignard <benjamin.gaignard@collabora.com>
 L:	iommu@lists.linux.dev
