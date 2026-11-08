@@ -643,6 +643,18 @@ config KEYBOARD_IPAQ_SERIAL
 	  To compile this driver as a module, choose M here: the
 	  module will be called ipaq-serial-kbd.
 
+config KEYBOARD_IPAQ_SERIAL_KUNIT_TEST
+	tristate "KUnit tests for the HP iPAQ serial keyboard decoder" if !KUNIT_ALL_TESTS
+	depends on KEYBOARD_IPAQ_SERIAL && KUNIT
+	depends on KUNIT=y || KEYBOARD_IPAQ_SERIAL=m
+	default KUNIT_ALL_TESTS
+	help
+	  Build the KUnit tests for the HP iPAQ serial keyboard decoder
+	  into the ipaq-serial-kbd driver. They feed byte streams to the
+	  decoder and check the key events and key state it produces.
+
+	  If unsure, say N.
+
 config KEYBOARD_IQS62X
 	tristate "Azoteq IQS620A/621/622/624/625 keys and switches"
 	depends on MFD_IQS62X

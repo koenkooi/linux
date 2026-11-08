@@ -539,3 +539,7 @@ module_serio_driver(ipaq_kbd_drv);
 
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");
+
+#if IS_ENABLED(CONFIG_KEYBOARD_IPAQ_SERIAL_KUNIT_TEST)
+#include "ipaq-serial-kbd-test.c"
+#endif
