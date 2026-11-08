@@ -6,8 +6,10 @@
  */
 #include <linux/gpio/driver.h>
 #include <linux/init.h>
+#include <linux/irqchip.h>
 #include <linux/module.h>
 #include <linux/io.h>
+#include <linux/of.h>
 #include <linux/syscore_ops.h>
 #include <soc/sa1100/pwer.h>
 #include <mach/hardware.h>
@@ -231,6 +233,13 @@ static const struct irq_domain_ops sa1100_gpio_irqdomain_ops = {
 static struct irq_domain *sa1100_gpio_irqdomain;
 
 /*
+ * Set by sa1100_dt_init_gpio() before it calls sa1100_init_gpio(), so the
+ * irqdomain gets a real fwnode and a devicetree "interrupts" phandle can
+ * resolve against it. NULL on boards that are not described by devicetree.
+ */
+static struct fwnode_handle *sa1100_gpio_fwnode;
+
+/*
  * IRQ 0-11 (GPIO) handler.  We enter here with the
  * irq_controller_lock held, and IRQs disabled.  Decode the IRQ
  * and call the handler.
@@ -330,15 +339,29 @@ void __init sa1100_init_gpio(void)
 	writel_relaxed(0, sgc->membase + R_GRER);
 	writel_relaxed(-1, sgc->membase + R_GEDR);
 
-	software_node_register(&sa1100_gpiochip_node);
-	gc->fwnode = software_node_fwnode(&sa1100_gpiochip_node);
+	if (sa1100_gpio_fwnode) {
+		gc->fwnode = sa1100_gpio_fwnode;
+	} else {
+		software_node_register(&sa1100_gpiochip_node);
+		gc->fwnode = software_node_fwnode(&sa1100_gpiochip_node);
+	}
 	gpiochip_add_data(gc, NULL);
 
-	sa1100_gpio_irqdomain = irq_domain_create_simple(NULL,
-			28, IRQ_GPIO0,
-			&sa1100_gpio_irqdomain_ops, sgc);
+	sa1100_gpio_irqdomain = irq_domain_create_simple(sa1100_gpio_fwnode,
+							 28, IRQ_GPIO0,
+							 &sa1100_gpio_irqdomain_ops, sgc);
 
 	for (i = 0; i < ARRAY_SIZE(sa1100_gpio_irqs); i++)
 		irq_set_chained_handler_and_data(sa1100_gpio_irqs[i],
 						 sa1100_gpio_handler, sgc);
 }
+
+static int __init sa1100_dt_init_gpio(struct device_node *node,
+				      struct device_node *parent)
+{
+	sa1100_gpio_fwnode = of_fwnode_handle(node);
+	sa1100_init_gpio();
+	return 0;
+}
+
+IRQCHIP_DECLARE(sa1100_gpio, "intel,sa1100-gpio", sa1100_dt_init_gpio);
