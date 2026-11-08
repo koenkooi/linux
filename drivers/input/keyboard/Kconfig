@@ -630,6 +630,19 @@ config KEYBOARD_IPAQ_MICRO
 	  To compile this driver as a module, choose M here: the
 	  module will be called ipaq-micro-keys.
 
+config KEYBOARD_IPAQ_SERIAL
+	tristate "HP iPAQ Micro and Foldable serial keyboards"
+	depends on SERIO
+	help
+	  Say Y here if you have an HP iPAQ Micro Keyboard or an HP iPAQ
+	  Foldable Keyboard on the sync connector of an iPAQ handheld.
+	  These keyboards send to the serial port at 4800 baud; attach
+	  the decoder to the tty with the serport line discipline and the
+	  SERIO_IPAQ_KBD protocol.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called ipaq-serial-kbd.
+
 config KEYBOARD_IQS62X
 	tristate "Azoteq IQS620A/621/622/624/625 keys and switches"
 	depends on MFD_IQS62X
