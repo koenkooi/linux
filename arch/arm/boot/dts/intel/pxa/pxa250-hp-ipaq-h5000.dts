@@ -34,6 +34,7 @@
 
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/leds/common.h>
 
 #include "pxa25x.dtsi"
 
@@ -117,6 +118,25 @@
 	};
 
 	/*
+	 * The ambient light sensor's supply, switched by GPIO71 active low
+	 * (POWER_LIGHT_SENSOR_N); the polarity is inferred from the factory
+	 * firmware. No enable-active-high, so the regulator core drives the
+	 * line active low, which GPIO_ACTIVE_LOW on the phandle restates. The
+	 * pin table makes GPIO71 an output with a high sleep level but leaves
+	 * its run-time level as the boot loader set it; the regulator drives
+	 * it to the off state at probe, so the rail is off from then until
+	 * the ADC's first light reading. startup-delay-us: the factory
+	 * firmware waits about 108 ms after switching the sensor on before
+	 * sampling it.
+	 */
+	light_sensor_power: regulator-light-sensor {
+		compatible = "regulator-fixed";
+		regulator-name = "LIGHT_SENSOR_POWER";
+		gpio = <&gpio 71 GPIO_ACTIVE_LOW>;
+		startup-delay-us = <110000>;
+	};
+
+	/*
 	 * SAMCOP companion ASIC on nCS_5 (PXA_CS5_PHYS). The window is the
 	 * chip's own 1 MiB register space. Its single upstream interrupt,
 	 * ASIC_INT_N, is PXA GPIO10, active low, caught on the falling edge.
@@ -158,6 +178,115 @@
 			cd-gpios = <&samcop 16 GPIO_ACTIVE_LOW>;
 			wp-gpios = <&gpio 74 GPIO_ACTIVE_HIGH>;
 			vmmc-supply = <&sd_vmmc>;
+		};
+
+		/*
+		 * The cell is an index into the channel table of the ADC
+		 * driver: x=0, y=1, z1=2, z2=3, light=4, ain1=5, ain2=6. The
+		 * light channel is the ambient light sensor on AIN0, powered by
+		 * light-sensor-supply.
+		 */
+		adc: adc {
+			compatible = "samsung,samcop-adc";
+			#io-channel-cells = <1>;
+			light-sensor-supply = <&light_sensor_power>;
+		};
+
+		/*
+		 * The channel order x, y, z1, z2 matches the packed sample
+		 * layout the ADC driver pushes. A phandle reference, not a
+		 * lookup table in the ADC driver, makes the touchscreen driver
+		 * defer instead of failing for good when it probes before the
+		 * ADC.
+		 */
+		touchscreen {
+			compatible = "resistive-adc-touch";
+			io-channels = <&adc 0>, <&adc 1>, <&adc 2>, <&adc 3>;
+			io-channel-names = "x", "y", "z1", "z2";
+
+			/* The ADC is 10-bit. */
+			touchscreen-x-plate-ohms = <400>;
+			touchscreen-size-x = <1024>;
+			touchscreen-size-y = <1024>;
+		};
+
+		/*
+		 * All five channels are wired. The left pair carry the
+		 * heartbeat and the SD card activity triggers.
+		 */
+		led-controller {
+			compatible = "samsung,samcop-leds";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			led@0 {
+				reg = <0>;
+				color = <LED_COLOR_ID_RED>;
+				function = LED_FUNCTION_INDICATOR;
+				function-enumerator = <0>;
+			};
+
+			led@1 {
+				reg = <1>;
+				color = <LED_COLOR_ID_GREEN>;
+				function = LED_FUNCTION_INDICATOR;
+				function-enumerator = <0>;
+			};
+
+			led@2 {
+				reg = <2>;
+				color = <LED_COLOR_ID_RED>;
+				function = LED_FUNCTION_HEARTBEAT;
+				linux,default-trigger = "heartbeat";
+			};
+
+			led@3 {
+				reg = <3>;
+				color = <LED_COLOR_ID_GREEN>;
+				function = LED_FUNCTION_INDICATOR;
+				function-enumerator = <1>;
+				linux,default-trigger = "mmc0";
+			};
+
+			led@4 {
+				reg = <4>;
+				color = <LED_COLOR_ID_BLUE>;
+				function = LED_FUNCTION_INDICATOR;
+				function-enumerator = <0>;
+			};
+		};
+
+		/*
+		 * The register stride is 4 because every SAMCOP register is
+		 * 32 bits wide. No dallas,active-high: the controller's
+		 * power-on default for the interrupt polarity is used.
+		 */
+		onewire {
+			compatible = "samsung,samcop-onewire", "dallas,ds1wm";
+			dallas,bus-shift = <2>;
+			dallas,reset-recover-delay-ms = <1>;
+
+			/*
+			 * No maxim,pmod-enabled and no rated capacity: either
+			 * would make the driver write the gauge's EEPROM, and
+			 * the capacity it holds belongs to the fitted pack.
+			 */
+			battery {
+				compatible = "maxim,ds2760";
+			};
+		};
+
+		/*
+		 * The OHCI controller reaches only SAMCOP's on-chip SRAM; the
+		 * onboard WLAN radio is behind its root hub.
+		 */
+		ohci {
+			compatible = "samsung,samcop-ohci";
+		};
+
+		/* Fingerprint sensor block, present on h54xx and h55xx. */
+		fsi {
+			compatible = "samsung,samcop-fsi";
 		};
 	};
 };
