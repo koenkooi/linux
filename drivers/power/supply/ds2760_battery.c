@@ -504,7 +504,18 @@ static void ds2760_battery_update_from_charger(struct ds2760_device_info *di,
 					       bool read_ok, bool new_sample)
 {
 	if (charger_status == POWER_SUPPLY_STATUS_CHARGING) {
-		di->charge_status = POWER_SUPPLY_STATUS_CHARGING;
+		/*
+		 * A charger can be active while the load takes more than it
+		 * delivers, and then the pack is not being charged. The gauge
+		 * measures the pack current, so it has the last word.
+		 */
+		if (read_ok && di->current_uA < -5000) {
+			if (di->charge_status != POWER_SUPPLY_STATUS_NOT_CHARGING)
+				dev_notice(di->dev, "not enough power to charge\n");
+			di->charge_status = POWER_SUPPLY_STATUS_NOT_CHARGING;
+		} else {
+			di->charge_status = POWER_SUPPLY_STATUS_CHARGING;
+		}
 		di->full_counter = 0;
 		return;
 	}
