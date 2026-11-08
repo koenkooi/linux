@@ -259,12 +259,11 @@ static int grts_probe(struct platform_device *pdev)
 	st->input = input;
 	input_set_drvdata(input, st);
 
-	error = input_register_device(input);
-	if (error) {
-		dev_err(dev, "failed to register input device.");
-		return error;
-	}
-
+	/*
+	 * The callback buffer must exist before the input device does: as
+	 * soon as the device node appears, userspace may open it, and
+	 * grts_open() starts the buffer.
+	 */
 	st->iio_cb = iio_channel_get_all_cb(dev, grts_cb, st);
 	if (IS_ERR(st->iio_cb)) {
 		dev_err(dev, "failed to allocate callback buffer.\n");
@@ -274,6 +273,12 @@ static int grts_probe(struct platform_device *pdev)
 	error = devm_add_action_or_reset(dev, grts_disable, st->iio_cb);
 	if (error) {
 		dev_err(dev, "failed to add disable action.\n");
+		return error;
+	}
+
+	error = input_register_device(input);
+	if (error) {
+		dev_err(dev, "failed to register input device.");
 		return error;
 	}
 
