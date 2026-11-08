@@ -54,28 +54,34 @@ struct pxa_freqs {
 };
 
 /*
- * PXA255 definitions
+ * PXA25x definitions
+ *
+ * The frequencies are the rates of the rows of pxa25x_freqs in
+ * drivers/clk/pxa/clk-pxa25x.c truncated to kHz, which is what the core clock
+ * reports (pxa_cpufreq_get()): 99532.8, 199065.6, 298598.4 and 398131.2 kHz.
+ * The clock driver has no other rows, so any other entry was only ever
+ * rounded down to one of these. The memory clock is 99.5 MHz in all of them.
  */
 static const struct pxa_freqs pxa255_run_freqs[] =
 {
-	/* CPU   MEMBUS		   run  turbo PXbus SDRAM */
-	{ 99500, -1, -1},	/*  99,   99,   50,   50  */
-	{132700, -1, -1},	/* 133,  133,   66,   66  */
-	{199100, -1, -1},	/* 199,  199,   99,   99  */
-	{265400, -1, -1},	/* 265,  265,  133,   66  */
-	{331800, -1, -1},	/* 331,  331,  166,   83  */
-	{398100, -1, -1},	/* 398,  398,  196,   99  */
+	/* CPU    run  turbo PXbus SDRAM */
+	{ 99532, -1, -1},	/*  99,   99,   50,   50  */
+	{199065, -1, -1},	/*  99,  199,   50,   99  */
+	{298598, -1, -1},	/* 199,  298,   99,   99  */
+	{398131, -1, -1},	/* 199,  398,   99,   99  */
 };
 
-/* Use the turbo mode frequencies for the CPUFREQ_POLICY_POWERSAVE policy */
+/*
+ * Selected by pxa255_turbo_table. Same rows as above: the clock driver does
+ * not distinguish a run-mode from a turbo-mode setting of the same rate.
+ */
 static const struct pxa_freqs pxa255_turbo_freqs[] =
 {
-	/* CPU			   run  turbo PXbus SDRAM */
-	{ 99500, -1, -1},	/*  99,   99,   50,   50  */
-	{199100, -1, -1},	/*  99,  199,   50,   99  */
-	{298500, -1, -1},	/*  99,  287,   50,   99  */
-	{298600, -1, -1},	/* 199,  287,   99,   99  */
-	{398100, -1, -1},	/* 199,  398,   99,   99  */
+	/* CPU    run  turbo PXbus SDRAM */
+	{ 99532, -1, -1},	/*  99,   99,   50,   50  */
+	{199065, -1, -1},	/*  99,  199,   50,   99  */
+	{298598, -1, -1},	/* 199,  298,   99,   99  */
+	{398131, -1, -1},	/* 199,  398,   99,   99  */
 };
 
 #define NUM_PXA25x_RUN_FREQS ARRAY_SIZE(pxa255_run_freqs)
@@ -209,7 +215,13 @@ static int pxa_set_target(struct cpufreq_policy *policy, unsigned int idx)
 			return ret;
 	}
 
-	clk_set_rate(data->clk_core, new_freq_cpu * 1000);
+	/*
+	 * The table holds the clock rates truncated to kHz, and the clock driver
+	 * rounds a request down to its closest row at or below it: asking for
+	 * exactly 398131 kHz would land on the 298.6 MHz row below 398131.2.
+	 * Ask for the end of the kHz instead.
+	 */
+	clk_set_rate(data->clk_core, new_freq_cpu * 1000 + 999);
 
 	/*
 	 * Even if voltage setting fails, we don't report it, as the frequency
