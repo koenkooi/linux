@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config VIDEO_VEO_SDIOCAM
+	tristate "HP Photosmart Mobile / Veo SDIO camera"
+	depends on MMC && VIDEO_DEV && MEDIA_CAMERA_SUPPORT
+	select VIDEOBUF2_VMALLOC
+	select FW_LOADER
+	help
+	  V4L2 driver for the HP Photosmart Mobile Camera (FA185A), an SDIO
+	  card built around a Veo camera bridge (SDIO vendor 0x030d,
+	  device 0x0000). Frames are baseline JPEG, offered as V4L2_PIX_FMT_JPEG
+	  (with Huffman tables) and V4L2_PIX_FMT_MJPEG (without).
+
+	  The card needs the 1620-byte initialisation table of the factory
+	  driver as /lib/firmware/veo/hpcamera-init.bin.
+
+	  Frames whose JPEG data is incomplete are dropped, not delivered.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called veo_sdiocam.
