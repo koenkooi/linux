@@ -108,6 +108,7 @@ struct ds2760_device_info {
 	int charge_status;		/* POWER_SUPPLY_STATUS_* */
 
 	int full_counter;
+	char name[32];
 	struct power_supply *bat;
 	struct power_supply_desc bat_desc;
 	struct workqueue_struct *monitor_wqueue;
@@ -119,6 +120,7 @@ static int w1_ds2760_io(struct device *dev, char *buf, int addr, size_t count,
 			int io)
 {
 	struct w1_slave *sl = container_of(dev, struct w1_slave, dev);
+	int ret = -EIO;
 
 	if (!dev)
 		return 0;
@@ -126,7 +128,7 @@ static int w1_ds2760_io(struct device *dev, char *buf, int addr, size_t count,
 	mutex_lock(&sl->master->bus_mutex);
 
 	if (addr > DS2760_DATA_SIZE || addr < 0) {
-		count = 0;
+		ret = 0;
 		goto out;
 	}
 	if (addr + count > DS2760_DATA_SIZE)
@@ -136,19 +138,20 @@ static int w1_ds2760_io(struct device *dev, char *buf, int addr, size_t count,
 		if (!io) {
 			w1_write_8(sl->master, W1_DS2760_READ_DATA);
 			w1_write_8(sl->master, addr);
-			count = w1_read_block(sl->master, buf, count);
+			ret = w1_read_block(sl->master, buf, count);
 		} else {
 			w1_write_8(sl->master, W1_DS2760_WRITE_DATA);
 			w1_write_8(sl->master, addr);
 			w1_write_block(sl->master, buf, count);
 			/* XXX w1_write_block returns void, not n_written */
+			ret = count;
 		}
 	}
 
 out:
 	mutex_unlock(&sl->master->bus_mutex);
 
-	return count;
+	return ret;
 }
 
 static int w1_ds2760_read(struct device *dev,
@@ -273,7 +276,20 @@ static int ds2760_battery_read_status(struct ds2760_device_info *di)
 	if (ret != count) {
 		dev_warn(di->dev, "call to w1_ds2760_read failed (0x%p)\n",
 			 di->dev);
-		return 1;
+		return -EIO;
+	}
+
+	/*
+	 * w1_read_block() has no way to report a failed byte: ds1wm returns
+	 * 0xff on a timeout and an undriven bus reads high. The voltage
+	 * register cannot hold all ones on a working gauge. The decoded fields
+	 * keep their last values, and a failed first read is fetched again in
+	 * full because update_time stays unset.
+	 */
+	if (di->raw[DS2760_VOLTAGE_MSB] == 0xff &&
+	    di->raw[DS2760_VOLTAGE_LSB] == 0xff) {
+		dev_warn(di->dev, "read returned all ones, ignoring it\n");
+		return -EIO;
 	}
 
 	di->update_time = jiffies;
@@ -474,6 +490,14 @@ static void ds2760_battery_work(struct work_struct *work)
 
 	dev_dbg(di->dev, "%s\n", __func__);
 
+	/*
+	 * A supplier can notify the battery as soon as it is registered,
+	 * before add_slave has the pointer. add_slave queues this work again
+	 * once it does.
+	 */
+	if (!di->bat)
+		return;
+
 	ds2760_battery_update_status(di);
 	queue_delayed_work(di->monitor_wqueue, &di->monitor_work, interval);
 }
@@ -621,25 +645,36 @@ static int ds2760_pm_notifier(struct notifier_block *notifier,
 	return NOTIFY_DONE;
 }
 
+/*
+ * The battery is device-managed and outlives this: it stays registered until
+ * the slave device is released, and a supplier can still notify it until
+ * then. Disabling rather than cancelling keeps that notification from queueing
+ * the work again; on a disabled work mod_delayed_work() never touches the
+ * workqueue it is handed.
+ */
+static void ds2760_battery_stop_monitor(struct ds2760_device_info *di)
+{
+	disable_delayed_work_sync(&di->monitor_work);
+	destroy_workqueue(di->monitor_wqueue);
+}
+
 static int w1_ds2760_add_slave(struct w1_slave *sl)
 {
 	struct power_supply_config psy_cfg = {};
 	struct ds2760_device_info *di;
 	struct device *dev = &sl->dev;
-	int retval = 0;
-	char name[32];
+	struct power_supply *bat;
+	int retval;
 	char status;
 
 	di = devm_kzalloc(dev, sizeof(*di), GFP_KERNEL);
-	if (!di) {
-		retval = -ENOMEM;
-		goto di_alloc_failed;
-	}
+	if (!di)
+		return -ENOMEM;
 
-	snprintf(name, sizeof(name), "ds2760-battery.%d", dev->id);
+	snprintf(di->name, sizeof(di->name), "ds2760-battery.%d", dev->id);
 
 	di->dev				= dev;
-	di->bat_desc.name		= name;
+	di->bat_desc.name		= di->name;
 	di->bat_desc.type		= POWER_SUPPLY_TYPE_BATTERY;
 	di->bat_desc.properties		= ds2760_battery_props;
 	di->bat_desc.num_properties	= ARRAY_SIZE(ds2760_battery_props);
@@ -671,10 +706,21 @@ static int w1_ds2760_add_slave(struct w1_slave *sl)
 
 	di->charge_status = POWER_SUPPLY_STATUS_UNKNOWN;
 
-	sl->family_data = di;
+	INIT_DELAYED_WORK(&di->monitor_work, ds2760_battery_work);
+	di->monitor_wqueue = alloc_ordered_workqueue(di->name, WQ_MEM_RECLAIM);
+	if (!di->monitor_wqueue)
+		return -ENOMEM;
+
+	/*
+	 * The status byte below goes to EEPROM when it differs from the
+	 * stored one, so it must never be computed from a raw[] that was not
+	 * read.
+	 */
+	retval = ds2760_battery_read_status(di);
+	if (retval)
+		goto err_stop_monitor;
 
 	/* enable sleep mode feature */
-	ds2760_battery_read_status(di);
 	status = di->raw[DS2760_STATUS_REG];
 	if (pmod_enabled)
 		status |= DS2760_STATUS_PMOD;
@@ -692,30 +738,25 @@ static int w1_ds2760_add_slave(struct w1_slave *sl)
 	if (current_accum)
 		ds2760_battery_set_current_accum(di, current_accum);
 
-	di->bat = devm_power_supply_register(dev, &di->bat_desc, &psy_cfg);
-	if (IS_ERR(di->bat)) {
+	bat = devm_power_supply_register(dev, &di->bat_desc, &psy_cfg);
+	if (IS_ERR(bat)) {
 		dev_err(di->dev, "failed to register battery\n");
-		retval = PTR_ERR(di->bat);
-		goto batt_failed;
+		retval = PTR_ERR(bat);
+		goto err_stop_monitor;
 	}
+	di->bat = bat;
 
-	INIT_DELAYED_WORK(&di->monitor_work, ds2760_battery_work);
-	di->monitor_wqueue = alloc_ordered_workqueue(name, WQ_MEM_RECLAIM);
-	if (!di->monitor_wqueue) {
-		retval = -ESRCH;
-		goto workqueue_failed;
-	}
+	sl->family_data = di;
+
 	queue_delayed_work(di->monitor_wqueue, &di->monitor_work, HZ * 1);
 
 	di->pm_notifier.notifier_call = ds2760_pm_notifier;
 	register_pm_notifier(&di->pm_notifier);
 
-	goto success;
+	return 0;
 
-workqueue_failed:
-batt_failed:
-di_alloc_failed:
-success:
+err_stop_monitor:
+	ds2760_battery_stop_monitor(di);
 	return retval;
 }
 
@@ -723,9 +764,12 @@ static void w1_ds2760_remove_slave(struct w1_slave *sl)
 {
 	struct ds2760_device_info *di = sl->family_data;
 
+	/* w1 ignores an add_slave error and calls this anyway. */
+	if (!di)
+		return;
+
 	unregister_pm_notifier(&di->pm_notifier);
-	cancel_delayed_work_sync(&di->monitor_work);
-	destroy_workqueue(di->monitor_wqueue);
+	ds2760_battery_stop_monitor(di);
 }
 
 #ifdef CONFIG_OF
