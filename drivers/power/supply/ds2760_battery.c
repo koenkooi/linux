@@ -691,7 +691,7 @@ static int w1_ds2760_add_slave(struct w1_slave *sl)
 	if (dev->of_node) {
 		u32 tmp;
 
-		if (!of_property_read_bool(dev->of_node, "maxim,pmod-enabled"))
+		if (of_property_read_bool(dev->of_node, "maxim,pmod-enabled"))
 			pmod_enabled = true;
 
 		if (!of_property_read_u32(dev->of_node,
