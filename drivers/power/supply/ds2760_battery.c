@@ -470,6 +470,32 @@ static bool ds2760_battery_may_be_full(struct ds2760_device_info *di)
 }
 
 /*
+ * Without a charge status from the supplier the current is all there is, and a
+ * charger that is held off or has stopped early reads the same as one that has
+ * finished. Refuse Full when charging is inhibited, and below the voltage
+ * limit when the battery has one; a battery without that information is
+ * judged by the current alone, as it always was.
+ */
+static bool ds2760_battery_current_may_be_full(struct ds2760_device_info *di)
+{
+	const struct power_supply_battery_info *info = di->bat->battery_info;
+	union power_supply_propval behaviour;
+
+	if (!power_supply_get_property_from_supplier(di->bat,
+						     POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
+						     &behaviour) &&
+	    behaviour.intval != POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO)
+		return false;
+
+	if (info && info->voltage_max_design_uv > 0 &&
+	    di->voltage_uV <= info->voltage_max_design_uv -
+			      DS2760_FULL_VOLTAGE_MARGIN_UV)
+		return false;
+
+	return true;
+}
+
+/*
  * The supplier says whether it is charging, so the current only has to confirm
  * that a stopped charger means a full battery.
  */
@@ -550,6 +576,9 @@ static void ds2760_battery_update_status(struct ds2760_device_info *di)
 			if (di->charge_status != POWER_SUPPLY_STATUS_NOT_CHARGING)
 				dev_notice(di->dev, "not enough power to "
 					   "charge\n");
+			di->charge_status = POWER_SUPPLY_STATUS_NOT_CHARGING;
+			di->full_counter = 0;
+		} else if (!ds2760_battery_current_may_be_full(di)) {
 			di->charge_status = POWER_SUPPLY_STATUS_NOT_CHARGING;
 			di->full_counter = 0;
 		} else if (di->current_uA < 10000 &&
