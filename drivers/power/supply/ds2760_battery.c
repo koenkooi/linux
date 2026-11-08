@@ -71,6 +71,7 @@ MODULE_PARM_DESC(current_accum, "current accumulator value");
 #define DS2760_PROTECTION_REG		0x00
 
 #define DS2760_STATUS_REG		0x01
+#define DS2760_STATUS_EEPROM		0x31
 #define DS2760_STATUS_IE		(1 << 2)
 #define DS2760_STATUS_SWEN		(1 << 3)
 #define DS2760_STATUS_RNAOP		(1 << 4)
@@ -673,7 +674,18 @@ static int ds2760_battery_start(struct ds2760_device_info *di)
 		else
 			status &= ~DS2760_STATUS_PMOD;
 
-		ds2760_battery_write_status(di, status);
+		/*
+		 * A timed-out byte reads as 0xff and cannot be told from data.
+		 * The status register mirrors its EEPROM copy, so a mismatch
+		 * means this read cannot be trusted to compute a value that
+		 * would be stored permanently.
+		 */
+		if (di->raw[DS2760_STATUS_REG] == di->raw[DS2760_STATUS_EEPROM])
+			ds2760_battery_write_status(di, status);
+		else
+			dev_warn(di->dev, "status %#x and its EEPROM copy %#x differ, not updating it\n",
+				 di->raw[DS2760_STATUS_REG],
+				 di->raw[DS2760_STATUS_EEPROM]);
 
 		/* set rated capacity from module param or device tree */
 		if (rated_capacity)
