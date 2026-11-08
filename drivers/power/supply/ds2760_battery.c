@@ -57,6 +57,14 @@ MODULE_PARM_DESC(current_accum, "current accumulator value");
 #define DS2760_RETRY_INTERVAL		(2 * HZ)
 #define DS2760_RETRIES_BEFORE_WARN	30
 
+/*
+ * How far below the battery's maximum voltage it may rest and still count as
+ * full. On a 4.2 V cell this gives 4.05 V, the threshold in the h5550's factory
+ * firmware, which also clears the 4.162-4.187 V one cell was seen to rest at
+ * after termination. It has not been tuned by measurement.
+ */
+#define DS2760_FULL_VOLTAGE_MARGIN_UV	150000
+
 /* Known commands to the DS2760 chip */
 #define W1_DS2760_SWAP			0xAA
 #define W1_DS2760_READ_DATA		0x69
@@ -100,6 +108,7 @@ struct ds2760_device_info {
 
 	/* DS2760 data, valid after calling ds2760_battery_read_status() */
 	unsigned long update_time;	/* jiffies when data read */
+	unsigned long sampled_time;	/* update_time of the last status sample */
 	char raw[DS2760_DATA_SIZE];	/* raw DS2760 data */
 	int voltage_raw;		/* units of 4.88 mV */
 	int voltage_uV;			/* units of µV */
@@ -118,6 +127,7 @@ struct ds2760_device_info {
 
 	int full_counter;
 	int start_attempts;
+	bool charger_has_status;
 	bool gauge_configured;
 	char name[32];
 	struct power_supply *bat;
@@ -404,12 +414,118 @@ static void ds2760_battery_set_current_accum(struct ds2760_device_info *di,
 		dev_warn(di->dev, "ACR write failed\n");
 }
 
+static bool ds2760_battery_charger_status(struct ds2760_device_info *di,
+					  int *status)
+{
+	union power_supply_propval val;
+
+	if (power_supply_get_property_from_supplier(di->bat,
+						    POWER_SUPPLY_PROP_STATUS,
+						    &val)) {
+		/*
+		 * A charger that has reported a status before and fails now
+		 * is not one without the property: going back to the current
+		 * test on a failed read would allow the very Full this check
+		 * is there to prevent.
+		 */
+		*status = POWER_SUPPLY_STATUS_UNKNOWN;
+		return di->charger_has_status;
+	}
+
+	di->charger_has_status = true;
+	*status = val.intval;
+
+	return true;
+}
+
+static bool ds2760_battery_may_be_full(struct ds2760_device_info *di)
+{
+	const struct power_supply_battery_info *info = di->bat->battery_info;
+	union power_supply_propval behaviour;
+
+	/*
+	 * A charger also stops on a timer, on temperature or when told to,
+	 * and with no voltage limit to compare against those look the same as
+	 * a finished charge. Writing the counter on a guess is worse than never
+	 * reporting Full, so without a limit the battery stays Not-charging
+	 * and the counter is left to userspace.
+	 */
+	if (!info || info->voltage_max_design_uv <= 0)
+		return false;
+
+	if (di->voltage_uV <= info->voltage_max_design_uv -
+			      DS2760_FULL_VOLTAGE_MARGIN_UV)
+		return false;
+
+	if (di->current_uA < -5000 || di->current_uA >= 10000)
+		return false;
+
+	if (!power_supply_get_property_from_supplier(di->bat,
+						     POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
+						     &behaviour) &&
+	    behaviour.intval != POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO)
+		return false;
+
+	return true;
+}
+
+/*
+ * The supplier says whether it is charging, so the current only has to confirm
+ * that a stopped charger means a full battery.
+ */
+static void ds2760_battery_update_from_charger(struct ds2760_device_info *di,
+					       int charger_status,
+					       bool read_ok, bool new_sample)
+{
+	if (charger_status == POWER_SUPPLY_STATUS_CHARGING) {
+		di->charge_status = POWER_SUPPLY_STATUS_CHARGING;
+		di->full_counter = 0;
+		return;
+	}
+
+	/* Without fresh data there is nothing to confirm or to withdraw Full on. */
+	if (!read_ok || charger_status == POWER_SUPPLY_STATUS_UNKNOWN) {
+		di->full_counter = 0;
+		if (di->charge_status != POWER_SUPPLY_STATUS_FULL)
+			di->charge_status = POWER_SUPPLY_STATUS_NOT_CHARGING;
+		return;
+	}
+
+	if (!ds2760_battery_may_be_full(di)) {
+		di->charge_status = POWER_SUPPLY_STATUS_NOT_CHARGING;
+		di->full_counter = 0;
+		return;
+	}
+
+	if (di->charge_status == POWER_SUPPLY_STATUS_FULL)
+		return;
+
+	/*
+	 * A supplier notification can get here again within cache_time, with
+	 * the data of the last call, and that is not a second sample.
+	 */
+	if (new_sample)
+		di->full_counter++;
+
+	if (di->full_counter < 2) {
+		di->charge_status = POWER_SUPPLY_STATUS_NOT_CHARGING;
+	} else {
+		di->charge_status = POWER_SUPPLY_STATUS_FULL;
+		ds2760_battery_set_current_accum(di, di->full_active_uAh);
+	}
+}
+
 static void ds2760_battery_update_status(struct ds2760_device_info *di)
 {
 	int old_charge_status = di->charge_status;
+	bool read_ok, new_sample;
+	int charger_status;
 	int supplied;
 
-	ds2760_battery_read_status(di);
+	read_ok = !ds2760_battery_read_status(di);
+	new_sample = read_ok && di->update_time != di->sampled_time;
+	if (new_sample)
+		di->sampled_time = di->update_time;
 
 	if (di->charge_status == POWER_SUPPLY_STATUS_UNKNOWN)
 		di->full_counter = 0;
@@ -423,7 +539,10 @@ static void ds2760_battery_update_status(struct ds2760_device_info *di)
 	 */
 	supplied = power_supply_am_i_supplied(di->bat);
 
-	if (supplied > 0) {
+	if (supplied > 0 && ds2760_battery_charger_status(di, &charger_status)) {
+		ds2760_battery_update_from_charger(di, charger_status, read_ok,
+						   new_sample);
+	} else if (supplied > 0) {
 		if (di->current_uA > 10000) {
 			di->charge_status = POWER_SUPPLY_STATUS_CHARGING;
 			di->full_counter = 0;
