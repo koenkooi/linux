@@ -13,6 +13,7 @@
 #include <linux/clk.h>
 #include <linux/clk/pxa.h>
 #include <linux/clkdev.h>
+#include <linux/export.h>
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/soc/pxa/smemc.h>
@@ -271,6 +272,59 @@ static int clk_pxa25x_cpll_set_rate(struct clk_hw *hw, unsigned long rate,
 }
 PARENTS(clk_pxa25x_cpll) = { "osc_3_6864mhz" };
 RATE_OPS(clk_pxa25x_cpll, "cpll");
+
+/*
+ * PXA255 run mode at 398 MHz: N = 1, M = 4, L = 27, CLKCFG[T] clear. The core,
+ * the run clock and the turbo clock all run at 398.13 MHz and the peripheral
+ * bus at half of that, where the 398.13 MHz row of pxa25x_freqs (N = 2, M = 2)
+ * leaves the run clock at 199 MHz and the peripheral bus at 99.5 MHz. The
+ * h2200 and h5550 factory kernels run in this state from reset.
+ *
+ * It is not a row of pxa25x_freqs: its cpll rate equals that of the turbo
+ * row, so the clock framework cannot select it (it does not call set_rate
+ * when the rate does not change, and the table lookup takes the first row of
+ * a rate). It is entered explicitly instead. A PXA250 cannot run this fast in
+ * run mode.
+ */
+static struct pxa2xx_freq pxa255_run398_freq = {
+	.cpll = 398131200,
+	.membus_khz = 99500,
+	.cccr = PXA25x_CCCR(2, 3, 1),
+	.div2 = 0,
+	.clkcfg = PXA25x_CLKCFG(0),
+};
+
+int pxa255_clk_enter_run_mode_398(void)
+{
+	struct clk *cpll, *run, *core;
+	int ret = -ENODEV;
+
+	if (!cpu_is_pxa255())
+		return -ENODEV;
+
+	cpll = clk_get(NULL, "cpll");
+	run = clk_get(NULL, "run");
+	core = clk_get(NULL, "core");
+	if (IS_ERR(cpll) || IS_ERR(run) || IS_ERR(core))
+		goto out;
+
+	pxa2xx_cpll_change(&pxa255_run398_freq, mdrefr_dri, clk_regs + CCCR);
+
+	/*
+	 * The registers changed behind the framework's back: re-read the rates
+	 * from them first (cpll has CLK_GET_RATE_NOCACHE and passes the new
+	 * value on to run and the core), then move the core to the run clock,
+	 * which is what CLKCFG[T] = 0 now selects.
+	 */
+	clk_get_rate(cpll);
+	ret = clk_set_parent(core, run);
+out:
+	clk_put(core);
+	clk_put(run);
+	clk_put(cpll);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(pxa255_clk_enter_run_mode_398);
 
 static void __init pxa25x_register_core(void)
 {

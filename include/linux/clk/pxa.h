@@ -1,8 +1,19 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 
 #include <linux/compiler.h>
+#include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/types.h>
+
+#ifdef CONFIG_PXA25x
+/* PXA255 only: CCCR 0x161, run mode at 398 MHz (see drivers/clk/pxa/clk-pxa25x.c). */
+extern int pxa255_clk_enter_run_mode_398(void);
+#else
+static inline int pxa255_clk_enter_run_mode_398(void)
+{
+	return -ENODEV;
+}
+#endif
 
 extern int pxa25x_clocks_init(void __iomem *regs);
 extern int pxa27x_clocks_init(void __iomem *regs);
