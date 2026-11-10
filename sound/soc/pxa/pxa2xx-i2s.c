@@ -171,7 +171,7 @@ static int pxa2xx_i2s_hw_params(struct snd_pcm_substream *substream,
 	snd_soc_dai_set_dma_data(dai, substream, dma_data);
 
 	/* is port used by another stream */
-	if (!(SACR0 & SACR0_ENB)) {
+	if (!(readl(i2s_reg_base + SACR0) & SACR0_ENB)) {
 		writel(0, i2s_reg_base + SACR0);
 		if (pxa_i2s.master)
 			writel(readl(i2s_reg_base + SACR0) | (SACR0_BCKD), i2s_reg_base + SACR0);
