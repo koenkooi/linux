@@ -648,6 +648,23 @@
 		audio-power-gpios      = <&samcop 34 GPIO_ACTIVE_HIGH>;
 		headphone-detect-gpios = <&gpio 76 GPIO_ACTIVE_HIGH>;
 	};
+
+	/*
+	 * LMX9814 Bluetooth module power control; its HCI UART is &hwuart
+	 * below. BT_M_RESET (GPIO72) is the module's active-low reset and
+	 * BT_ENV_0/BT_ENV_1 (GPIO11/13) its operating environment straps.
+	 * The 3.0 V supply is SAMCOP GPB5 (SAMCOP_GPIO(B, 5) = 37) and the
+	 * 2.8 V supply GPIO67, both active high. BT_WU (GPIO14) is left to
+	 * the pin table.
+	 */
+	bluetooth {
+		compatible = "hp,ipaq-h5000-bt";
+		reset-gpios = <&gpio 72 GPIO_ACTIVE_LOW>;
+		env0-gpios = <&gpio 11 GPIO_ACTIVE_HIGH>;
+		env1-gpios = <&gpio 13 GPIO_ACTIVE_HIGH>;
+		power-3v0-gpios = <&samcop 37 GPIO_ACTIVE_HIGH>;
+		power-2v8-gpios = <&gpio 67 GPIO_ACTIVE_HIGH>;
+	};
 };
 
 &ffuart {
@@ -682,7 +699,7 @@
 /*
  * The onboard Bluetooth (LMX9814) is on the HWUART pins GPIO42-45, not
  * on the BTUART, so the BTUART stays disabled: both would drive the same
- * pads.
+ * pads. Its power sequencing is the bluetooth node's.
  */
 &hwuart {
 	status = "okay";
