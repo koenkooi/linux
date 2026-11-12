@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/bluetooth/hp,ipaq-h5000-bt.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HP iPAQ h5000 Bluetooth module power control
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  The HP iPAQ h51xx/h54xx/h55xx carries a National Semiconductor LMX9814
+  Bluetooth module whose HCI transport is a plain H4 UART driven from
+  userspace. This node describes only the board's reset, operating
+  environment strap and supply lines to the module; the host exposes them
+  as a Bluetooth rfkill switch whose unblock runs the module's power-on
+  sequence.
+
+properties:
+  compatible:
+    const: hp,ipaq-h5000-bt
+
+  reset-gpios:
+    maxItems: 1
+    description: The module's active-low reset input.
+
+  env0-gpios:
+    maxItems: 1
+    description:
+      Operating environment select 0. Driven high with env1 to run the
+      module normally; with env0 low and env1 high it enters in-system
+      programming mode.
+
+  env1-gpios:
+    maxItems: 1
+    description: Operating environment select 1, see env0-gpios.
+
+  power-3v0-gpios:
+    maxItems: 1
+    description: Enable of the module's 3.0 V supply, active high.
+
+  power-2v8-gpios:
+    maxItems: 1
+    description: Enable of the module's 2.8 V supply, active high.
+
+required:
+  - compatible
+  - reset-gpios
+  - env0-gpios
+  - env1-gpios
+  - power-3v0-gpios
+  - power-2v8-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    bluetooth {
+        compatible = "hp,ipaq-h5000-bt";
+        reset-gpios = <&gpio 72 GPIO_ACTIVE_LOW>;
+        env0-gpios = <&gpio 11 GPIO_ACTIVE_HIGH>;
+        env1-gpios = <&gpio 13 GPIO_ACTIVE_HIGH>;
+        power-3v0-gpios = <&samcop 37 GPIO_ACTIVE_HIGH>;
+        power-2v8-gpios = <&gpio 67 GPIO_ACTIVE_HIGH>;
+    };
+
+...
