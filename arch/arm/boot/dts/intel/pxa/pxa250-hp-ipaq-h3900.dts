@@ -205,6 +205,69 @@
 			htc,pwm-period = <10>;
 		};
 	};
+
+	/*
+	 * ASIC3 companion chip on nCS_5. The core window is at 0x14800000 and
+	 * the SD/MMC block at 0x14000000, both with a 32 bit register stride.
+	 *
+	 * The board uses no ASIC3 line as an interrupt source, so the node
+	 * has no core interrupt and is not an interrupt controller. The only
+	 * interrupt is the one of the SD block, which is a SoC GPIO (GPIO4,
+	 * MMC_INT_N), not a line of this chip. The chip has no reset line
+	 * either.
+	 *
+	 * The board leaves no line of the four banks floating. Lines that
+	 * nothing claims are driven low from probe onwards instead of being
+	 * inputs, and the three that start high are hogs below: bank B bit 0
+	 * (IR_ON_N), bit 2 (RS232_ON, the supply of the console transceiver)
+	 * and bit 15 (TEST_POINT_123).
+	 *
+	 * The SD card clock comes from ASIC2.
+	 */
+	asic3: companion-chip@14800000 {
+		compatible = "htc,asic3";
+		reg = <0x14800000 0x2000>, <0x14000000 0x2000>;
+		reg-names = "core", "sd";
+		interrupt-parent = <&gpio>;
+		interrupts = <4 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-names = "sd";
+		clocks = <&asic2 ASIC2_CLK_SD>;
+
+		gpio-controller;
+		#gpio-cells = <2>;
+		htc,gpio-default-output-low;
+
+		ir-on-n-hog {
+			gpio-hog;
+			gpios = <16 GPIO_ACTIVE_HIGH>;
+			output-high;
+			line-name = "IR_ON_N";
+		};
+
+		rs232-on-hog {
+			gpio-hog;
+			gpios = <18 GPIO_ACTIVE_HIGH>;
+			output-high;
+			line-name = "RS232_ON";
+		};
+
+		test-point-123-hog {
+			gpio-hog;
+			gpios = <31 GPIO_ACTIVE_HIGH>;
+			output-high;
+			line-name = "TEST_POINT_123";
+		};
+
+		/*
+		 * Card detect is bit 6 of the GPIO bank of ASIC2, active low:
+		 * the bank reads back bit 6 low with a card inserted and high
+		 * with it removed.
+		 */
+		mmc {
+			compatible = "htc,asic3-sd";
+			cd-gpios = <&asic2 6 GPIO_ACTIVE_LOW>;
+		};
+	};
 };
 
 /*
