@@ -589,6 +589,22 @@
 		io-channel-names = "voltage";
 		monitored-battery = <&simple_battery>;
 	};
+
+	/*
+	 * VBUS sense for the pxa25x_udc gadget controller, bound by
+	 * compatible string: phy-gpio-vbus-usb.c (USB_GPIO_VBUS) matches
+	 * "gpio-usb-b-connector" and reads "vbus-gpios", and the UDC finds
+	 * the transceiver it registers without a phandle.
+	 *
+	 * The sense line is bit 10 of the ASIC2 GPIO bank (USB_DETECT_N),
+	 * active low. Its interrupt is the ASIC2 one of the same bit, which
+	 * the node does not need to list. The connector defers until ASIC2
+	 * has probed.
+	 */
+	connector {
+		compatible = "gpio-usb-b-connector", "usb-b-connector";
+		vbus-gpios = <&asic2 10 GPIO_ACTIVE_LOW>;
+	};
 };
 
 /*
@@ -936,4 +952,14 @@
 			bus-width = <16>;
 		};
 	};
+};
+
+/*
+ * GPIO20 (USBP_PULLUP) switches the D+ pullup, active high. The driver owns
+ * it directly rather than through the gpio-vbus transceiver, which only
+ * senses VBUS here (see the "connector" node).
+ */
+&pxa25x_udc {
+	pullup-gpios = <&gpio 20 GPIO_ACTIVE_HIGH>;
+	status = "okay";
 };
