@@ -19,3 +19,5 @@ snd-soc-spitz-y := spitz.o
 obj-$(CONFIG_SND_PXA2XX_SOC_SPITZ) += snd-soc-spitz.o
 snd-soc-h2200-y := h2200.o
 obj-$(CONFIG_SND_PXA2XX_SOC_H2200) += snd-soc-h2200.o
+snd-soc-h5000-y := h5000.o
+obj-$(CONFIG_SND_PXA2XX_SOC_H5000) += snd-soc-h5000.o
