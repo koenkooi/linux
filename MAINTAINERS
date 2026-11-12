@@ -3043,6 +3043,7 @@ M:	Koen Kooi <koen@dominion.thruhere.net>
 L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
 S:	Maintained
 F:	Documentation/devicetree/bindings/arm/marvell,pxa2xx.yaml
+F:	Documentation/devicetree/bindings/net/bluetooth/hp,ipaq-hx4700-bt.yaml
 F:	Documentation/devicetree/bindings/pcmcia/hp,ipaq-hx4700-pcmcia.yaml
 F:	arch/arm/boot/dts/intel/pxa/pxa270-hp-ipaq-hx4700.dts
 F:	arch/arm/mach-pxa/hx4700*
