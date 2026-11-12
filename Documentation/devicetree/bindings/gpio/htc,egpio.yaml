@@ -1,0 +1,161 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/gpio/htc,egpio.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HTC EGPIO CPLD-based GPIO expander
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: |
+  EGPIO is a CPLD-implemented GPIO expander found on HTC-designed iPAQ
+  handhelds (h3600, h3700, h3800 and hx4700), wired as a VLIO-mode MMIO
+  device behind a static-memory chip select. It is not the ASIC3
+  companion ASIC (see htc,asic3.yaml): it only provides flat banks of GPIO
+  lines whose direction is fixed at boot and, optionally, one shared
+  upstream interrupt line muxed across all input pins.
+
+  One register window can back several independently addressable GPIO
+  ranges. Each range is a child node and becomes its own gpio_chip, at its
+  own register offset within the window.
+
+  The chip cannot act as an interrupt controller: its interrupt demux
+  works on a static range of Linux IRQ numbers and has no irq_domain.
+  "interrupts" only describes the upstream trigger line.
+
+properties:
+  compatible:
+    const: htc,egpio
+
+  reg:
+    maxItems: 1
+    description: |
+      The chip's register window, sized to cover every child range's
+      highest "reg" offset plus that range's own register span.
+
+  interrupts:
+    maxItems: 1
+    description: |
+      The chip's single upstream interrupt line, edge-rising, shared by
+      every input pin in every child range. Omit it on boards that wire
+      every range as fixed outputs.
+
+      Describes the board wiring only. A DT-probed chip has no irq_base
+      and no irq_domain, so the driver logs the line and does not use it.
+
+  htc,reg-width:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    enum: [8, 16]
+    description: |
+      Number of GPIO lines packed into one register. A child range
+      spans DIV_ROUND_UP(ngpios, htc,reg-width) registers starting at its
+      "reg".
+
+  htc,bus-width:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    enum: [16, 32]
+    description: |
+      Alignment, in bits, of consecutive registers within the window:
+      16 means adjacent registers are 2 bytes apart, 32 means 4. A 16-bit
+      wide register can sit on a 32-bit stride.
+
+  htc,ack-register:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: |
+      Register offset, in the same units as each child's "reg", of the
+      shared IRQ ack/status register the chained interrupt handler
+      reads and acks in one write. Meaningful only when "interrupts" is
+      present.
+
+  htc,invert-acks:
+    type: boolean
+    description: |
+      Set if this chip requires writing 0, not 1, to ack a pending IRQ.
+
+  "#address-cells":
+    const: 1
+
+  "#size-cells":
+    const: 0
+
+patternProperties:
+  "^gpio-chip@[0-9a-f]+$":
+    type: object
+    additionalProperties: false
+    description: |
+      One independently addressable GPIO range within the shared
+      register window. It is not probed separately; the driver bound to
+      the parent node owns every range.
+
+    properties:
+      reg:
+        maxItems: 1
+        description: |
+          Register offset of the range within the window.
+
+      gpio-controller: true
+
+      "#gpio-cells":
+        const: 2
+
+      ngpios:
+        minimum: 1
+        maximum: 32
+
+      htc,direction:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        description: |
+          Bitfield, one bit per line, 0 = fixed input, 1 = fixed output.
+          The direction cannot be switched at runtime.
+
+      htc,initial-values:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        description: |
+          Bitfield of the value driven onto each output line before the
+          first consumer uses it, and again on resume. Bits for input
+          lines are ignored.
+
+    required:
+      - reg
+      - gpio-controller
+      - "#gpio-cells"
+      - ngpios
+      - htc,direction
+
+required:
+  - compatible
+  - reg
+  - htc,reg-width
+  - htc,bus-width
+  - "#address-cells"
+  - "#size-cells"
+
+additionalProperties: false
+
+examples:
+  - |
+    gpio-expander@c800000 {
+        compatible = "htc,egpio";
+        reg = <0x0c800000 0x4>;
+
+        interrupt-parent = <&gpio>;
+        interrupts = <18 4>;
+
+        htc,reg-width = <16>;
+        htc,bus-width = <16>;
+        htc,ack-register = <0>;
+
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        gpio-chip@0 {
+            reg = <0>;
+            gpio-controller;
+            #gpio-cells = <2>;
+            ngpios = <16>;
+            htc,direction = <0xffff>;
+            htc,initial-values = <0x0080>;
+        };
+    };
