@@ -243,6 +243,25 @@
 	};
 
 	/*
+	 * CompactFlash socket. The shared PXA PCMCIA driver is matched by
+	 * name and needs board callbacks that no property can express, so
+	 * the socket driver registers the platform device and merely looks
+	 * this node up to resolve the GPIOs, hence disabled. Card detect is
+	 * ASIC3_GPIO(D, 4), 16 * 3 + 4, and active low as its _nCD hardware
+	 * name says.
+	 */
+	pcmcia {
+		compatible = "hp,ipaq-hx4700-pcmcia";
+		status = "disabled";
+
+		hp,asic3 = <&asic3>;
+		detect-gpios = <&asic3 52 GPIO_ACTIVE_LOW>;
+		ready-gpios = <&gpio 60 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio 114 GPIO_ACTIVE_HIGH>;
+		power-gpios = <&egpio0 4 GPIO_ACTIVE_HIGH>;
+	};
+
+	/*
 	 * Power is the only wakeup source. Record, Calendar and Home are
 	 * ASIC3 lines; ASIC3_GPIO(D, n) is 16 * 3 + n.
 	 */
