@@ -644,3 +644,28 @@
 		ti,debounce-rep = /bits/ 16 <1>;
 	};
 };
+
+/*
+ * MAX1587A core regulator on the power I2C bus. v3-gain is
+ * MAX1586_GAIN_R24_3k32, the 3.32 kOhm gain resistor the board has, as
+ * the bare number the binding takes.
+ */
+&pwri2c {
+	status = "okay";
+
+	regulator@14 {
+		compatible = "maxim,max1586";
+		reg = <0x14>;
+		v3-gain = <1051098>;
+
+		regulators {
+			vcc_core: v3 {
+				regulator-name = "vcc_core";
+				regulator-compatible = "Output_V3";
+				regulator-min-microvolt = <900000>;
+				regulator-max-microvolt = <1705000>;
+				regulator-always-on;
+			};
+		};
+	};
+};
