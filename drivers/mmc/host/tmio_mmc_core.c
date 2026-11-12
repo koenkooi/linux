@@ -585,8 +585,19 @@ void tmio_mmc_do_data_irq(struct tmio_mmc_host *host)
 			dev_err(&host->pdev->dev, "unsupported stop: CMD%u,0x%x. We did CMD12,0\n",
 				stop->opcode, stop->arg);
 
-		/* fill in response from auto CMD12 */
-		stop->resp[0] = sd_ctrl_read16_and_16_as_32(host, CTL_RESPONSE);
+		/*
+		 * The auto-stop does not run when the block transfer had
+		 * errors, so there is no CMD12 response to harvest and the
+		 * card is still in read/write-multiple state. Leave the stop
+		 * to tmio_mmc_finish_request() to issue.
+		 */
+		if (data->error &&
+		    (host->pdata->flags & TMIO_MMC_NO_AUTO_CMD12_ON_ERROR))
+			host->force_stop = true;
+		else
+			/* fill in response from auto CMD12 */
+			stop->resp[0] = sd_ctrl_read16_and_16_as_32(host,
+								    CTL_RESPONSE);
 
 		sd_ctrl_write16(host, CTL_STOP_INTERNAL_ACTION, 0);
 	}
@@ -963,6 +974,11 @@ static void tmio_mmc_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	host->last_req_ts = jiffies;
 	wmb();
 	host->mrq = mrq;
+	/*
+	 * A request abandoned by tmio_mmc_reset_work() never reaches the
+	 * consume point in tmio_mmc_finish_request().
+	 */
+	host->force_stop = false;
 
 	spin_unlock_irqrestore(&host->lock, flags);
 
@@ -973,6 +989,7 @@ static void tmio_mmc_finish_request(struct tmio_mmc_host *host)
 {
 	struct mmc_request *mrq;
 	unsigned long flags;
+	bool need_stop;
 
 	spin_lock_irqsave(&host->lock, flags);
 
@@ -983,6 +1000,10 @@ static void tmio_mmc_finish_request(struct tmio_mmc_host *host)
 		spin_unlock_irqrestore(&host->lock, flags);
 		return;
 	}
+
+	/* Consumed here so the stop's own completion cannot re-issue it */
+	need_stop = host->force_stop;
+	host->force_stop = false;
 
 	/* If not SET_BLOCK_COUNT, clear old data */
 	if (host->cmd != mrq->sbc) {
@@ -998,6 +1019,35 @@ static void tmio_mmc_finish_request(struct tmio_mmc_host *host)
 	if (mrq->cmd->error || (mrq->data && mrq->data->error)) {
 		tmio_mmc_ack_mmc_irqs(host, TMIO_MASK_IRQ); /* Clear all */
 		tmio_mmc_abort_dma(host);
+
+		/*
+		 * A card left in read/write-multiple state keeps driving DAT,
+		 * so put a real CMD12 on the bus before completing the
+		 * request. Its completion re-enters here with need_stop
+		 * cleared; if it never completes, the reset work finishes the
+		 * request.
+		 */
+		if (need_stop && mrq->stop) {
+			int ret;
+
+			spin_lock_irqsave(&host->lock, flags);
+			host->mrq = mrq;
+			host->last_req_ts = jiffies;
+			ret = tmio_mmc_start_command(host, mrq->stop);
+			if (ret) {
+				host->mrq = NULL;
+				host->cmd = NULL;
+			}
+			spin_unlock_irqrestore(&host->lock, flags);
+
+			if (!ret) {
+				schedule_delayed_work(&host->delayed_reset_work,
+						      msecs_to_jiffies(CMDREQ_TIMEOUT));
+				return;
+			}
+
+			mrq->stop->error = ret;
+		}
 	}
 
 	/* Error means retune, but executed command was still successful */

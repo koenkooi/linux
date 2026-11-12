@@ -68,6 +68,14 @@
 /* Some controllers have a 64-bit wide data port register */
 #define TMIO_MMC_64BIT_DATA_PORT	BIT(12)
 
+/*
+ * The hardware auto-stop (CTL_STOP_INTERNAL_ACTION = TMIO_STOP_SEC) does not
+ * execute when the multi-block transfer it was armed for ended in error, so
+ * the card is left in read/write-multiple state and the response register
+ * holds nothing meaningful. The host driver must then issue a real CMD12.
+ */
+#define TMIO_MMC_NO_AUTO_CMD12_ON_ERROR	BIT(13)
+
 struct tmio_mmc_data {
 	void				*chan_priv_tx;
 	void				*chan_priv_rx;

@@ -180,6 +180,12 @@ struct tmio_mmc_host {
 	struct mutex		ios_lock;	/* protect set_ios() context */
 	bool			native_hotplug;
 	bool			sdio_irq_enabled;
+	/*
+	 * Set from tmio_mmc_do_data_irq() when a multi-block transfer ended
+	 * in error on a host with TMIO_MMC_NO_AUTO_CMD12_ON_ERROR; consumed
+	 * once by tmio_mmc_finish_request(). Protected by ->lock.
+	 */
+	bool			force_stop;
 
 	/* Mandatory callback */
 	int (*clk_enable)(struct tmio_mmc_host *host);
