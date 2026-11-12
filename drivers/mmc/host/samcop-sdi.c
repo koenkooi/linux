@@ -55,6 +55,7 @@
 #include <linux/io.h>
 #include <linux/jiffies.h>
 #include <linux/math.h>
+#include <linux/mfd/samcop.h>
 #include <linux/minmax.h>
 #include <linux/mmc/host.h>
 #include <linux/mmc/slot-gpio.h>
@@ -1739,6 +1740,48 @@ static void samcop_sdi_set_clock(struct samcop_sdi_host *host, unsigned int cloc
 	host->pre_written = host->prescaler;
 }
 
+/*
+ * Slot power rail, plus the SD bus pull-ups that move with it.
+ *
+ * The rail is the "vmmc" regulator; where none is described,
+ * mmc->supply.vmmc is an ERR_PTR and that leg is skipped.
+ *
+ * The pull-ups are SAMCOP's own, in the MFD core's SPCR register. The SPCR
+ * SDPUCR bits are pull-up disable bits: cleared when the slot is powered and
+ * set again when it is not, as the vendor driver does. SD_CMD and SD_DAT must
+ * be pulled up by the host, so with the pull-ups left disabled a card cannot
+ * answer. SPCR's reset value is undocumented and has not been read on real
+ * h5xxx hardware, so whether the missing write ever left the pull-ups off is
+ * not known; the bits are programmed rather than inherited.
+ *
+ * Only SDPUCR is written. SAMCOP_GPIO_SPCR_PU_SDDA/PU_SDCM are HAMCOP bit
+ * names with no SAMCOP counterpart.
+ *
+ * A second pull-up moves in the same sequence: GPA_PUP's bit for GPA16
+ * (SAMCOP_GPIO_GPA_SD_DETECT), the card-detect pin, is cleared on power-on
+ * and set on power-off, symmetric with SDPUCR. GPA_PUP is the per-GPA-pin
+ * pull-up bank, a different register from SPCR, so it needs its own call;
+ * GPIO-A is bank 0, so the gpio_chip offset of the pin is its bare GPA pin
+ * number.
+ */
+static void samcop_sdi_set_power(struct samcop_sdi_host *host, bool on,
+				 unsigned char vdd)
+{
+	struct mmc_host *mmc = host->mmc;
+
+	if (!IS_ERR(mmc->supply.vmmc))
+		mmc_regulator_set_ocr(mmc, mmc->supply.vmmc, on ? vdd : 0);
+
+	/* Runs even without a regulator: a board whose rail is hardwired on
+	 * still needs its pull-ups managed.
+	 */
+	samcop_set_spcr(host->dev->parent, SAMCOP_GPIO_SPCR_SDPUCR,
+			on ? 0 : SAMCOP_GPIO_SPCR_SDPUCR);
+	samcop_set_gpio_a_pullup(host->dev->parent,
+				  BIT(SAMCOP_GPIO_GPA_SD_DETECT),
+				  on ? 0 : BIT(SAMCOP_GPIO_GPA_SD_DETECT));
+}
+
 static void samcop_sdi_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 {
 	struct samcop_sdi_host *host = mmc_priv(mmc);
@@ -1747,15 +1790,14 @@ static void samcop_sdi_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	switch (ios->power_mode) {
 	case MMC_POWER_ON:
 	case MMC_POWER_UP:
+		/* Rail first, FIFO reset second, as the vendor driver does. */
+		samcop_sdi_set_power(host, true, ios->vdd);
 		con = samcop_sdi_read(host, SAMCOP_SDI_CON);
 		samcop_sdi_write(host, SAMCOP_SDI_CON, con | SAMCOP_SDICON_FIFORESET);
-		if (!IS_ERR(mmc->supply.vmmc))
-			mmc_regulator_set_ocr(mmc, mmc->supply.vmmc, ios->vdd);
 		break;
 	case MMC_POWER_OFF:
 	default:
-		if (!IS_ERR(mmc->supply.vmmc))
-			mmc_regulator_set_ocr(mmc, mmc->supply.vmmc, 0);
+		samcop_sdi_set_power(host, false, 0);
 		break;
 	}
 
@@ -1898,23 +1940,37 @@ static int samcop_sdi_probe(struct platform_device *pdev)
 	samcop_sdi_write(host, SAMCOP_SDI_FSTA, 0xffffffff);
 
 	/*
-	 * Fall back to polling when no card-detect GPIO is described rather
-	 * than fail probe.
+	 * The level comes from GPA16 as a plain gpiod, the edge from the
+	 * SD_WAKEUP interrupt passed as IRQ resource 1: gpiod_to_irq() cannot
+	 * supply it, GPA16 is not in the GPIO interrupt map. Fall back to
+	 * polling when no card-detect GPIO is described rather than fail
+	 * probe.
 	 */
 	ret = mmc_gpiod_request_cd(mmc, "cd", 0, false, 0);
-	if (ret == -ENOENT)
+	if (ret == -ENOENT) {
 		mmc->caps |= MMC_CAP_NEEDS_POLL;
-	else if (ret)
+	} else if (ret) {
 		return dev_err_probe(dev, ret, "failed to get card-detect gpio\n");
+	} else {
+		mmc_gpio_set_cd_irq(mmc, platform_get_irq_optional(pdev, 1));
+
+		/*
+		 * The SD_WAKEUP trigger is armed by the MFD core's
+		 * samcop_ic_irq_set_type() when mmc_gpiod_request_cd_irq()
+		 * requests the interrupt. No card swap has been seen to fire it
+		 * on real hardware yet, so keep polling the same level read as
+		 * a fallback; it costs nothing next to a working edge.
+		 */
+		mmc->caps |= MMC_CAP_NEEDS_POLL;
+	}
 
 	ret = mmc_gpiod_request_ro(mmc, "wp", 0, 0);
 	if (ret && ret != -ENOENT)
 		return dev_err_probe(dev, ret, "failed to get write-protect gpio\n");
 
-	/* Likewise for slot power (PXA GPIO60 behind a board-registered
-	 * fixed regulator): mmc_regulator_get_supply() happily returns a
-	 * usable, always-on dummy "vmmc" regulator until board code
-	 * registers the real one.
+	/* Slot power is a board-described fixed regulator.
+	 * mmc_regulator_get_supply() returns a usable always-on dummy
+	 * "vmmc" if there is none, so this stays non-fatal.
 	 */
 	ret = mmc_regulator_get_supply(mmc);
 	if (ret)
