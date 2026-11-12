@@ -340,11 +340,9 @@ static int tmio_mmc_start_command(struct tmio_mmc_host *host,
 
 	host->cmd = cmd;
 
-/* FIXME - this seems to be ok commented out but the spec suggest this bit
- *         should be set when issuing app commands.
- *	if(cmd->flags & MMC_FLAG_ACMD)
- *		c |= APP_CMD;
- */
+	if ((host->pdata->flags & TMIO_MMC_CMD55_APP_CMD) &&
+	    cmd->opcode == MMC_APP_CMD)
+		c |= APP_CMD;
 	if (data) {
 		c |= DATA_PRESENT;
 		if (data->blocks > 1) {

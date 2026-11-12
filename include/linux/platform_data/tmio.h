@@ -76,6 +76,12 @@
  */
 #define TMIO_MMC_NO_AUTO_CMD12_ON_ERROR	BIT(13)
 
+/*
+ * Set the controller's APP_CMD bit on CMD55, for a host that was brought
+ * up and runs with it there.
+ */
+#define TMIO_MMC_CMD55_APP_CMD		BIT(14)
+
 struct tmio_mmc_data {
 	void				*chan_priv_tx;
 	void				*chan_priv_rx;
