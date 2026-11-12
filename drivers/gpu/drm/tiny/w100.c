@@ -24,6 +24,18 @@
  * microcode, and is used for the power-on video-memory clear and for
  * solid-colour damage fills.
  *
+ * The same blitter can also be driven through the chip's command
+ * processor: the host writes CCE command packets into a ring buffer in
+ * video memory and the processor executes them without a register write
+ * per operation. That path needs the processor's microcode, which is not
+ * part of the kernel; it is loaded with request_firmware() from
+ * imageon/W3220_cp.bin, following the r128/radeon precedent for ATI CCE
+ * microcode. It is optional: without the firmware file, or without the
+ * wrap aperture in the device tree, the driver says so once and keeps
+ * programming the engine by polled register writes. The only source for
+ * this block is the kdrive ati_dma.c and w100_regs.h; w100fb.c defines no
+ * mmCP_* register.
+ *
  * Not carried over: the chip-ID branches for the W100 and W3200, the
  * rotate/flip modes (the two modes here are independent panel timings),
  * suspend/resume, and the chip interrupt, which is not described in the
@@ -46,6 +58,7 @@
 #include <linux/bitfield.h>
 #include <linux/bits.h>
 #include <linux/delay.h>
+#include <linux/firmware.h>
 #include <linux/gpio/consumer.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
@@ -212,6 +225,35 @@
 #define W100_REG_DP_MIX		0x12c8	/* mmDP_MIX */
 #define W100_REG_DP_WRITE_MSK		0x12cc	/* mmDP_WRITE_MSK */
 
+/*
+ * ------------------------------------------------------------------
+ * The command processor ("CP", whose microcode ATI calls the CCE), which
+ * fetches CCE packets from a ring buffer in the chip's own memory and
+ * executes them against the GFX block above.
+ *
+ * Unlike every other register block in this file, there is exactly *one*
+ * source for these offsets: kdrive's w100_regs.h:34-65 ("Block CP"),
+ * reconstructed from w100.patch (md5 0477bc6766ed74206d3a1ece1f1d7a16).
+ * The recovered w100fb.c/.h never used the command processor and its
+ * header declares no mmCP_* register at all, so nothing here is doubly
+ * confirmed the way the GFX block above is. mmWRAP_BUF_A is the
+ * exception -- it is a CIF register (w100_regs.h:7), in the same block
+ * as the mmWRAP_START_DIR/mmWRAP_TOP_DIR pair w100_chip_bringup()
+ * already programs, and it is listed here because the ring is its only
+ * user.
+ */
+#define W100_REG_WRAP_BUF_A		0x0008	/* mmWRAP_BUF_A */
+#define W100_REG_CP_RB_CNTL		0x0210	/* mmCP_RB_CNTL */
+#define W100_REG_CP_RB_BASE		0x0214	/* mmCP_RB_BASE */
+#define W100_REG_CP_RB_RPTR_ADDR	0x0218	/* mmCP_RB_RPTR_ADDR */
+#define W100_REG_CP_RB_RPTR		0x021c	/* mmCP_RB_RPTR */
+#define W100_REG_CP_RB_WPTR		0x0220	/* mmCP_RB_WPTR */
+#define W100_REG_CP_CSQ_CNTL		0x0230	/* mmCP_CSQ_CNTL */
+#define W100_REG_CP_ME_RAM_ADDR	0x0244	/* mmCP_ME_RAM_ADDR */
+#define W100_REG_CP_ME_RAM_DATAH	0x024c	/* mmCP_ME_RAM_DATAH */
+#define W100_REG_CP_ME_RAM_DATAL	0x0250	/* mmCP_ME_RAM_DATAL */
+#define W100_REG_CP_CSQ_STAT		0x02ec	/* mmCP_CSQ_STAT */
+
 #define W100_CHIP_ID_W3220		0x57441002	/* CHIP_ID_W3220 */
 
 /* defCIF_IO -- fixed drive-strength/timing constant, every known board
@@ -229,11 +271,23 @@
  */
 #define W100_DEF_CPU_DEFAULTS		0x0e
 
-/* WRAP_BUF_BASE_VALUE/WRAP_BUF_TOP_VALUE, both >> 1 to match
- * wrap_start_dir_t/wrap_top_dir_t's own 23-bit half-word-address field.
+/*
+ * WRAP_BUF_BASE_VALUE/WRAP_BUF_TOP_VALUE: the chip-offset bounds of the
+ * CIF wrap aperture, i.e. the host-side window whose writes the chip's
+ * wrap unit redirects elsewhere in its own memory. Both are programmed
+ * >> 1 to match wrap_start_dir_t/wrap_top_dir_t's own 23-bit
+ * half-word-address field.
+ *
+ * W100_WRAP_BASE is also the "wrap" device-tree window's own chip
+ * offset, in the same way W100_FB_BASE is the "fb" window's: kdrive
+ * computes the host address of the command ring as
+ * mem_base + (mmWRAP_START_DIR.start_addr << 1) (ATIDMAInit(),
+ * ati_dma.c:198-200), i.e. the base of exactly this region.
  */
-#define W100_WRAP_START_DIR_VAL	(0x80000 >> 1)
-#define W100_WRAP_TOP_DIR_VAL		(0xbffff >> 1)
+#define W100_WRAP_BASE			0x00080000
+#define W100_WRAP_TOP			0x000bffff
+#define W100_WRAP_START_DIR_VAL	(W100_WRAP_BASE >> 1)
+#define W100_WRAP_TOP_DIR_VAL		(W100_WRAP_TOP >> 1)
 
 /* MEM_INT_BASE_VALUE/MEM_INT_SIZE -- the chip's small always-present
  * internal SRAM, mapped to its own fixed default location whenever
@@ -257,6 +311,15 @@
  * host physical address of pixel data.
  */
 #define W100_FB_BASE			0x00800000
+
+/*
+ * VRAM layout inside the "fb" window, which the device tree maps over the
+ * whole 2 MiB the chip's memory controller places at W100_FB_BASE. The
+ * scanout buffer sits at offset 0, sized for the largest mode, 480x640
+ * RGB565. The command processor's ring buffer sits immediately above it.
+ */
+#define W100_FB_SIZE			(480 * 640 * 2)
+#define W100_CP_RING_VRAM_OFFSET	W100_FB_SIZE
 
 #define W100_TESTCLK_SRC_PLL		0x1	/* TESTCLK_SRC_PLL */
 
@@ -539,6 +602,100 @@ struct w100_2d_surface {
 
 /*
  * ------------------------------------------------------------------
+ * Command-processor constants. Bitfields from kdrive's w100_regs.h
+ * structs, packet encodings from its ati_dma.h, magic values from its
+ * w100_const.h. As with the mmCP_* offsets above, kdrive is the only
+ * source for any of this.
+ */
+
+/* wrap_buf_a_t: the chip-internal address the wrap unit redirects this
+ * aperture's writes to, plus a size code for the redirected block.
+ */
+#define W100_WRAP_BUF_A_OFFSET_ADDR	GENMASK(23, 0)
+#define W100_WRAP_BUF_A_BLOCK_SIZE	GENMASK(26, 24)
+
+/* cp_rb_cntl_t. rb_no_update and rb_bufsz are the only two fields
+ * ATIDMAInit() sets; rb_rptr_wr_ena stays clear, which is what makes
+ * mmCP_RB_RPTR read-only-to-the-host and owned by the processor.
+ */
+#define W100_CP_RB_CNTL_BUFSZ		GENMASK(5, 0)
+#define W100_CP_RB_CNTL_BLKSZ		GENMASK(13, 8)
+#define W100_CP_RB_CNTL_NO_UPDATE	BIT(27)
+#define W100_CP_RB_CNTL_RPTR_WR_ENA	BIT(31)
+
+/* cp_csq_cntl_t. CSQ_CNTL_MODE_FREERUN (w100_const.h:1) is the mode
+ * ATIDMAInit() runs in: the processor fetches from the ring on its own
+ * rather than from a host-written command queue aperture.
+ */
+#define W100_CP_CSQ_CNTL_MODE		GENMASK(31, 28)
+#define W100_CP_CSQ_MODE_FREERUN	8
+
+/* cp_rb_rptr_t/cp_rb_wptr_t are both a bare 23-bit dword index, which is
+ * how ATIRequestEntries()/ATISubmitEntries() use them. The driver masks
+ * reads with W100_CP_RING_MASK rather than this, because its ring is far
+ * smaller than the field is wide and the ring's own size is the bound
+ * that matters; the field width is recorded for the register map's sake.
+ */
+#define W100_CP_RB_PTR			GENMASK(22, 0)
+
+/* cp_me_ram_addr_t's address field is 8 bits, so the microcode engine's
+ * RAM is 256 entries deep -- the bound the firmware size is checked
+ * against.
+ */
+#define W100_CP_ME_RAM_DEPTH		256
+
+/*
+ * Ring geometry. rbsize 10 is ATIDMAInit()'s own choice (ati_dma.c:182,
+ * "with rbsize = 10, DMA buffer will be of 0x2000 (8192) bytes"), and it
+ * is the size mmCP_RB_CNTL.rb_bufsz encodes directly: the ring holds
+ * 1 << (rbsize + 1) dwords. w100_const.h's WB_BLOCK_SIZE_A_0..4 map
+ * rbsize 9..13 onto wrap_buf_a_t.block_size_a 0..4, i.e. the code is
+ * rbsize - 9.
+ */
+#define W100_CP_RB_BUFSZ		10
+#define W100_CP_RING_DWORDS		(1u << (W100_CP_RB_BUFSZ + 1))
+#define W100_CP_RING_MASK		(W100_CP_RING_DWORDS - 1)
+#define W100_CP_RING_BYTES		(W100_CP_RING_DWORDS * 4)
+#define W100_CP_WRAP_BLOCK_SIZE	(W100_CP_RB_BUFSZ - 9)
+
+/*
+ * CCE packet encodings, ati_dma.h:31-58.
+ *
+ * A type-0 packet is a register write burst: a header naming the first
+ * register (as a dword index, hence >> 2) and a dword count, then that
+ * many values for consecutive registers. A type-3 packet is an opcode
+ * the microcode implements; the two used here are the "multi" fill and
+ * blit opcodes from w100_const.h:23-24, whose opcode bytes are already
+ * folded into the constants.
+ *
+ * A type-2 packet is a no-op with no payload. It is named here for the
+ * taxonomy's sake and never emitted: the usual reason to
+ * emit one is to pad out the tail of a ring so a packet does not
+ * straddle the wrap point, and w100_cp_ring_emit() makes packets wrap
+ * cleanly instead.
+ *
+ * Both macros take the *payload* dword count, matching kdrive's own
+ * DMA_PACKET0()/DMA_PACKET3(); the encoded field is count - 1.
+ */
+#define W100_CCE_PACKET0		0x00000000
+#define W100_CCE_PACKET2		0x80000000
+#define W100_CCE_PACKET3_PAINT_MULTI	0xc0001a00
+#define W100_CCE_PACKET3_BITBLT_MULTI	0xc0001b00
+
+#define W100_CCE_PACKET0_HDR(reg, count) \
+	(W100_CCE_PACKET0 | (((count) - 1) << 16) | ((reg) >> 2))
+#define W100_CCE_PACKET3_HDR(op, count) \
+	((op) | (((count) - 1) << 16))
+
+/*
+ * The firmware file. Named for the part rather than dropped into the
+ * existing radeon/ directory, because it is a different chip from a
+ * different product line.
+ */
+#define W100_CP_FW_NAME		"imageon/W3220_cp.bin"
+
+/*
+ * ------------------------------------------------------------------
  * Board data, transcribed from the recovered arch/arm/mach-pxa/
  * hx4700.c:416-529 (w3220_regs, w3220_modes[], w3220_mem_info,
  * w3220_bm_mem_info, w3220_gpio_info, w3220_info.xtal_freq).
@@ -772,6 +929,14 @@ struct w100_device {
 	void __iomem *vram;	/* video memory window at chip offset W100_FB_BASE */
 	size_t vram_size;	/* ...and how much of it the device tree maps */
 
+	/*
+	 * The CIF wrap aperture at chip offset W100_WRAP_BASE, through
+	 * which the host writes command-ring dwords. NULL when the device
+	 * tree has no "wrap" window, which is a supported configuration:
+	 * the driver then never brings the command processor up at all.
+	 */
+	void __iomem *wrap;
+
 	struct drm_plane primary_plane;
 	struct drm_crtc crtc;
 	struct drm_encoder encoder;
@@ -833,6 +998,30 @@ struct w100_device {
 	const struct w100_hw_mode *hw_mode;
 	bool accel_ready;
 	bool vram_cleared;
+
+	/*
+	 * Command processor. @ring_ready is what selects the transport:
+	 * false and every 2D operation is a burst of polled register
+	 * writes, true and it is a packet in the ring. It only ever
+	 * becomes true if the device tree carries a wrap aperture *and*
+	 * the microcode file loads, so on a system with neither the two
+	 * fields below are simply never touched. All three are covered by
+	 * @accel_lock, which already serialises whole 2D operations.
+	 *
+	 * @ring_wptr is the driver's own copy of the ring write pointer,
+	 * in dwords. @ring_free is a cached count of how many dwords the
+	 * processor has since consumed, refreshed from mmCP_RB_RPTR only
+	 * when a submission would otherwise not fit -- that read crosses
+	 * the static-memory bus, so it is worth not doing per
+	 * packet. @fw is the microcode, fetched once and re-uploaded on
+	 * each mode apply; @fw_warned keeps a missing firmware file to one
+	 * log line rather than one per mode apply.
+	 */
+	u32 ring_wptr;
+	u32 ring_free;
+	bool ring_ready;
+	const struct firmware *fw;
+	bool fw_warned;
 };
 
 #define to_w100(_dev) container_of(_dev, struct w100_device, drm)
@@ -1548,6 +1737,420 @@ static u32 w100_2d_pitch_reg(u32 pitch_bytes)
 static void w100_2d_setup_locked(struct w100_device *w100,
 				 const struct w100_hw_mode *hw);
 
+/* ------------------------------------------------------------------ */
+/*
+ * The command processor: the same GFX block as above, reached through a
+ * ring buffer of CCE packets instead of through polled register writes.
+ * It performs no operation the polled path cannot; what it removes is
+ * the per-burst mmRBBM_STATUS.cmdfifo_avail poll, because the processor
+ * paces itself against the ring's own read pointer.
+ *
+ * Ported from kdrive's ATIDMAInit()/ATIDMAFini()/ATIRequestEntries()/
+ * ATISubmitEntries()/ATIUploadMicrocode() (ati_dma.c:49-61,175-264,
+ * 297-333) and the DRAW_USING_PACKET3 arms of ATISolid()/ATICopy()
+ * (ati_draw.c:267-272,382-388). That is the *only* source: the recovered
+ * w100fb.c never used this block and w100fb.h declares no mmCP_*
+ * register, so unlike the GFX block above nothing here is confirmed by a
+ * second independent driver. Everything below is one working 2006 X
+ * server's usage, transcribed, with its own defects fixed where they are
+ * demonstrable from the source itself -- each one is called out at the
+ * point it is fixed.
+ *
+ * Nothing here has run on real silicon.
+ *
+ * There is no fence, no scheduler and no dma_fence
+ * signalling. This hardware has no completion interrupt to hang one on:
+ * mmCP_RB_RPTR_ADDR writeback is left disabled exactly as kdrive leaves
+ * it, and the board's W3220_IRQ line (PXA GPIO13) has never been wired
+ * by any driver for this chip. Completion is polled -- see
+ * w100_cp_ring_drain() -- which is what both this hardware and this
+ * driver's callers actually want, since every caller either reads the
+ * result back or hands the memory straight to a CPU copy.
+ */
+
+/*
+ * kdrive's own WHILE_NOT_TIMEOUT(1) bound for ring space
+ * (ATIRequestEntries(), ati_dma.c:304), in microseconds. Longer than the
+ * GFX engine's own 200 ms because it is waiting on a queue of work
+ * rather than on a single operation.
+ */
+#define W100_CP_RING_TIMEOUT_US	1000000
+
+static bool w100_cp_active(struct w100_device *w100)
+{
+	return w100->ring_ready;
+}
+
+/*
+ * Upload the microcode engine's instruction RAM.
+ *
+ * This is r100_cp_load_microcode()'s loop (drivers/gpu/drm/radeon/
+ * r100.c:1128-1142), not kdrive's ATIUploadMicrocode()'s, on purpose.
+ * kdrive iterates a hardcoded 256 times over an array with 192 entries
+ * (ati_dma.c:57 against ati_microcode.c's own initialiser count), so it
+ * reads 512 bytes past the end of that array and writes whatever
+ * followed it in .data into ME RAM entries 192-255. Deriving the count
+ * from the firmware's own size is both the fix and what makes the file's
+ * true length -- which is *not* recoverable from kdrive's source, since
+ * its array's tail is already zero-padded -- stop mattering.
+ *
+ * The file stores each entry as two big-endian words, DATAH first, which
+ * is the r128/radeon layout ("Firmware blob looks like this: __be32
+ * datah / __be32 datal", 52f97df5da1f). kdrive's C array stores the same
+ * two words in the opposite order; the generator that produces the file
+ * from that array is where the swap happens, precisely so this loop can
+ * stay identical to r100's.
+ */
+static void w100_cp_upload_microcode(struct w100_device *w100,
+				     const struct firmware *fw)
+{
+	const __be32 *data = (const __be32 *)fw->data;
+	size_t i, words = fw->size / 4;
+
+	writel(0, w100->regs + W100_REG_CP_ME_RAM_ADDR);
+
+	for (i = 0; i < words; i += 2) {
+		writel(be32_to_cpup(&data[i]), w100->regs + W100_REG_CP_ME_RAM_DATAH);
+		writel(be32_to_cpup(&data[i + 1]), w100->regs + W100_REG_CP_ME_RAM_DATAL);
+	}
+}
+
+/*
+ * Fetch and validate the microcode, once, caching it for later mode
+ * applies. Retried on each attempt until it succeeds, because a built-in
+ * driver's first modeset can easily precede the root filesystem the file
+ * lives on; the log line is emitted only the first time so a system that
+ * simply has no firmware installed does not repeat itself on every
+ * enable.
+ *
+ * Absent or malformed firmware is not an error at any level above this
+ * one: the caller keeps the polled path.
+ */
+static const struct firmware *w100_cp_get_firmware(struct w100_device *w100)
+{
+	const struct firmware *fw;
+	int ret;
+
+	if (w100->fw)
+		return w100->fw;
+
+	/*
+	 * request_firmware_direct(), not request_firmware(): this file is
+	 * genuinely optional, and the plain call would drag in the
+	 * userspace-helper fallback on kernels that enable it -- which can
+	 * block for its own timeout, from inside an atomic commit, every
+	 * time a system without the firmware applies a mode. The direct
+	 * form also suppresses the loader's own failure warning, leaving
+	 * the one drm_info() below as the only thing said about it.
+	 */
+	ret = request_firmware_direct(&fw, W100_CP_FW_NAME, w100->drm.dev);
+	if (ret) {
+		if (!w100->fw_warned)
+			drm_info(&w100->drm,
+				 "no %s (%d); 2D operations will use polled register writes\n",
+				 W100_CP_FW_NAME, ret);
+		w100->fw_warned = true;
+		return NULL;
+	}
+
+	/*
+	 * Two words per entry, and no more entries than
+	 * cp_me_ram_addr_t's own 8-bit address field can reach. Same
+	 * shape of check as r100_cp_init_microcode()'s "Bogus length"
+	 * (r100.c:1090-1096), plus the upper bound r100 does not need
+	 * because its files are all exactly ME-RAM sized.
+	 */
+	if (!fw->size || fw->size % 8 || fw->size > W100_CP_ME_RAM_DEPTH * 8) {
+		drm_warn(&w100->drm,
+			 "%s has bogus length %zu; 2D operations will use polled register writes\n",
+			 W100_CP_FW_NAME, fw->size);
+		release_firmware(fw);
+		w100->fw_warned = true;
+		return NULL;
+	}
+
+	w100->fw = fw;
+
+	return fw;
+}
+
+static void w100_cp_release_firmware(struct drm_device *drm, void *data)
+{
+	struct w100_device *w100 = data;
+
+	release_firmware(w100->fw);
+	w100->fw = NULL;
+}
+
+/*
+ * Stop the processor fetching, then reset the GFX block underneath it --
+ * ATIDMAFini(), ati_dma.c:249-264.
+ */
+static void w100_cp_ring_fini_locked(struct w100_device *w100)
+{
+	if (!w100->ring_ready)
+		return;
+
+	w100->ring_ready = false;
+
+	writel(0, w100->regs + W100_REG_CP_CSQ_CNTL);
+	w100_2d_engine_reset(w100);
+}
+
+/*
+ * ATIDMAInit(), ati_dma.c:175-247, in its own order: microcode first,
+ * then an engine reset, then the ring registers, then let the processor
+ * run.
+ *
+ * The two addresses this hands the hardware are the whole trick, and
+ * getting either wrong produces the same symptom -- a read pointer that
+ * never advances. mmCP_RB_BASE is where the *processor* finds the ring,
+ * a chip-internal address in video memory. mmWRAP_BUF_A.offset_addr_a is
+ * where the *wrap unit* sends the host's writes, and it has to name the
+ * same place, because the host cannot reach video memory at that address
+ * itself: it writes into the wrap aperture (w100->wrap, chip offset
+ * W100_WRAP_BASE) and the wrap unit redirects. Host and processor
+ * therefore see one ring through two different addresses.
+ *
+ * mmCP_RB_RPTR_ADDR is left at 0, i.e. read-pointer writeback to memory
+ * disabled, exactly as kdrive leaves it (ati_dma.c:214). Nothing here
+ * wants it: the driver reads mmCP_RB_RPTR directly when it needs the
+ * pointer, and enabling writeback would mean finding somewhere coherent
+ * for the processor to write it to.
+ *
+ * Runs *before* the 2D engine's own quiescent setup and does not consult
+ * @accel_ready, because at this point nothing has established it yet --
+ * see w100_2d_setup() for the ordering and why it is that way round.
+ * Leaving @ring_ready set on a chip whose 2D block never answers is
+ * harmless: w100_2d_fill()/w100_2d_copy() check @accel_ready before they
+ * look at the transport at all.
+ */
+static void w100_cp_ring_init_locked(struct w100_device *w100)
+{
+	u32 ring_addr = W100_FB_BASE + W100_CP_RING_VRAM_OFFSET;
+	const struct firmware *fw;
+
+	w100_cp_ring_fini_locked(w100);
+
+	if (!w100->wrap)
+		return;
+
+	fw = w100_cp_get_firmware(w100);
+	if (!fw)
+		return;
+
+	w100_cp_upload_microcode(w100, fw);
+	w100_2d_engine_reset(w100);
+
+	w100->ring_wptr = 0;
+	w100->ring_free = W100_CP_RING_DWORDS;
+
+	writel(ring_addr, w100->regs + W100_REG_CP_RB_BASE);
+	writel(0, w100->regs + W100_REG_CP_RB_WPTR);
+	writel(0, w100->regs + W100_REG_CP_RB_RPTR);
+	writel(0, w100->regs + W100_REG_CP_RB_RPTR_ADDR);
+
+	writel(FIELD_PREP(W100_WRAP_BUF_A_OFFSET_ADDR, ring_addr) |
+	       FIELD_PREP(W100_WRAP_BUF_A_BLOCK_SIZE, W100_CP_WRAP_BLOCK_SIZE),
+	       w100->regs + W100_REG_WRAP_BUF_A);
+
+	writel(W100_CP_RB_CNTL_NO_UPDATE |
+	       FIELD_PREP(W100_CP_RB_CNTL_BUFSZ, W100_CP_RB_BUFSZ),
+	       w100->regs + W100_REG_CP_RB_CNTL);
+
+	writel(FIELD_PREP(W100_CP_CSQ_CNTL_MODE, W100_CP_CSQ_MODE_FREERUN),
+	       w100->regs + W100_REG_CP_CSQ_CNTL);
+
+	w100->ring_ready = true;
+}
+
+/*
+ * A read pointer that stops moving is the one failure this transport
+ * has, and it arrives at both of the places that wait on it. There is
+ * nothing to diagnose it with -- no completion interrupt, no error
+ * status register anywhere in kdrive's map, and no documentation of what
+ * the microcode does when it faults -- so the response is the same in
+ * both places: stop using the processor, loudly, and let the caller
+ * reissue on the transport that two independent drivers attest.
+ *
+ * Returns -EAGAIN, which the driver already uses for "the engine was
+ * reset underneath you, reissue this" on the polled path.
+ */
+static int w100_cp_ring_wedged(struct w100_device *w100, const char *why, u32 rptr)
+{
+	drm_err(&w100->drm,
+		"command processor: %s (rptr %u, wptr %u); falling back to polled register writes\n",
+		why, rptr, w100->ring_wptr);
+
+	/*
+	 * Cheap diagnostic for a dead ring, available now regardless of any
+	 * PM work: mmCP_RB_RPTR stuck at 0 while the driver's cached write
+	 * pointer is nonzero means the processor never advanced past its
+	 * post-reset state at all, rather than merely stalling mid-stream --
+	 * the shape a live suspend/resume would leave behind, since nothing
+	 * in this driver currently saves or reloads the ring base/microcode
+	 * across a real suspend (there are no PM ops here; see the comment
+	 * at the top of this file). This does not fix or work around
+	 * anything, it only tells the two shapes apart in the log.
+	 */
+	if (rptr == 0 && w100->ring_wptr != 0)
+		drm_err(&w100->drm,
+			"command processor: rptr stuck at 0 with wptr %u -- ring/microcode appear dead, not merely stalled\n",
+			w100->ring_wptr);
+
+	/*
+	 * The teardown resets the 2D block, which clears the source and
+	 * default scissors the engine's quiescent state establishes and
+	 * that no individual operation reprogrammes. Re-establish them, or
+	 * the polled path this just fell back to inherits an engine that
+	 * clips everything away -- the same reason kdrive follows every
+	 * ATIEngineReset() with an ATIDrawSetup(), and the same thing
+	 * w100_2d_fifo_wait_recover() does on its own reset path.
+	 */
+	w100_cp_ring_fini_locked(w100);
+	w100_2d_setup_locked(w100, w100->hw_mode);
+
+	return -EAGAIN;
+}
+
+/*
+ * ATIRequestEntries(), ati_dma.c:297-323: wait until @dwords will fit,
+ * refreshing the cached free count from the processor's read pointer.
+ *
+ * The strict inequality is kdrive's and is required rather than an
+ * off-by-one: the ring is empty when the two pointers are equal, so
+ * letting the write pointer catch the read pointer from behind would
+ * make a completely full ring indistinguishable from an empty one. One
+ * dword is always left unused.
+ *
+ * kdrive re-reads mmCP_RB_WPTR here too. That register only ever holds
+ * what this driver last wrote into it, and every read crosses the
+ * static-memory bus, so the shadow copy is used instead.
+ */
+static int w100_cp_ring_space(struct w100_device *w100, unsigned int dwords)
+{
+	ktime_t timeout;
+	u32 rptr;
+
+	if (WARN_ON(dwords >= W100_CP_RING_DWORDS))
+		return -EINVAL;
+
+	timeout = ktime_add_us(ktime_get(), W100_CP_RING_TIMEOUT_US);
+
+	for (;;) {
+		if (w100->ring_free > dwords)
+			return 0;
+
+		rptr = readl(w100->regs + W100_REG_CP_RB_RPTR) & W100_CP_RING_MASK;
+
+		if (rptr == w100->ring_wptr)
+			w100->ring_free = W100_CP_RING_DWORDS;
+		else
+			w100->ring_free = (W100_CP_RING_DWORDS + rptr -
+					   w100->ring_wptr) & W100_CP_RING_MASK;
+
+		if (w100->ring_free > dwords)
+			return 0;
+
+		if (ktime_after(ktime_get(), timeout))
+			return w100_cp_ring_wedged(w100, "ring never freed space", rptr);
+
+		cpu_relax();
+	}
+}
+
+/*
+ * Write one dword into the ring, through the wrap aperture.
+ *
+ * The index is masked on every dword, which is radeon's own idiom
+ * (radeon_ring_write(), drivers/gpu/drm/radeon/radeon.h:2678-2687) and
+ * lets a packet straddle the end of the ring, as it must in a genuinely
+ * circular buffer.
+ *
+ * kdrive does not do this: ATIRequestEntries() hands out an *unmasked*
+ * base pointer and its OUT_RING() macro then writes n consecutive dwords
+ * from it (ati_dma.h:120-122), so a packet issued near the top of the
+ * ring writes past the end of the 8 KiB buffer. It is possible the wrap
+ * unit folds those writes back to the ring's start on its own -- that is
+ * what the block is named for, and it would explain how kdrive got away
+ * with it -- but no source anywhere documents the behaviour. Masking in
+ * software is correct under either reading: if the hardware wraps, this
+ * produces the same address it would have; if it does not, this is the
+ * only thing preventing the overrun.
+ */
+static void w100_cp_ring_emit(struct w100_device *w100, u32 value)
+{
+	writel(value, w100->wrap + w100->ring_wptr * 4);
+	w100->ring_wptr = (w100->ring_wptr + 1) & W100_CP_RING_MASK;
+	w100->ring_free--;
+}
+
+/* A type-0 packet with a payload of one, i.e. a single register write --
+ * kdrive's compiled OUT_REG() (ati_dma.h:100-104) exactly. Type-0 can
+ * carry a burst of consecutive registers and doing so would halve the
+ * dwords spent on setup, but the only count > 1 type-0 packet anywhere
+ * in kdrive is in an #ifdef arm that its own build does not select, so
+ * multi-register bursts are unattested on this processor and are not
+ * used here.
+ */
+static void w100_cp_ring_emit_reg(struct w100_device *w100, u32 reg, u32 value)
+{
+	w100_cp_ring_emit(w100, W100_CCE_PACKET0_HDR(reg, 1));
+	w100_cp_ring_emit(w100, value);
+}
+
+/*
+ * Ring the doorbell: publish the write pointer. ATISubmitEntries(),
+ * ati_dma.c:325-333.
+ *
+ * The read-back is r100_gfx_set_wptr()'s (r100.c:1120-1124), for the
+ * same reason: it is the one point where the host has to know its
+ * doorbell has actually reached the chip rather than sitting in a write
+ * buffer somewhere between the two.
+ */
+static void w100_cp_ring_commit(struct w100_device *w100)
+{
+	writel(w100->ring_wptr, w100->regs + W100_REG_CP_RB_WPTR);
+	readl(w100->regs + W100_REG_CP_RB_WPTR);
+}
+
+/*
+ * Completion, in the only two forms this hardware offers.
+ *
+ * First the processor has to have consumed everything submitted, which
+ * is the read pointer catching the write pointer -- that is a real
+ * signal about the *queue*, and it is the one thing the polled register
+ * path could never tell anybody. Then the GFX block has to have finished
+ * the last packet it was handed, which is the same mmRBBM_STATUS
+ * gui_active poll the polled path already ends every operation with
+ * (ATIWaitIdle(), ati_dma.c:139-172, polls exactly this after its own
+ * mmCP_RB_RPTR read).
+ */
+static int w100_cp_ring_drain(struct w100_device *w100)
+{
+	u32 rptr;
+	int ret;
+
+	/*
+	 * Polled at 10 us rather than the 1 us the engine's own waits use.
+	 * This one is waiting on however much work was submitted, not on a
+	 * single register burst, so it is bounded by kdrive's longer ring
+	 * timeout -- and at that bound a 1 us interval would be a million
+	 * iterations of a read across the static-memory bus for no
+	 * added resolution.
+	 */
+	ret = readl_poll_timeout_atomic(w100->regs + W100_REG_CP_RB_RPTR, rptr,
+					(rptr & W100_CP_RING_MASK) == w100->ring_wptr,
+					10, W100_CP_RING_TIMEOUT_US);
+	if (ret)
+		return w100_cp_ring_wedged(w100, "ring never drained",
+					   rptr & W100_CP_RING_MASK);
+
+	w100->ring_free = W100_CP_RING_DWORDS;
+
+	return w100_2d_wait_idle(w100);
+}
+
 /*
  * kdrive's recovery, ati_dma.c:130-134: on a FIFO timeout, reset the
  * engine and re-establish its static state, then retry the wait once.
@@ -1669,9 +2272,36 @@ static void w100_2d_setup_locked(struct w100_device *w100,
 	w100->accel_ready = !ret;
 }
 
+/*
+ * Bring up the command processor, then the engine's quiescent state --
+ * in that order, which is kdrive's own ATIDrawEnable(): ATIDMASetup()
+ * followed by ATIDrawSetup() (ati_draw.c:444-450).
+ *
+ * The order matters and is not a style choice. Bringing the processor up
+ * resets the 2D block (ATIDMAInit()'s ATIEngineReset(), ati_dma.c:204),
+ * and that reset clears exactly the scissor state the engine's quiescent
+ * setup exists to establish -- which is why kdrive's own FIFO-timeout
+ * recovery re-runs ATIDrawSetup() after every ATIEngineReset(), and why
+ * w100_2d_fifo_wait_recover() does the same here. Setting the engine up
+ * first and the ring second would throw the setup away.
+ *
+ * Both are redone from scratch on every mode apply rather than carried
+ * across one. It is cheap -- one microcode upload from an already-cached
+ * firmware image plus seven register writes -- and this driver's
+ * .atomic_enable replays the whole chip programming sequence on every
+ * enable anyway.
+ *
+ * kdrive's ATIDrawSetup() submits its two registers *through* the ring,
+ * because its OUT_REG() macro compiles to a type-0 packet in a DMA
+ * build. w100_2d_setup_locked() writes them by MMIO instead. The two
+ * reach the same register file and the ring is empty at this point, so
+ * nothing is racing; a plain register write is simply the smaller thing
+ * to do when there is no operation to batch it with.
+ */
 static void w100_2d_setup(struct w100_device *w100, const struct w100_hw_mode *hw)
 {
 	mutex_lock(&w100->accel_lock);
+	w100_cp_ring_init_locked(w100);
 	w100_2d_setup_locked(w100, hw);
 	mutex_unlock(&w100->accel_lock);
 }
@@ -1707,56 +2337,38 @@ static bool w100_2d_rect_valid(const struct w100_2d_surface *s,
 }
 
 /*
- * ATIPrepareSolid() + ATISolid() (ati_draw.c:210-289), collapsed into
- * one function because there is no command ring here to batch a
- * prepare/emit/emit/... sequence into, and no consumer that would issue
- * more than one rectangle per setup anyway.
+ * Solid fill, in both transports: ATIPrepareSolid() + ATISolid()
+ * (ati_draw.c:210-289), collapsed into one operation per transport
+ * because no consumer here issues more than one rectangle per setup.
  *
  * @color is a raw destination-format pixel, i.e. RGB565 on this driver
  * -- see W100_DATATYPE_16BPP's comment for why the datatype's name says
  * otherwise and why that does not matter.
  *
- * Returns once the engine is idle again: both historical drivers left
- * the operation in flight and synchronised lazily (fb_sync,
- * waitMarker), which is the right shape for a batching consumer. There
- * is none here, and every caller in this driver either reads the result
- * back or hands the memory straight to a CPU memcpy, so paying the idle
- * poll up front is both simpler and what the callers would have to do
- * anyway.
+ * Both transports return once the engine is idle again. Every source
+ * for this hardware instead left the operation in flight and
+ * synchronised lazily (w100fb_sync(), ATIWaitMarker()), which is the
+ * right shape for a batching consumer; there is none here, and every
+ * caller in this driver either reads the result back or hands the
+ * memory straight to a CPU memcpy, so paying the wait up front is both
+ * simpler and what the callers would have to do anyway.
+ *
+ * That is worth being clear about, because it bounds what the ring
+ * transport can be worth: submitting asynchronously and then
+ * immediately waiting does not overlap the CPU with the engine. What it
+ * does remove is the polled path's three mmRBBM_STATUS FIFO waits per
+ * operation, replacing them with one contiguous burst of ring writes.
  */
-static int w100_2d_fill(struct w100_device *w100, const struct w100_2d_surface *dst,
-			int x, int y, int width, int height,
-			u16 color, enum w100_rop rop)
+static int w100_2d_fill_mmio_locked(struct w100_device *w100,
+				    const struct w100_2d_surface *dst,
+				    int x, int y, int width, int height,
+				    u16 color, u32 gmc)
 {
-	u32 gmc;
 	int ret;
-
-	if (WARN_ON(rop >= W100_ROP_COUNT))
-		return -EINVAL;
-	if (!w100_2d_surface_valid(w100, dst) ||
-	    !w100_2d_rect_valid(dst, x, y, width, height))
-		return -EINVAL;
-
-	gmc = W100_GMC_DST_PITCH_OFFSET_CNTL | W100_GMC_DST_CLIPPING |
-	      FIELD_PREP(W100_GMC_BRUSH_DATATYPE, W100_BRUSH_SOLIDCOLOR) |
-	      FIELD_PREP(W100_GMC_DST_DATATYPE, W100_DATATYPE_16BPP) |
-	      FIELD_PREP(W100_GMC_SRC_DATATYPE, W100_DATATYPE_16BPP) |
-	      W100_GMC_BYTE_PIX_ORDER |
-	      FIELD_PREP(W100_GMC_ROP3, w100_solid_rop3[rop]) |
-	      FIELD_PREP(W100_GMC_DP_SRC_SOURCE, W100_DP_SRC_MEM_RECTANGULAR) |
-	      W100_GMC_CLR_CMP_FCN_DIS |
-	      FIELD_PREP(W100_GMC_DP_OP, W100_DP_OP_ROP);
-
-	mutex_lock(&w100->accel_lock);
-
-	if (!w100->accel_ready) {
-		ret = -ENODEV;
-		goto out;
-	}
 
 	ret = w100_2d_fifo_wait_recover(w100, 6);
 	if (ret)
-		goto out;
+		return ret;
 
 	/* Belt and braces: w100_2d_rect_valid() has already rejected a
 	 * rectangle that leaves the surface, and gmc_dst_clipping above
@@ -1771,7 +2383,7 @@ static int w100_2d_fill(struct w100_device *w100, const struct w100_2d_surface *
 
 	ret = w100_2d_fifo_wait_recover(w100, 4);
 	if (ret)
-		goto out;
+		return ret;
 
 	/* Every plane writable. kdrive puts the client's own plane mask
 	 * here (ATIPrepareSolid()'s pm argument); nothing in this driver
@@ -1784,26 +2396,136 @@ static int w100_2d_fill(struct w100_device *w100, const struct w100_2d_surface *
 	/* Writing the extent is what launches the operation. */
 	writel(W100_2D_WH(width, height), w100->regs + W100_REG_DST_WIDTH_HEIGHT);
 
-	ret = w100_2d_wait_idle(w100);
+	return w100_2d_wait_idle(w100);
+}
 
-out:
+/*
+ * The same fill as a ring submission: ATIPrepareSolid()'s register set
+ * as type-0 packets, then ATISolid()'s PAINT_MULTI (ati_draw.c:268-272).
+ *
+ * Two differences from the polled path, both forced by the packet:
+ *
+ * The rectangle goes in as x-major -- (x << 16) | y, then
+ * (width << 16) | height -- where every geometry *register* on this chip
+ * is y-major. That is not a transcription slip: the polled path writes
+ * mmDST_Y_X and mmDST_WIDTH_HEIGHT, and the packet's payload is a
+ * distinct encoding the microcode unpacks, so the two orders are simply
+ * different interfaces to the same operation. kdrive has it exactly this
+ * way round in the two arms of one #ifdef, which is as direct a
+ * confirmation as this source can give.
+ *
+ * And there is no separate "launch" write. The polled path starts the
+ * operation by writing the extent register last; here the packet is the
+ * operation, and it starts when the processor reaches it.
+ */
+static int w100_cp_fill_submit_locked(struct w100_device *w100,
+				      const struct w100_2d_surface *dst,
+				      int x, int y, int width, int height,
+				      u16 color, u32 gmc)
+{
+	int ret;
+
+	/* Eight single-register type-0 packets plus a three-dword type-3. */
+	ret = w100_cp_ring_space(w100, 8 * 2 + 3);
+	if (ret)
+		return ret;
+
+	w100_cp_ring_emit_reg(w100, W100_REG_SC_TOP_LEFT, 0);
+	w100_cp_ring_emit_reg(w100, W100_REG_SC_BOTTOM_RIGHT,
+			      W100_2D_YX(dst->width, dst->height));
+	w100_cp_ring_emit_reg(w100, W100_REG_DST_PITCH, w100_2d_pitch_reg(dst->pitch));
+	w100_cp_ring_emit_reg(w100, W100_REG_DST_OFFSET, dst->offset);
+	w100_cp_ring_emit_reg(w100, W100_REG_DP_GUI_MASTER_CNTL, gmc);
+	w100_cp_ring_emit_reg(w100, W100_REG_DP_BRUSH_FRGD_CLR, color);
+	w100_cp_ring_emit_reg(w100, W100_REG_DP_WRITE_MSK, ~0u);
+	w100_cp_ring_emit_reg(w100, W100_REG_DP_CNTL,
+			      W100_DP_CNTL_DST_X_DIR | W100_DP_CNTL_DST_Y_DIR);
+
+	w100_cp_ring_emit(w100, W100_CCE_PACKET3_HDR(W100_CCE_PACKET3_PAINT_MULTI, 2));
+	w100_cp_ring_emit(w100, (u32)x << 16 | y);
+	w100_cp_ring_emit(w100, (u32)width << 16 | height);
+
+	w100_cp_ring_commit(w100);
+
+	return 0;
+}
+
+/*
+ * Submit and wait. The split above exists because submitting several
+ * operations and waiting once is the only thing this transport can do
+ * that the polled one cannot. Every caller in this driver wants the
+ * result before it continues, so this wrapper always waits immediately.
+ */
+static int w100_cp_fill_locked(struct w100_device *w100,
+			       const struct w100_2d_surface *dst,
+			       int x, int y, int width, int height,
+			       u16 color, u32 gmc)
+{
+	int ret;
+
+	ret = w100_cp_fill_submit_locked(w100, dst, x, y, width, height, color, gmc);
+	if (ret)
+		return ret;
+
+	return w100_cp_ring_drain(w100);
+}
+
+/* ATIPrepareSolid()'s operation descriptor, ati_draw.c:229-240. Shared
+ * by both transports.
+ */
+static u32 w100_2d_fill_gmc(enum w100_rop rop)
+{
+	return W100_GMC_DST_PITCH_OFFSET_CNTL | W100_GMC_DST_CLIPPING |
+	       FIELD_PREP(W100_GMC_BRUSH_DATATYPE, W100_BRUSH_SOLIDCOLOR) |
+	       FIELD_PREP(W100_GMC_DST_DATATYPE, W100_DATATYPE_16BPP) |
+	       FIELD_PREP(W100_GMC_SRC_DATATYPE, W100_DATATYPE_16BPP) |
+	       W100_GMC_BYTE_PIX_ORDER |
+	       FIELD_PREP(W100_GMC_ROP3, w100_solid_rop3[rop]) |
+	       FIELD_PREP(W100_GMC_DP_SRC_SOURCE, W100_DP_SRC_MEM_RECTANGULAR) |
+	       W100_GMC_CLR_CMP_FCN_DIS |
+	       FIELD_PREP(W100_GMC_DP_OP, W100_DP_OP_ROP);
+}
+
+static int w100_2d_fill(struct w100_device *w100, const struct w100_2d_surface *dst,
+			int x, int y, int width, int height,
+			u16 color, enum w100_rop rop)
+{
+	u32 gmc;
+	int ret;
+
+	if (WARN_ON(rop >= W100_ROP_COUNT))
+		return -EINVAL;
+	if (!w100_2d_surface_valid(w100, dst) ||
+	    !w100_2d_rect_valid(dst, x, y, width, height))
+		return -EINVAL;
+
+	gmc = w100_2d_fill_gmc(rop);
+
+	mutex_lock(&w100->accel_lock);
+
+	if (!w100->accel_ready)
+		ret = -ENODEV;
+	else if (w100_cp_active(w100))
+		ret = w100_cp_fill_locked(w100, dst, x, y, width, height, color, gmc);
+	else
+		ret = w100_2d_fill_mmio_locked(w100, dst, x, y, width, height, color, gmc);
+
 	mutex_unlock(&w100->accel_lock);
 
 	return ret;
 }
 
 /*
- * ATIPrepareCopy() + ATICopy() (ati_draw.c:291-403), same collapse as
- * w100_2d_fill().
+ * Screen-to-screen copy, in both transports: ATIPrepareCopy() +
+ * ATICopy() (ati_draw.c:291-403), same collapse as the fill above.
  *
- * Overlap handling is this driver's own, because kdrive's caller (kaa)
- * passed the copy direction in and there is no equivalent caller here.
- * The rule is memmove's: step away from the destination, i.e. run
- * backwards along an axis whenever the destination coordinate is
- * greater than the source's. kdrive's own mechanics for a backwards
- * run are reproduced exactly -- clear the matching dp_cntl dst_*_dir
- * bit and start both rectangles on their far edge (ati_draw.c:307-320,
- * 370-377).
+ * Deciding the copy direction is this driver's own, because kdrive's
+ * caller (kaa) passed it in and there is no equivalent caller here. The
+ * rule is memmove's: step away from the destination, i.e. run backwards
+ * along an axis whenever the destination coordinate is greater than the
+ * source's. What each transport then *does* with that decision differs,
+ * and kdrive's own #ifdef is the authority for the difference -- see
+ * each of the two functions below.
  *
  * This is only meaningful when @src and @dst name the same surface. Two
  * *different* surfaces that happen to overlap in chip memory cannot be
@@ -1814,6 +2536,118 @@ out:
  * plane in system memory, so there is nothing in the scanout path to
  * copy between.
  */
+static int w100_2d_copy_mmio_locked(struct w100_device *w100,
+				    const struct w100_2d_surface *dst,
+				    int dst_x, int dst_y,
+				    const struct w100_2d_surface *src,
+				    int src_x, int src_y,
+				    int width, int height,
+				    u32 gmc, u32 dp_cntl, u32 dp_datatype,
+				    bool x_forward, bool y_forward)
+{
+	int ret;
+
+	/*
+	 * Both rectangles start on their far edge whenever the engine has
+	 * to run backwards along that axis -- ati_draw.c:371-380, which
+	 * applies exactly this fixup and only on its non-PACKET3 path.
+	 * The ring path below does not do it; see there.
+	 */
+	if (!x_forward) {
+		src_x += width - 1;
+		dst_x += width - 1;
+	}
+	if (!y_forward) {
+		src_y += height - 1;
+		dst_y += height - 1;
+	}
+
+	ret = w100_2d_fifo_wait_recover(w100, 5);
+	if (ret)
+		return ret;
+
+	/* The source scissor stays at w100_2d_setup_locked()'s wide-open
+	 * value, which is what both sources leave it at; the source
+	 * rectangle is already bounded by w100_2d_rect_valid().
+	 */
+	writel(0, w100->regs + W100_REG_SC_TOP_LEFT);
+	writel(W100_2D_YX(dst->width, dst->height), w100->regs + W100_REG_SC_BOTTOM_RIGHT);
+	writel(w100_2d_pitch_reg(src->pitch), w100->regs + W100_REG_SRC_PITCH);
+	writel(src->offset, w100->regs + W100_REG_SRC_OFFSET);
+	writel(w100_2d_pitch_reg(dst->pitch), w100->regs + W100_REG_DST_PITCH);
+
+	ret = w100_2d_fifo_wait_recover(w100, 4);
+	if (ret)
+		return ret;
+
+	writel(dst->offset, w100->regs + W100_REG_DST_OFFSET);
+	writel(gmc, w100->regs + W100_REG_DP_GUI_MASTER_CNTL);
+	writel(~0u, w100->regs + W100_REG_DP_WRITE_MSK);
+	writel(dp_cntl, w100->regs + W100_REG_DP_CNTL);
+
+	ret = w100_2d_fifo_wait_recover(w100, 4);
+	if (ret)
+		return ret;
+
+	writel(dp_datatype, w100->regs + W100_REG_DP_DATATYPE);
+	writel(W100_2D_YX(src_x, src_y), w100->regs + W100_REG_SRC_Y_X);
+	writel(W100_2D_YX(dst_x, dst_y), w100->regs + W100_REG_DST_Y_X);
+	/* Writing the extent is what launches the operation. */
+	writel(W100_2D_WH(width, height), w100->regs + W100_REG_DST_WIDTH_HEIGHT);
+
+	return w100_2d_wait_idle(w100);
+}
+
+/*
+ * The same copy as a ring submission: ATIPrepareCopy()'s register set as
+ * type-0 packets, then ATICopy()'s BITBLT_MULTI (ati_draw.c:383-388).
+ *
+ * The coordinates handed to the packet are the rectangles' true top-left
+ * corners, *not* the far-edge-adjusted ones the polled path above uses.
+ * kdrive draws exactly this distinction -- its far-edge fixup sits under
+ * `#ifndef DRAW_USING_PACKET3` (ati_draw.c:371-380) and is compiled out
+ * of the packet path -- so the MULTI opcode evidently derives the
+ * traversal order itself from mmDP_CNTL's direction bits, which are
+ * submitted here in the same packet stream. Getting this wrong in either
+ * direction corrupts overlapping copies only.
+ */
+static int w100_cp_copy_locked(struct w100_device *w100,
+			       const struct w100_2d_surface *dst,
+			       int dst_x, int dst_y,
+			       const struct w100_2d_surface *src,
+			       int src_x, int src_y,
+			       int width, int height,
+			       u32 gmc, u32 dp_cntl, u32 dp_datatype)
+{
+	int ret;
+
+	/* Ten single-register type-0 packets plus a four-dword type-3. */
+	ret = w100_cp_ring_space(w100, 10 * 2 + 4);
+	if (ret)
+		return ret;
+
+	w100_cp_ring_emit_reg(w100, W100_REG_SC_TOP_LEFT, 0);
+	w100_cp_ring_emit_reg(w100, W100_REG_SC_BOTTOM_RIGHT,
+			      W100_2D_YX(dst->width, dst->height));
+	w100_cp_ring_emit_reg(w100, W100_REG_SRC_PITCH, w100_2d_pitch_reg(src->pitch));
+	w100_cp_ring_emit_reg(w100, W100_REG_SRC_OFFSET, src->offset);
+	w100_cp_ring_emit_reg(w100, W100_REG_DST_PITCH, w100_2d_pitch_reg(dst->pitch));
+	w100_cp_ring_emit_reg(w100, W100_REG_DST_OFFSET, dst->offset);
+	w100_cp_ring_emit_reg(w100, W100_REG_DP_GUI_MASTER_CNTL, gmc);
+	w100_cp_ring_emit_reg(w100, W100_REG_DP_WRITE_MSK, ~0u);
+	w100_cp_ring_emit_reg(w100, W100_REG_DP_CNTL, dp_cntl);
+	w100_cp_ring_emit_reg(w100, W100_REG_DP_DATATYPE, dp_datatype);
+
+	w100_cp_ring_emit(w100, W100_CCE_PACKET3_HDR(W100_CCE_PACKET3_BITBLT_MULTI, 3));
+	w100_cp_ring_emit(w100, (u32)src_x << 16 | src_y);
+	w100_cp_ring_emit(w100, (u32)dst_x << 16 | dst_y);
+	w100_cp_ring_emit(w100, (u32)width << 16 | height);
+
+	w100_cp_ring_commit(w100);
+
+	return w100_cp_ring_drain(w100);
+}
+
 static int __maybe_unused w100_2d_copy(struct w100_device *w100,
 				       const struct w100_2d_surface *dst,
 				       int dst_x, int dst_y,
@@ -1836,15 +2670,6 @@ static int __maybe_unused w100_2d_copy(struct w100_device *w100,
 	x_forward = dst_x <= src_x;
 	y_forward = dst_y <= src_y;
 
-	if (!x_forward) {
-		src_x += width - 1;
-		dst_x += width - 1;
-	}
-	if (!y_forward) {
-		src_y += height - 1;
-		dst_y += height - 1;
-	}
-
 	gmc = W100_GMC_SRC_PITCH_OFFSET_CNTL | W100_GMC_DST_PITCH_OFFSET_CNTL |
 	      W100_GMC_SRC_CLIPPING | W100_GMC_DST_CLIPPING |
 	      FIELD_PREP(W100_GMC_BRUSH_DATATYPE, W100_BRUSH_NONE) |
@@ -1865,47 +2690,16 @@ static int __maybe_unused w100_2d_copy(struct w100_device *w100,
 
 	mutex_lock(&w100->accel_lock);
 
-	if (!w100->accel_ready) {
+	if (!w100->accel_ready)
 		ret = -ENODEV;
-		goto out;
-	}
+	else if (w100_cp_active(w100))
+		ret = w100_cp_copy_locked(w100, dst, dst_x, dst_y, src, src_x, src_y,
+					  width, height, gmc, dp_cntl, dp_datatype);
+	else
+		ret = w100_2d_copy_mmio_locked(w100, dst, dst_x, dst_y, src, src_x, src_y,
+					       width, height, gmc, dp_cntl, dp_datatype,
+					       x_forward, y_forward);
 
-	ret = w100_2d_fifo_wait_recover(w100, 5);
-	if (ret)
-		goto out;
-
-	/* The source scissor stays at w100_2d_setup_locked()'s wide-open
-	 * value, which is what both sources leave it at; the source
-	 * rectangle is already bounded by w100_2d_rect_valid().
-	 */
-	writel(0, w100->regs + W100_REG_SC_TOP_LEFT);
-	writel(W100_2D_YX(dst->width, dst->height), w100->regs + W100_REG_SC_BOTTOM_RIGHT);
-	writel(w100_2d_pitch_reg(src->pitch), w100->regs + W100_REG_SRC_PITCH);
-	writel(src->offset, w100->regs + W100_REG_SRC_OFFSET);
-	writel(w100_2d_pitch_reg(dst->pitch), w100->regs + W100_REG_DST_PITCH);
-
-	ret = w100_2d_fifo_wait_recover(w100, 4);
-	if (ret)
-		goto out;
-
-	writel(dst->offset, w100->regs + W100_REG_DST_OFFSET);
-	writel(gmc, w100->regs + W100_REG_DP_GUI_MASTER_CNTL);
-	writel(~0u, w100->regs + W100_REG_DP_WRITE_MSK);
-	writel(dp_cntl, w100->regs + W100_REG_DP_CNTL);
-
-	ret = w100_2d_fifo_wait_recover(w100, 4);
-	if (ret)
-		goto out;
-
-	writel(dp_datatype, w100->regs + W100_REG_DP_DATATYPE);
-	writel(W100_2D_YX(src_x, src_y), w100->regs + W100_REG_SRC_Y_X);
-	writel(W100_2D_YX(dst_x, dst_y), w100->regs + W100_REG_DST_Y_X);
-	/* Writing the extent is what launches the operation. */
-	writel(W100_2D_WH(width, height), w100->regs + W100_REG_DST_WIDTH_HEIGHT);
-
-	ret = w100_2d_wait_idle(w100);
-
-out:
 	mutex_unlock(&w100->accel_lock);
 
 	return ret;
@@ -1954,6 +2748,7 @@ static void w100_2d_clear_vram(struct w100_device *w100, const struct w100_hw_mo
 	w100->vram_cleared = true;
 }
 
+/* ------------------------------------------------------------------ */
 /* ------------------------------------------------------------------ */
 
 /* w100fb_activate_var() (w100fb.c:412-432), minus calc_hsync()/
@@ -2362,6 +3157,20 @@ static void w100_crtc_helper_atomic_disable(struct drm_crtc *crtc, struct drm_at
 	 * devm-managed and torn down after .remove() returns, so touching
 	 * them here is safe either way.
 	 */
+
+	/*
+	 * ATIDMATeardown() (ati_dma.c:281-294): stop the processor
+	 * fetching before the display goes away. The same reasoning about
+	 * drm_dev_unplug() applies -- the register mappings are devm
+	 * resources and outlive .remove(), so this is reachable on a
+	 * normal rmmod, which is exactly when it matters that the chip is
+	 * not left executing from a ring nobody owns any more. The ring is
+	 * rebuilt from scratch by the next .atomic_enable.
+	 */
+	mutex_lock(&w100->accel_lock);
+	w100_cp_ring_fini_locked(w100);
+	mutex_unlock(&w100->accel_lock);
+
 	w100_panel_power_down(w100);
 }
 
@@ -2501,6 +3310,59 @@ static const struct drm_driver w100_driver = {
 	DRM_FBDEV_SHMEM_DRIVER_OPS,
 };
 
+/*
+ * Map the CIF wrap aperture, through which the host writes command-ring
+ * dwords, if the device tree describes one.
+ *
+ * Every failure here is non-fatal and leaves w100->wrap NULL, which
+ * means no command processor and a driver that keeps programming the 2D
+ * engine by polled register writes. A device tree without a "wrap"
+ * window is a supported configuration, not an error, and none of the
+ * rest of the driver depends on this.
+ *
+ * The position check is worth making rather than trusting reg-names,
+ * because what it catches is otherwise silent. The aperture's chip
+ * offset is not something the driver can ask the hardware for; it is
+ * fixed by the mmWRAP_START_DIR value w100_chip_bringup() writes. A
+ * window in the wrong place would be mapped happily, and the ring writes
+ * would land somewhere in the chip that is not the ring: the processor's
+ * read pointer would never move and every operation would end in a drain
+ * timeout, with nothing pointing at the device tree as the cause.
+ */
+static void w100_wrap_init(struct w100_device *w100, struct platform_device *pdev,
+			   phys_addr_t chip_base)
+{
+	phys_addr_t expect = chip_base + W100_WRAP_BASE;
+	struct resource *res;
+	void __iomem *wrap;
+
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "wrap");
+	if (!res)
+		return;
+
+	if (res->start != expect) {
+		drm_warn(&w100->drm,
+			 "wrap window is at %pa, but mmWRAP_START_DIR puts it at %pa; ignoring it\n",
+			 &res->start, &expect);
+		return;
+	}
+
+	if (resource_size(res) < W100_CP_RING_BYTES) {
+		drm_warn(&w100->drm,
+			 "wrap window is %llu bytes, %u needed for the command ring; ignoring it\n",
+			 (unsigned long long)resource_size(res), W100_CP_RING_BYTES);
+		return;
+	}
+
+	wrap = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(wrap)) {
+		drm_warn(&w100->drm, "failed to map wrap window (%pe); ignoring it\n", wrap);
+		return;
+	}
+
+	w100->wrap = wrap;
+}
+
 static int w100_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -2521,6 +3383,16 @@ static int w100_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	/*
+	 * Registered unconditionally, before anything can load the
+	 * microcode: the fetch itself happens lazily on the first mode
+	 * apply, so this has to already be in place by then, and it does
+	 * nothing at all if no firmware was ever loaded.
+	 */
+	ret = drmm_add_action_or_reset(drm, w100_cp_release_firmware, w100);
+	if (ret)
+		return ret;
+
 	w100->cfg = devm_platform_ioremap_resource_byname(pdev, "cfg");
 	if (IS_ERR(w100->cfg))
 		return dev_err_probe(dev, PTR_ERR(w100->cfg), "failed to map cfg window\n");
@@ -2538,6 +3410,20 @@ static int w100_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(w100->vram),
 				      "failed to map video memory window\n");
 	w100->vram_size = resource_size(res);
+
+	if (w100->vram_size < W100_FB_SIZE)
+		return dev_err_probe(dev, -EINVAL,
+				      "video memory window is %zu bytes, %u needed for the largest mode\n",
+				      w100->vram_size, W100_FB_SIZE);
+
+	/*
+	 * res->start - W100_FB_BASE is chip offset 0 in host physical
+	 * terms, derived from where the device tree puts the one window
+	 * whose chip offset the driver already knows. w100_wrap_init()
+	 * uses it to check the "wrap" window is where the hardware has
+	 * been told to put it.
+	 */
+	w100_wrap_init(w100, pdev, res->start - W100_FB_BASE);
 
 	/* W3220_nRESET (PXA GPIO61) -- deasserted once here and never
 	 * toggled again, see struct w100_device's own field comment.
@@ -2660,4 +3546,5 @@ static struct platform_driver w100_platform_driver = {
 module_platform_driver(w100_platform_driver);
 
 MODULE_DESCRIPTION(DRIVER_DESC);
+MODULE_FIRMWARE(W100_CP_FW_NAME);
 MODULE_LICENSE("GPL");
