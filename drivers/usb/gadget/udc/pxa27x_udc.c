@@ -2393,7 +2393,7 @@ static int pxa_udc_probe(struct platform_device *pdev)
 	udc->dev = &pdev->dev;
 	if (of_have_populated_dt()) {
 		udc->transceiver =
-			devm_usb_get_phy_by_phandle(udc->dev, "phys", 0);
+			devm_usb_get_phy_by_phandle(udc->dev, "usb-phy", 0);
 		if (IS_ERR(udc->transceiver))
 			return PTR_ERR(udc->transceiver);
 	} else {
