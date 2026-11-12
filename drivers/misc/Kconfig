@@ -564,6 +564,31 @@ config IPAQ_SLEEVE_BUS
 	  To compile this driver as a module, choose M here: the module
 	  will be called ipaq-sleeve.
 
+config MISC_SAMCOP_SLEEVE
+	tristate "SAMCOP expansion-pack (sleeve) status/EPS backend (HP iPAQ h5xxx)"
+	depends on MFD_SAMCOP
+	depends on SPI
+	select SPI_PXA2XX
+	select IPAQ_SLEEVE_BUS
+	help
+	  ipaq_sleeve_ops backend for the h5xxx expansion-pack ("sleeve")
+	  connector, driving it through SAMCOP's own PCMCIA/EPS status
+	  register block (card-detect, IRQ and option-detect lines, plus
+	  card-reset control) and the two SAMCOP GPA power-control lines
+	  (OPT_ON/OPT_RESET). The sleeve's ID EEPROM is read over the
+	  PXA25x SSP1-as-SPI transport: this driver borrows ssp1 through
+	  its own "samsung,sleeve-port" phandle and registers it as a
+	  spi_controller itself (pxa_ssp_request_of()/pxa2xx_spi_probe(),
+	  both exported by SPI_PXA2XX/its PXA_SSP dependency), rather than
+	  relying on spi-pxa2xx-platform.c's own devicetree matching
+	  against ssp1 directly.
+
+	  Without this, the generic ipaq-sleeve bus has nothing to talk
+	  to on h5xxx hardware and enumerates no sleeve at all.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called samcop-sleeve.
+
 config MISC_ASIC2_SLEEVE
 	tristate "ASIC2 expansion-pack (sleeve) backend (HP iPAQ h38xx/h39xx)"
 	depends on MFD_ASIC2

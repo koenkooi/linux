@@ -440,7 +440,7 @@ enum {
  * 4 = ODET0, 5 = ODET1, 6 = BATT_FLT. The silicon reset value is 0x25a5.
  *
  * SAMCOP_PCMCIA_IM_DEFAULT, programmed at probe, differs from the reset value
- * in three places, all matching what the vendor firmware programs and a live
+ * in four places, all matching what the vendor firmware programs and a live
  * IM read of 0x3f55 on a running WinCE system:
  *
  *  - IRQ0_N and IRQ1_N (fields 2 and 3) are falling edge. They are active-low
@@ -454,10 +454,11 @@ enum {
  *    them to the opposite of the last observed level on every poll, so this
  *    only supplies the first edge.
  *
- * BATT_FLT (field 6) stays at the reset value: nothing requests its
- * interrupt, so its edge has no effect.
+ *  - BATT_FLT (field 6) is both edges, because the sleeve driver requests its
+ *    interrupt for the bus core, which acts on a fault being asserted and on
+ *    its clearing.
  */
-#define SAMCOP_PCMCIA_IM_DEFAULT	0x2f55
+#define SAMCOP_PCMCIA_IM_DEFAULT	0x3f55
 
 /* Public API for drivers of the chip's sub-devices */
 struct device;
