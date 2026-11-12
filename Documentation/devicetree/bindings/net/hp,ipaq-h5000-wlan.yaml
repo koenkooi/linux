@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/hp,ipaq-h5000-wlan.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HP iPAQ h5000 onboard WLAN power sequencer
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description:
+  Power sequencing for the onboard AT76C503A WLAN radio of the HP iPAQ
+  h51xx/h54xx/h55xx. The radio is attached by USB, behind the root hub of
+  the SAMCOP OHCI controller (the "ohci" child of samsung,samcop.yaml),
+  and has no devicetree node of its own because it enumerates dynamically.
+  This node only sequences the two SAMCOP GPB outputs that power the radio
+  before it can enumerate. The host exposes them as a WLAN rfkill switch,
+  so the radio can be blocked and unblocked, or powered down for suspend,
+  independently of the USB host controller.
+
+properties:
+  compatible:
+    const: hp,ipaq-h5000-wlan
+
+  rf-power-gpios:
+    maxItems: 1
+    description: Enable for the radio's RF section, SAMCOP GPB1.
+
+  wlan-power-gpios:
+    maxItems: 1
+    description:
+      Enable for the radio's digital section, SAMCOP GPB3. It is raised
+      together with rf-power-gpios. It is not known whether the radio needs
+      both.
+
+required:
+  - compatible
+  - rf-power-gpios
+  - wlan-power-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    wlan {
+        compatible = "hp,ipaq-h5000-wlan";
+        rf-power-gpios = <&samcop 33 GPIO_ACTIVE_HIGH>;
+        wlan-power-gpios = <&samcop 35 GPIO_ACTIVE_HIGH>;
+    };
