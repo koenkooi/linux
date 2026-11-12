@@ -38,6 +38,7 @@
 /dts-v1/;
 
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/leds/common.h>
 
@@ -340,6 +341,81 @@
 			cs-gpios = <&gpio 24 GPIO_ACTIVE_LOW>;
 			samsung,sleeve-port = <&ssp1>;
 		};
+
+		/*
+		 * Seven of the board's 13 buttons. The power button is a plain
+		 * PXA GPIO in the top-level gpio-keys node and the 5-way pad's
+		 * five contacts are the top-level keypad node.
+		 *
+		 * Every entry has "interrupts" against this node's own
+		 * interrupt controller and no "gpios": the cell is a SAMCOP
+		 * MFD cell, probed after the interrupt domain exists, because
+		 * gpio_keys drops an -EPROBE_DEFER from resolving a button's
+		 * interrupt and would leave the button without one if it
+		 * probed first. The cells are SAMCOP hwirq numbers
+		 * (include/linux/mfd/samcop.h).
+		 *
+		 * The trigger flag of the five EXTIN sources (hwirq 0 to 4) is
+		 * only there to satisfy the binding: their interrupt chip has
+		 * no irq_set_type, so the edge comes from the GPIO interrupt
+		 * registers the MFD core programs at probe. The two volume keys
+		 * are on the GPIO fan-out tier, whose chip does apply the flag.
+		 *
+		 * GPA9 is volume up and GPA10 volume down, as the factory
+		 * keyboard driver reports them.
+		 */
+		buttons {
+			compatible = "gpio-keys";
+
+			key-record {
+				label = "Record";
+				linux,code = <KEY_RECORD>;
+				/* SAMCOP_IRQ_RECORD, GPA12 */
+				interrupts = <4 IRQ_TYPE_EDGE_FALLING>;
+			};
+
+			key-calendar {
+				label = "Calendar";
+				linux,code = <KEY_CALENDAR>;
+				/* SAMCOP_IRQ_APPBUTTON1, GPA0 */
+				interrupts = <0 IRQ_TYPE_EDGE_FALLING>;
+			};
+
+			key-contacts {
+				label = "Contacts";
+				linux,code = <KEY_ADDRESSBOOK>;
+				/* SAMCOP_IRQ_APPBUTTON2, GPA1 */
+				interrupts = <1 IRQ_TYPE_EDGE_FALLING>;
+			};
+
+			key-mail {
+				label = "Mail";
+				linux,code = <KEY_MAIL>;
+				/* SAMCOP_IRQ_APPBUTTON3, GPA2 */
+				interrupts = <2 IRQ_TYPE_EDGE_FALLING>;
+			};
+
+			key-home {
+				label = "Home";
+				linux,code = <KEY_HOMEPAGE>;
+				/* SAMCOP_IRQ_APPBUTTON4, GPA3 */
+				interrupts = <3 IRQ_TYPE_EDGE_FALLING>;
+			};
+
+			key-volume-up {
+				label = "Volume Up";
+				linux,code = <KEY_VOLUMEUP>;
+				/* SAMCOP_IRQ_GPIO_GPA9 */
+				interrupts = <31 IRQ_TYPE_EDGE_BOTH>;
+			};
+
+			key-volume-down {
+				label = "Volume Down";
+				linux,code = <KEY_VOLUMEDOWN>;
+				/* SAMCOP_IRQ_GPIO_GPA10 */
+				interrupts = <32 IRQ_TYPE_EDGE_BOTH>;
+			};
+		};
 	};
 
 	/*
@@ -403,6 +479,153 @@
 		brightness-levels = <0 120 134 150 167 186 208 232 259 289 323
 				     361 403 450 502 561 626 699 781 885 1000>;
 		default-brightness-level = <18>;
+	};
+
+	/*
+	 * The four direction contacts of the 5-way pad sit on the diagonals
+	 * and the centre contact closes with every press, so a direction is
+	 * a combination of contacts. The table is the factory keybddr.dll's:
+	 * it decodes the inverted GPIO_MON bits 4-7 (GPA4 up-left, GPA5
+	 * up-right, GPA6 down-right, GPA7 down-left) only while bit 8 (GPA8,
+	 * the centre) is low. One contact is a diagonal, two adjacent ones a
+	 * direction, three the diagonal of the middle one, and none, two
+	 * opposite ones or all four the centre. hackndev's h5400 button table
+	 * puts the same corners on the same pins.
+	 */
+	keypad {
+		compatible = "gpio-combo-keys";
+		label = "Joypad";
+		line-gpios = <&samcop 4 GPIO_ACTIVE_LOW>,	/* 0: up-left */
+			     <&samcop 5 GPIO_ACTIVE_LOW>,	/* 1: up-right */
+			     <&samcop 6 GPIO_ACTIVE_LOW>,	/* 2: down-right */
+			     <&samcop 7 GPIO_ACTIVE_LOW>,	/* 3: down-left */
+			     <&samcop 8 GPIO_ACTIVE_LOW>;	/* 4: centre */
+		debounce-delay-ms = <50>;
+
+		key-select {
+			label = "Joypad Select";
+			active-lines = <4>;
+			linux,code = <KEY_ENTER>;
+		};
+
+		key-select-up-down {
+			label = "Joypad Select";
+			active-lines = <0 2 4>;
+			linux,code = <KEY_ENTER>;
+		};
+
+		key-select-left-right {
+			label = "Joypad Select";
+			active-lines = <1 3 4>;
+			linux,code = <KEY_ENTER>;
+		};
+
+		key-select-all {
+			label = "Joypad Select";
+			active-lines = <0 1 2 3 4>;
+			linux,code = <KEY_ENTER>;
+		};
+
+		key-up {
+			label = "Joypad Up";
+			active-lines = <0 1 4>;
+			linux,code = <KEY_UP>;
+		};
+
+		key-right {
+			label = "Joypad Right";
+			active-lines = <1 2 4>;
+			linux,code = <KEY_RIGHT>;
+		};
+
+		key-down {
+			label = "Joypad Down";
+			active-lines = <2 3 4>;
+			linux,code = <KEY_DOWN>;
+		};
+
+		key-left {
+			label = "Joypad Left";
+			active-lines = <0 3 4>;
+			linux,code = <KEY_LEFT>;
+		};
+
+		key-up-left {
+			label = "Joypad Up-Left";
+			active-lines = <0 4>;
+			linux,keycodes = <KEY_LEFT KEY_UP>;
+		};
+
+		key-up-left-3 {
+			label = "Joypad Up-Left";
+			active-lines = <0 1 3 4>;
+			linux,keycodes = <KEY_LEFT KEY_UP>;
+		};
+
+		key-up-right {
+			label = "Joypad Up-Right";
+			active-lines = <1 4>;
+			linux,keycodes = <KEY_UP KEY_RIGHT>;
+		};
+
+		key-up-right-3 {
+			label = "Joypad Up-Right";
+			active-lines = <0 1 2 4>;
+			linux,keycodes = <KEY_UP KEY_RIGHT>;
+		};
+
+		key-down-right {
+			label = "Joypad Down-Right";
+			active-lines = <2 4>;
+			linux,keycodes = <KEY_RIGHT KEY_DOWN>;
+		};
+
+		key-down-right-3 {
+			label = "Joypad Down-Right";
+			active-lines = <1 2 3 4>;
+			linux,keycodes = <KEY_RIGHT KEY_DOWN>;
+		};
+
+		key-down-left {
+			label = "Joypad Down-Left";
+			active-lines = <3 4>;
+			linux,keycodes = <KEY_LEFT KEY_DOWN>;
+		};
+
+		key-down-left-3 {
+			label = "Joypad Down-Left";
+			active-lines = <0 2 3 4>;
+			linux,keycodes = <KEY_LEFT KEY_DOWN>;
+		};
+	};
+
+	/*
+	 * The vibrator's enable is PXA GPIO75, active low with an external
+	 * pull-up. It is a top-level node because the line is a plain PXA
+	 * GPIO, not a SAMCOP one. The pad is muxed driving high by the pin
+	 * table in arch/arm/mach-pxa/h5000.c. There is no supply node, so
+	 * the regulator core hands the driver its dummy supply.
+	 */
+	vibrator {
+		compatible = "gpio-vibrator";
+		enable-gpios = <&gpio 75 GPIO_ACTIVE_LOW>;
+	};
+
+	/*
+	 * The power button, a plain PXA GPIO. The other buttons are the
+	 * buttons node of SAMCOP and the keypad node. WAKEUP_ON_EDGE_BOTH on
+	 * GPIO0 in the pin table is what arms the wakeup in hardware;
+	 * wakeup-source tells gpio_keys to call enable_irq_wake() on it.
+	 */
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		key-power {
+			label = "Power";
+			linux,code = <KEY_POWER>;
+			gpios = <&gpio 0 GPIO_ACTIVE_LOW>;
+			wakeup-source;
+		};
 	};
 };
 
