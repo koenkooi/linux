@@ -53,6 +53,7 @@
 #include <linux/err.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/jiffies.h>
 #include <linux/math.h>
 #include <linux/mfd/samcop.h>
 #include <linux/minmax.h>
@@ -63,6 +64,8 @@
 #include <linux/regulator/consumer.h>
 #include <linux/scatterlist.h>
 #include <linux/spinlock.h>
+#include <linux/time64.h>
+#include <linux/timer.h>
 #include <linux/unaligned.h>
 
 /* ---------------------------------------------------------------------
@@ -332,6 +335,31 @@ MODULE_PARM_DESC(late_err_check,
  */
 #define SAMCOP_SDI_INIT_CYCLES		74
 
+/*
+ * Bounds on the software backstop timer (host->req_timer), which is armed for
+ * every command. The starting point is the MMC core's data->timeout_ns for a
+ * command with a data phase and cmd->busy_timeout (zero for most) for one
+ * without. Both are derived from the card's CSD or the command's class and
+ * say nothing about the host block wedging, so the result is floored at a
+ * second (below that a merely slow card would be aborted) and capped at ten
+ * (above that a wedge is indistinguishable from the hang the timer exists to
+ * break). The floor is the HAMCOP sibling's HAMCOP_SDI_REQ_TIMEOUT_MIN_MS;
+ * its cap is higher.
+ */
+#define SAMCOP_SDI_REQ_TIMEOUT_MIN_MS	1000
+#define SAMCOP_SDI_REQ_TIMEOUT_MAX_MS	10000
+
+/*
+ * Settable so that a wedge and a slow card can be told apart without a
+ * rebuild: a timeout that fires at exactly the floor only proves nothing
+ * answered inside it. The cap above still applies, so a floor above it is
+ * treated as the cap.
+ */
+static unsigned int samcop_sdi_req_timeout_min_ms = SAMCOP_SDI_REQ_TIMEOUT_MIN_MS;
+module_param_named(req_timeout_min_ms, samcop_sdi_req_timeout_min_ms, uint, 0644);
+MODULE_PARM_DESC(req_timeout_min_ms,
+		 "Floor, in ms, on the per-command software backstop timer; default 1000, capped at SAMCOP_SDI_REQ_TIMEOUT_MAX_MS (10000). Takes effect on the next command.");
+
 enum samcop_sdi_waitfor {
 	COMPLETION_NONE,
 	COMPLETION_FINALIZE,
@@ -422,6 +450,17 @@ struct samcop_sdi_host {
 	 * DSTA. Cleared at the start of every command and consumed there.
 	 */
 	u32			late_dsta;
+
+	/*
+	 * Backstop for a command or data phase that never signals completion
+	 * at all. Every error this driver reports arrives as an interrupt, so a
+	 * block that simply stops producing them would hang the MMC core's
+	 * request wait forever with nothing in the log. Armed for every command
+	 * in samcop_sdi_send_command(), the stop command that follows a
+	 * timed-out data phase included, and disarmed in
+	 * samcop_sdi_finalize_request().
+	 */
+	struct timer_list	req_timer;
 
 	struct tasklet_struct	pio_tasklet;
 };
@@ -961,6 +1000,82 @@ static void samcop_sdi_tasklet(struct tasklet_struct *t)
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
+/*
+ * host->req_timer's callback: a command or data phase produced no completion
+ * interrupt at all inside its budget.
+ *
+ * Same design as the HAMCOP sibling's hamcop_sdi_req_timeout(): reuse the
+ * request-abort shape samcop_sdi_irq()'s own fail_transfer/close_transfer
+ * labels apply on a real error, rather than inventing a second one -- put
+ * the data engine back in its idle
+ * state, record the error on the in-flight command, then hand the request
+ * to the tasklet through COMPLETION_FINALIZE. It takes only host->lock and
+ * touches no mask bit beyond samcop_sdi_clear_imsk(), so it adds no new
+ * lock interaction with the ISR. No DMA engine to stop here -- this driver
+ * is PIO-only (see file header comment) -- so this is samcop_sdi_irq()'s
+ * fail_transfer/close_transfer shape minus that one step.
+ *
+ * The command in flight may have no data phase (a status poll) or be the
+ * stop command a failed transfer is followed by; the abort is the same for
+ * both. For the stop command that is the recovery that matters: the data
+ * engine of the transfer it was meant to end is force-stopped, and the
+ * request completes with the stop command's -ETIMEDOUT instead of leaving
+ * the host claimed.
+ */
+static void samcop_sdi_req_timeout(struct timer_list *t)
+{
+	struct samcop_sdi_host *host = timer_container_of(host, t, req_timer);
+	struct mmc_command *cmd;
+	unsigned long flags;
+
+	spin_lock_irqsave(&host->lock, flags);
+
+	/*
+	 * A finalize that reached the lock first has already cleared
+	 * host->mrq. timer_delete() cannot cancel a callback that is
+	 * already spinning here, so this check, not the delete, is what
+	 * makes that race harmless -- same reasoning as the HAMCOP sibling.
+	 *
+	 * Finalize may also have started the stop command, or the core a new
+	 * request, before this callback got the lock. That command re-armed
+	 * the timer, and only its own expiry may abort it, so a pending timer
+	 * here means this expiry is stale.
+	 */
+	if (!host->mrq || host->complete_what == COMPLETION_NONE ||
+	    host->complete_what == COMPLETION_FINALIZE ||
+	    timer_pending(&host->req_timer))
+		goto out;
+
+	cmd = host->cmd_is_stop ? host->mrq->stop : host->mrq->cmd;
+
+	dev_err(host->dev,
+		"request timed out: CMD%u, pio_count:%u pio_bytes:%u DSTA %#010x FSTA %#010x DCON %#010x\n",
+		cmd->opcode, host->pio_count, host->pio_bytes,
+		samcop_sdi_read(host, SAMCOP_SDI_DSTA),
+		samcop_sdi_read(host, SAMCOP_SDI_FSTA),
+		samcop_sdi_read(host, SAMCOP_SDI_DCON));
+
+	samcop_sdi_reset_data(host);
+
+	/*
+	 * Cleared before handing over so the tasklet's "unfinished
+	 * transfer" leg does not overwrite -ETIMEDOUT with its own -EIO;
+	 * the counts it would have reported are in the line above.
+	 */
+	host->pio_active = XFER_NONE;
+
+	cmd->error = -ETIMEDOUT;
+	if (cmd->data)
+		cmd->data->error = -ETIMEDOUT;
+
+	host->complete_what = COMPLETION_FINALIZE;
+	samcop_sdi_clear_imsk(host);
+	tasklet_schedule(&host->pio_tasklet);
+
+out:
+	spin_unlock_irqrestore(&host->lock, flags);
+}
+
 /* ---------------------------------------------------------------------
  * Command/response state machine
  * ---------------------------------------------------------------------
@@ -1198,6 +1313,16 @@ static void samcop_sdi_finalize_request(struct samcop_sdi_host *host)
 	if (host->complete_what != COMPLETION_FINALIZE || !mrq)
 		return;
 
+	/*
+	 * Disarm the backstop. timer_delete(), not timer_delete_sync():
+	 * this runs from the tasklet with host->lock held, and the callback
+	 * takes that same lock, so a synchronous delete would deadlock
+	 * against a callback already spinning on it. The callback's own
+	 * host->mrq check makes the non-synchronous delete safe, see
+	 * samcop_sdi_req_timeout().
+	 */
+	timer_delete(&host->req_timer);
+
 	cmd = host->cmd_is_stop ? mrq->stop : mrq->cmd;
 
 	cmd->resp[0] = samcop_sdi_read(host, SAMCOP_SDI_RSP0);
@@ -1278,6 +1403,23 @@ request_done:
 	mmc_request_done(host->mmc, mrq);
 }
 
+/*
+ * How long samcop_sdi_send_command() gives a command before host->req_timer
+ * aborts it. A data command is sized by the core's data->timeout_ns, a
+ * command without data by its busy_timeout, which the floor lifts whenever
+ * the core left it unset.
+ */
+static unsigned long samcop_sdi_req_budget_ms(const struct mmc_command *cmd)
+{
+	unsigned long min_ms = min_t(unsigned long,
+				     READ_ONCE(samcop_sdi_req_timeout_min_ms),
+				     SAMCOP_SDI_REQ_TIMEOUT_MAX_MS);
+	unsigned long ms = cmd->data ? cmd->data->timeout_ns / NSEC_PER_MSEC :
+				       cmd->busy_timeout;
+
+	return clamp_t(unsigned long, ms, min_ms, SAMCOP_SDI_REQ_TIMEOUT_MAX_MS);
+}
+
 static void samcop_sdi_send_command(struct samcop_sdi_host *host, struct mmc_command *cmd)
 {
 	u32 ccon;
@@ -1306,6 +1448,17 @@ static void samcop_sdi_send_command(struct samcop_sdi_host *host, struct mmc_com
 		ccon |= SAMCOP_SDICMDCON_WITHDATA;
 
 	samcop_sdi_write(host, SAMCOP_SDI_CMDCON, ccon);
+
+	/*
+	 * Arm the backstop for every command. CMDSENT, RSPFIN and CMDTIMEOUT
+	 * cover a command in hardware, but each is delivered as a SAMCOP
+	 * interrupt, and a stall after which none is delivered leaves the
+	 * command with nothing to end it. The stop command that follows a
+	 * timed-out data phase is the one that hung an h5550 with the host
+	 * claimed. See host->req_timer.
+	 */
+	mod_timer(&host->req_timer,
+		  jiffies + msecs_to_jiffies(samcop_sdi_req_budget_ms(cmd)));
 }
 
 static int samcop_sdi_setup_data(struct samcop_sdi_host *host, struct mmc_data *data)
@@ -1712,6 +1865,7 @@ static int samcop_sdi_probe(struct platform_device *pdev)
 	host->mmc = mmc;
 	spin_lock_init(&host->lock);
 	tasklet_setup(&host->pio_tasklet, samcop_sdi_tasklet);
+	timer_setup(&host->req_timer, samcop_sdi_req_timeout, 0);
 
 	/*
 	 * Do not use devm_ioremap_resource() here: it reserves the region
@@ -1876,6 +2030,11 @@ static void samcop_sdi_remove(struct platform_device *pdev)
 	 * mmc_host is already gone. Drop the handler first, by hand.
 	 */
 	devm_free_irq(host->dev, host->irq, host);
+	/*
+	 * Process context here, so the synchronous delete is both safe and
+	 * the right one: nothing may re-enter the callback after this.
+	 */
+	timer_delete_sync(&host->req_timer);
 	tasklet_kill(&host->pio_tasklet);
 }
 
