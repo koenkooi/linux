@@ -1821,7 +1821,7 @@ static void at76_mac80211_tx(struct ieee80211_hw *hw,
 	if (priv->tx_urb->status == -EINPROGRESS) {
 		wiphy_err(priv->hw->wiphy,
 			  "%s called while tx urb is pending\n", __func__);
-		dev_kfree_skb_any(skb);
+		ieee80211_free_txskb(hw, skb);
 		return;
 	}
 
@@ -1832,13 +1832,18 @@ static void at76_mac80211_tx(struct ieee80211_hw *hw,
 	 * drivers about the bssid prior to the authentication process the
 	 * following workaround is necessary. If the TX frame is an
 	 * authentication frame extract the bssid and send the CMD_JOIN. */
-	if (mgmt->frame_control & cpu_to_le16(IEEE80211_STYPE_AUTH)) {
+	if (ieee80211_is_auth(mgmt->frame_control)) {
 		if (!ether_addr_equal_64bits(priv->bssid, mgmt->bssid)) {
 			memcpy(priv->bssid, mgmt->bssid, ETH_ALEN);
 			ieee80211_queue_work(hw, &priv->work_join_bssid);
-			dev_kfree_skb_any(skb);
+			ieee80211_free_txskb(hw, skb);
 			return;
 		}
+	}
+
+	if (WARN_ON_ONCE(skb->len > sizeof(tx_buffer->packet))) {
+		ieee80211_free_txskb(hw, skb);
+		return;
 	}
 
 	ieee80211_stop_queues(hw);
