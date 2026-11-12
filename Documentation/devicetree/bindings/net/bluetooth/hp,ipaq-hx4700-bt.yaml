@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/bluetooth/hp,ipaq-hx4700-bt.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HP iPAQ hx4700 Bluetooth module power control
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  The HP iPAQ hx4700 carries a Texas Instruments BRF6150 Bluetooth module
+  on the BTUART. This node describes only the board's reset and supply
+  lines to the module; the host exposes them as a Bluetooth rfkill switch
+  whose unblock runs the module's power-on sequence.
+
+properties:
+  compatible:
+    const: hp,ipaq-hx4700-bt
+
+  reset-gpios:
+    maxItems: 1
+    description: The module's active-low reset input.
+
+  power-gpios:
+    maxItems: 1
+    description: Enable of the module's 3.3 V supply, active high.
+
+required:
+  - compatible
+  - reset-gpios
+  - power-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    bluetooth {
+        compatible = "hp,ipaq-hx4700-bt";
+        reset-gpios = <&gpio 106 GPIO_ACTIVE_LOW>;
+        power-gpios = <&egpio0 5 GPIO_ACTIVE_HIGH>;
+    };
+
+...
