@@ -1604,8 +1604,13 @@ static void at76_rx_tasklet(struct tasklet_struct *t)
 		      priv->rx_skb->len, "RX: len=%d", priv->rx_skb->len);
 
 	rx_status.signal = buf->rssi;
-	rx_status.flag |= RX_FLAG_DECRYPTED;
-	rx_status.flag |= RX_FLAG_IV_STRIPPED;
+	/* The firmware only decrypts WEP; anything else must go through
+	 * mac80211 so CCMP/GCMP/BIP get decrypted and MIC/replay checked.
+	 */
+	if (priv->wep_enabled) {
+		rx_status.flag |= RX_FLAG_DECRYPTED;
+		rx_status.flag |= RX_FLAG_IV_STRIPPED;
+	}
 	rx_status.band = NL80211_BAND_2GHZ;
 	rx_status.freq = at76_guess_freq(priv);
 
