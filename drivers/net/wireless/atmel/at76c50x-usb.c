@@ -1920,9 +1920,11 @@ static void at76_mac80211_stop(struct ieee80211_hw *hw, bool suspend)
 
 	at76_dbg(DBG_MAC80211, "%s()", __func__);
 
-	cancel_delayed_work(&priv->dwork_hw_scan);
+	cancel_delayed_work_sync(&priv->dwork_hw_scan);
 	cancel_work_sync(&priv->work_join_bssid);
 	cancel_work_sync(&priv->work_set_promisc);
+
+	usb_kill_urb(priv->tx_urb);
 
 	mutex_lock(&priv->mtx);
 
@@ -2450,19 +2452,22 @@ static void at76_delete_device(struct at76_priv *priv)
 	/* The device is gone, don't bother turning it off */
 	priv->device_unplugged = 1;
 
-	tasklet_kill(&priv->rx_tasklet);
-
 	if (priv->mac80211_registered)
 		ieee80211_unregister_hw(priv->hw);
 
-	if (priv->tx_urb) {
+	if (priv->tx_urb)
 		usb_kill_urb(priv->tx_urb);
-		usb_free_urb(priv->tx_urb);
-	}
-	if (priv->rx_urb) {
+	if (priv->rx_urb)
 		usb_kill_urb(priv->rx_urb);
-		usb_free_urb(priv->rx_urb);
-	}
+
+	/* The rx_urb kill above runs at76_rx_callback, which can schedule the
+	 * tasklet again, so it must be killed after the urb, and before the
+	 * urb is freed because the tasklet reads rx_urb.
+	 */
+	tasklet_kill(&priv->rx_tasklet);
+
+	usb_free_urb(priv->tx_urb);
+	usb_free_urb(priv->rx_urb);
 
 	at76_dbg(DBG_PROC_ENTRY, "%s: unlinked urbs", __func__);
 
