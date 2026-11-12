@@ -627,10 +627,56 @@
 			wakeup-source;
 		};
 	};
+
+	/*
+	 * The audio card of the AK4535. codec-power-gpios is SAMCOP GPB0 and
+	 * audio-power-gpios GPB2 (SAMCOP_GPIO(B, n) = 32 + n): the first
+	 * supplies the codec, the second the output stage and microphone
+	 * bias behind it, and the machine driver sequences them separately.
+	 * headphone-detect-gpios is PXA GPIO76. Its polarity is not
+	 * confirmed: no recovered source wires the pin to a consumer, so
+	 * active high follows the h2200's ear-in line. If a plugged jack
+	 * reads as unplugged, flip that one flag.
+	 */
+	sound {
+		compatible = "hp,ipaq-h5000-audio";
+
+		cpu-dai = <&i2s>;
+		audio-codec = <&ak4535>;
+
+		codec-power-gpios      = <&samcop 32 GPIO_ACTIVE_HIGH>;
+		audio-power-gpios      = <&samcop 34 GPIO_ACTIVE_HIGH>;
+		headphone-detect-gpios = <&gpio 76 GPIO_ACTIVE_HIGH>;
+	};
 };
 
 &ffuart {
 	status = "okay";
+};
+
+/*
+ * The I2S block of pxa2xx.dtsi, which the audio card above uses. The pad
+ * muxing is in the pin table of arch/arm/mach-pxa/h5000.c.
+ */
+&i2s {
+	status = "okay";
+};
+
+/*
+ * AK4535 audio codec on the plain PXA25x I2C controller, at 0x10. The
+ * codec driver has no supply handling, its supply is a property of the
+ * sound node. i2c1 is the alias of &pxai2c1, which makes the codec
+ * component "ak4535.1-0010".
+ */
+&pxai2c1 {
+	status = "okay";
+
+	ak4535: codec@10 {
+		compatible = "asahi-kasei,ak4535";
+		reg = <0x10>;
+
+		#sound-dai-cells = <0>;
+	};
 };
 
 /*
