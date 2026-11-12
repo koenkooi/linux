@@ -665,6 +665,18 @@
 		power-3v0-gpios = <&samcop 37 GPIO_ACTIVE_HIGH>;
 		power-2v8-gpios = <&gpio 67 GPIO_ACTIVE_HIGH>;
 	};
+
+	/*
+	 * Power rails of the AT76C503A WLAN radio behind the root hub of the
+	 * SAMCOP OHCI controller: RF_POWER_ON is SAMCOP GPB1 and
+	 * WLAN_POWER_ON GPB3 (SAMCOP_GPIO(B, n) = 32 + n), both active high.
+	 * Both are raised together and dropped together.
+	 */
+	wlan {
+		compatible = "hp,ipaq-h5000-wlan";
+		rf-power-gpios = <&samcop 33 GPIO_ACTIVE_HIGH>;
+		wlan-power-gpios = <&samcop 35 GPIO_ACTIVE_HIGH>;
+	};
 };
 
 &ffuart {
