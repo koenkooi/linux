@@ -36,6 +36,15 @@
  * this block is the kdrive ati_dma.c and w100_regs.h; w100fb.c defines no
  * mmCP_* register.
  *
+ * The chip's own fixed-function video front-end is driven as a second
+ * KMS plane (DRM_PLANE_TYPE_OVERLAY): planar YUV scanned out of video
+ * memory, converted to RGB and integer-upscaled in hardware, and
+ * composited above the graphics plane by the CRTC. Neither w100fb nor
+ * kdrive touched that block, so the overlay register protocol is ported
+ * from libw100 0.0.2's lib/overlay.c (GPLv2, Manuel Teira, 2006), with
+ * the mplayer libvo backend vo_imageon.c as the reference consumer. The
+ * overlay section below cites the per-register sources.
+ *
  * Not carried over: the chip-ID branches for the W100 and W3200, the
  * rotate/flip modes (the two modes here are independent panel timings),
  * suspend/resume, and the chip interrupt, which is not described in the
@@ -64,11 +73,14 @@
 #include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/slab.h>
 
 #include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_atomic_state_helper.h>
+#include <drm/drm_blend.h>
+#include <drm/drm_color_mgmt.h>
 #include <drm/drm_connector.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_drv.h>
@@ -84,8 +96,11 @@
 #include <drm/drm_managed.h>
 #include <drm/drm_modes.h>
 #include <drm/drm_modeset_helper_vtables.h>
+#include <drm/drm_plane.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
+#include <drm/drm_property.h>
+#include <drm/drm_rect.h>
 #include <drm/drm_vblank.h>
 #include <drm/drm_vblank_helper.h>
 
@@ -158,7 +173,6 @@
 #define W100_REG_PWRMGT_CNTL		0x0098	/* mmPWRMGT_CNTL */
 
 #define W100_REG_GRAPHIC_CTRL		0x0414	/* mmGRAPHIC_CTRL */
-#define W100_REG_VIDEO_CTRL		0x0434	/* mmVIDEO_CTRL */
 #define W100_REG_GRAPHIC_OFFSET	0x0418	/* mmGRAPHIC_OFFSET */
 #define W100_REG_GRAPHIC_PITCH		0x041c	/* mmGRAPHIC_PITCH */
 #define W100_REG_ACTIVE_H_DISP		0x0424	/* mmACTIVE_H_DISP */
@@ -195,6 +209,24 @@
 #define W100_REG_LCD_FORMAT		0x0410	/* mmLCD_FORMAT */
 #define W100_REG_DISP_DEBUG2		0x0538	/* mmDISP_DEBUG2 */
 
+/* Block DISPLAY, video overlay front-end. Real, distinct silicon that both
+ * historical drivers left dormant, so these offsets come from libw100
+ * 0.0.2's lib/w100regs.h:97-106 (libw100-0.0.2.tar.gz, md5
+ * 72983b019c71045237adae72084efc18) -- the only source that ever drove the
+ * block. Each is cross-confirmed against the recovered w100fb.h:66-67
+ * (mmVIDEO_CTRL/mmGRAPHIC_KEY) and against the same mm* names in kdrive's
+ * w100_regs.h, reconstructed from w100.patch.
+ */
+#define W100_REG_VIDEO_CTRL		0x0434	/* mmVIDEO_CTRL */
+#define W100_REG_GRAPHIC_KEY		0x0438	/* mmGRAPHIC_KEY */
+#define W100_REG_VIDEO_Y_OFFSET	0x043c	/* mmVIDEO_Y_OFFSET */
+#define W100_REG_VIDEO_Y_PITCH		0x0440	/* mmVIDEO_Y_PITCH */
+#define W100_REG_VIDEO_U_OFFSET	0x0444	/* mmVIDEO_U_OFFSET */
+#define W100_REG_VIDEO_U_PITCH		0x0448	/* mmVIDEO_U_PITCH */
+#define W100_REG_VIDEO_V_OFFSET	0x044c	/* mmVIDEO_V_OFFSET */
+#define W100_REG_VIDEO_V_PITCH		0x0450	/* mmVIDEO_V_PITCH */
+#define W100_REG_VIDEO_H_POS		0x0454	/* mmVIDEO_H_POS */
+#define W100_REG_VIDEO_V_POS		0x0458	/* mmVIDEO_V_POS */
 /* Block GFX, the chip's 2D drawing engine ("E2"): a ROP3 blitter that
  * reads and writes the chip's own memory only. Offsets from the
  * recovered w100fb.h:121-146,195, plus the one register that file never
@@ -316,10 +348,32 @@
  * VRAM layout inside the "fb" window, which the device tree maps over the
  * whole 2 MiB the chip's memory controller places at W100_FB_BASE. The
  * scanout buffer sits at offset 0, sized for the largest mode, 480x640
- * RGB565. The command processor's ring buffer sits immediately above it.
+ * RGB565. The video overlay's source planes are copied into a fixed
+ * reservation immediately above it, because mmVIDEO_Y_OFFSET is a
+ * chip-internal address and the chip has no bus-master path to system
+ * memory.
+ *
+ * The reservation is sized for a full-screen source in either supported
+ * format: 480x640 YUV420 is 480*640*3/2 bytes and 480x640 YUV422 is
+ * 480*640*2, so the latter is the budget. The command processor's ring
+ * buffer sits immediately above the overlay reservation.
  */
 #define W100_FB_SIZE			(480 * 640 * 2)
-#define W100_CP_RING_VRAM_OFFSET	W100_FB_SIZE
+#define W100_OVERLAY_VRAM_OFFSET	W100_FB_SIZE
+#define W100_OVERLAY_VRAM_SIZE		(480 * 640 * 2)
+#define W100_CP_RING_VRAM_OFFSET	(W100_OVERLAY_VRAM_OFFSET + W100_OVERLAY_VRAM_SIZE)
+
+/*
+ * The overlay scaler is upscale-only and integer-only: video_hor_exp and
+ * video_ver_exp are 2-bit fields giving a factor of exp + 1, i.e. exactly
+ * 1x/2x/3x/4x, confirmed by libw100's own arithmetic
+ * (tw = ovrect->w * (props->video_hor_exp + 1), lib/overlay.c:81-82).
+ * drm_rect_calc_hscale() computes src/dst in 16.16 fixed point, so a
+ * *larger* value means downscaling and the 4x upscale limit is therefore
+ * the *minimum* scale drm_atomic_helper_check_plane_state() may accept.
+ */
+#define W100_OVERLAY_MAX_EXP		4
+#define W100_OVERLAY_MIN_SCALE		(DRM_PLANE_NO_SCALING / W100_OVERLAY_MAX_EXP)
 
 #define W100_TESTCLK_SRC_PLL		0x1	/* TESTCLK_SRC_PLL */
 
@@ -404,14 +458,47 @@
 #define W100_GRAPHIC_CTRL_PCLK_RUNNING		BIT(25)	/* read-back: PCLK has stopped when clear */
 #define W100_GRAPHIC_CTRL_SCLK_RUNNING		BIT(26)	/* read-back: SCLK has stopped when clear */
 
-/* video_ctrl_t: only the fetch and CRTC enables the display-off path clears */
+/* video_ctrl_t, transcribed from libw100's lib/w100regs.h:1465-1485 (LSB
+ * first; field-identical to the recovered w100fb.h:533-553). Only the
+ * fields this driver ever sets are named. Every other bit is written as 0,
+ * matching the zero-initialised shadow word libw100's own
+ * ac_overlay_setup() builds: uv_combine[9] (planar U/V, not interleaved),
+ * video_ch_sel[19] (the RGB source path, not implemented -- see the
+ * overlay section), video_portrait[21:20] (no rotation here),
+ * video_inv_hor[24] (see w100_overlay_plane_init()), gamma_sel[27:26],
+ * dis_limit[28], en_uv_hblend[29] and rgb_gamma_sel[31:30].
+ */
+#define W100_VIDEO_CTRL_VIDEO_MODE		BIT(0)
+#define W100_VIDEO_CTRL_KEYER_EN		BIT(1)
 #define W100_VIDEO_CTRL_EN_VIDEO_REQ		BIT(2)
 #define W100_VIDEO_CTRL_EN_GRAPHIC_REQ_VIDEO	BIT(3)
 #define W100_VIDEO_CTRL_EN_VIDEO_CRTC		BIT(4)
+#define W100_VIDEO_CTRL_HOR_EXP		GENMASK(6, 5)
+#define W100_VIDEO_CTRL_VER_EXP		GENMASK(8, 7)
+#define W100_VIDEO_CTRL_TOTAL_REQ_VIDEO	GENMASK(18, 10)
+#define W100_VIDEO_CTRL_YUV2RGB_EN		BIT(22)
+#define W100_VIDEO_CTRL_YUV2RGB_OPTION		BIT(23)
+#define W100_VIDEO_CTRL_VIDEO_INV_VER		BIT(25)
+
+/* graphic_key_t (lib/w100regs.h:1492-1495) -- one 16-bit key value plus one
+ * 16-bit compare mask, matching libw100's own ac_ovlkey_t
+ * { uint16_t color; uint16_t mask; } (lib/actypes.h:104-107) and its
+ * assignment in ac_overlay_setup() (lib/overlay.c:256-263).
+ */
+#define W100_GRAPHIC_KEY_COLOR			GENMASK(15, 0)
+#define W100_GRAPHIC_KEY_MASK			GENMASK(31, 16)
+
+/* video_{y,u,v}_offset_t (24-bit chip-internal byte address) and
+ * video_{y,u,v}_pitch_t (11-bit byte pitch), lib/w100regs.h:1502-1560. All
+ * six registers share the same two shapes.
+ */
+#define W100_VIDEO_OFFSET			GENMASK(23, 0)
+#define W100_VIDEO_PITCH			GENMASK(10, 0)
 
 /* active_h_disp_t/active_v_disp_t/graphic_h_disp_t/graphic_v_disp_t/
  * crtc_total_t all share this 10-bit-start/6-reserved/10-bit-end/
- * 6-reserved shape.
+ * 6-reserved shape, and so do video_h_pos_t/video_v_pos_t
+ * (lib/w100regs.h:1562-1584).
  */
 #define W100_DISP_RANGE(start, end) ((u32)(start) | ((u32)(end) << 16))
 
@@ -938,9 +1025,19 @@ struct w100_device {
 	void __iomem *wrap;
 
 	struct drm_plane primary_plane;
+	struct drm_plane overlay_plane;
 	struct drm_crtc crtc;
 	struct drm_encoder encoder;
 	struct drm_connector connector;
+
+	/* Driver-private overlay colour-key properties. There is no core
+	 * drm_plane_create_colorkey_property(); the shape here follows
+	 * drivers/gpu/drm/armada/armada_overlay.c's precedent, cut down to
+	 * what mmGRAPHIC_KEY actually is -- see w100_overlay_plane_init().
+	 */
+	struct drm_property *colorkey_prop;
+	struct drm_property *colorkey_mask_prop;
+	struct drm_property *colorkey_mode_prop;
 
 	/* W3220_nRESET, PXA GPIO61 -- deasserted once here and never
 	 * toggled again, matching the recovered global_gpios[]'s own
@@ -3082,6 +3179,654 @@ static const struct drm_plane_funcs w100_primary_plane_funcs = {
 	DRM_GEM_SHADOW_PLANE_FUNCS,
 };
 
+/* ------------------------------------------------------------------ */
+/*
+ * Hardware video overlay plane: the chip's own fixed-function video
+ * front-end, a second scanout source the CRTC composites above the
+ * graphics plane, with hardware YUV->RGB conversion, an integer upscaler
+ * and a colour keyer.
+ *
+ * The whole register protocol below is ported from libw100 0.0.2's
+ * lib/overlay.c (GPLv2, Manuel Teira, 2006) -- the only source anywhere
+ * that drives this block -- with the shipped mplayer libvo backend
+ * vo_imageon.c (mplayer-imageon.patch, same project, same release) as the
+ * reference consumer. Both are cited line-by-line below.
+ *
+ * Three limits, each because the prior art does not support
+ * anything more:
+ *
+ *  - Source pixels must live in the chip's own SDRAM: mmVIDEO_Y_OFFSET is
+ *    a 24-bit chip-internal address and the chip cannot bus-master out of
+ *    system memory. So this is a shadow plane like the primary one --
+ *    userspace hands it an ordinary shmem GEM buffer and the driver
+ *    copies the visible source rectangle into the VRAM reservation at
+ *    W100_OVERLAY_VRAM_OFFSET on each update. That copy is still a large
+ *    net win over software YUV: vo_imageon.c's own full-screen path feeds
+ *    a 240x320 YUV420 surface and asks for 2x expansion in both axes
+ *    (mplayer-imageon.patch's config(), the VOFLAG_FULLSCREEN branch), so
+ *    the same picture costs 115,200 bytes across the nCS2 bus and no CPU
+ *    colour conversion at all, against 614,400 bytes of software-converted
+ *    RGB565 through the primary plane. A zero-copy VRAM-backed GEM object
+ *    would need a driver-private allocation ioctl, i.e. new UAPI, which
+ *    this plane does not add.
+ *  - Only planar YUV. The RGB source path (video_ch_sel = 1) additionally
+ *    needs the mmDISP_DEBUG format bits libw100 pokes
+ *    (lib/overlay.c:93-132) whose meaning is undocumented magic in that
+ *    source too, and no known consumer ever used it.
+ *  - Only integer scaling. Continuous scaling on this chip was never an
+ *    overlay capability: vo_imageon.c gets it from the E2 2D engine
+ *    (mmE2_ARITHMETIC_CNTL's E2_OPC_SCALE_SRC2) into a second,
+ *    overlay-sized YUV surface which it then displays, and that engine is
+ *    not brought up by this driver.
+ */
+
+/* Both formats are three separate planes with independent offset and pitch
+ * registers, matching libw100's FMT_YUV420 (8-bit Y, 2x2-subsampled U and
+ * V) and FMT_YUV422 (8-bit Y, 2x1-subsampled U and V) surface specs
+ * (lib/surfspec.c:146-203). Note there is no interleaved-chroma mode with
+ * uv_combine off, so NV12 is not a thing here.
+ */
+static const u32 w100_overlay_plane_formats[] = {
+	DRM_FORMAT_YUV420,
+	DRM_FORMAT_YUV422,
+};
+
+static const u64 w100_overlay_plane_format_modifiers[] = {
+	DRM_FORMAT_MOD_LINEAR,
+	DRM_FORMAT_MOD_INVALID,
+};
+
+/* Enum values for the driver-private "colorkey_mode" property. The
+ * spelling is Armada's (armada_overlay.c's own
+ * armada_drm_colorkey_enum_list) so userspace that already knows how to
+ * drive an Armada overlay is not surprised by a novel string.
+ */
+enum w100_colorkey_mode {
+	W100_COLORKEY_DISABLED = 0,
+	W100_COLORKEY_RGB = 1,
+};
+
+/* A 1 bit in mmGRAPHIC_KEY's mask field means "compare this bit". */
+#define W100_COLORKEY_MASK_ALL	0xffff
+
+static const struct drm_prop_enum_list w100_colorkey_modes[] = {
+	{ W100_COLORKEY_DISABLED, "disabled" },
+	{ W100_COLORKEY_RGB, "RGB" },
+};
+
+struct w100_overlay_plane_state {
+	struct drm_shadow_plane_state base;
+
+	u16 colorkey;
+	u16 colorkey_mask;
+	u32 colorkey_mode;
+};
+
+#define to_w100_overlay_plane_state(x) \
+	container_of_const(x, struct w100_overlay_plane_state, base.base)
+
+/* Park the video front-end fully disabled. Writing the whole word clears
+ * en_video_req, en_video_crtc *and* en_graphic_req_video together, which
+ * is the state ac_overlay_disable() leaves behind (lib/overlay.c:39-53):
+ * en_graphic_req_video is a hardware coupling to keyer_en, not a policy
+ * bit, and leaving it set with the keyer off stops the graphics plane
+ * fetching.
+ */
+static void w100_overlay_park(struct w100_device *w100)
+{
+	w100_update_disable(w100);
+	writel(0, w100->regs + W100_REG_VIDEO_CTRL);
+	w100_update_enable(w100);
+}
+
+/* Every plane of both supported formats carries one 8-bit sample per
+ * (subsampled) pixel, so a plane's size in bytes is just its subsampled
+ * pixel count and the whole surface is the sum over its planes.
+ */
+static unsigned int w100_overlay_src_size(const struct drm_format_info *format,
+					  unsigned int width, unsigned int height)
+{
+	unsigned int i, size = 0;
+
+	for (i = 0; i < format->num_planes; i++)
+		size += (width / (i ? format->hsub : 1)) *
+			(height / (i ? format->vsub : 1));
+
+	return size;
+}
+
+/* Copy one already-subsampled source plane into the VRAM reservation.
+ * Destination pitch is the copied width -- the reservation holds nothing
+ * else, so packing the planes tightly is what makes the budget in
+ * W100_OVERLAY_VRAM_SIZE add up.
+ */
+static void w100_overlay_copy_plane(struct w100_device *w100,
+				    const struct drm_shadow_plane_state *shadow,
+				    const struct drm_framebuffer *fb,
+				    unsigned int index, unsigned int vram_offset,
+				    unsigned int src_x, unsigned int src_y,
+				    unsigned int width, unsigned int height)
+{
+	struct iosys_map dst = IOSYS_MAP_INIT_VADDR_IOMEM(w100->vram);
+	struct iosys_map src = shadow->data[index];
+	unsigned int y;
+
+	iosys_map_incr(&dst, vram_offset);
+	iosys_map_incr(&src, src_y * fb->pitches[index] + src_x);
+
+	for (y = 0; y < height; y++) {
+		iosys_map_memcpy_to(&dst, 0, src.vaddr, width);
+		iosys_map_incr(&src, fb->pitches[index]);
+		iosys_map_incr(&dst, width);
+	}
+}
+
+static int w100_overlay_plane_helper_atomic_check(struct drm_plane *plane,
+						  struct drm_atomic_commit *state)
+{
+	struct drm_plane_state *new_plane_state = drm_atomic_get_new_plane_state(state, plane);
+	struct drm_crtc *new_crtc = new_plane_state->crtc;
+	struct drm_crtc_state *new_crtc_state = NULL;
+	const struct drm_framebuffer *fb = new_plane_state->fb;
+	unsigned int src_x, src_y, src_w, src_h, dst_w, dst_h;
+	int ret;
+
+	if (new_crtc)
+		new_crtc_state = drm_atomic_get_new_crtc_state(state, new_crtc);
+
+	ret = drm_atomic_helper_check_plane_state(new_plane_state, new_crtc_state,
+						  W100_OVERLAY_MIN_SCALE,
+						  DRM_PLANE_NO_SCALING,
+						  true, false);
+	if (ret)
+		return ret;
+
+	if (!new_plane_state->visible)
+		return 0;
+
+	/*
+	 * The front-end cannot clip its own output. mmVIDEO_H_POS is just a
+	 * start/end pair inside the graphics window; libw100's own
+	 * ac_overlay_setpos() answers a right-edge overhang by shrinking
+	 * total_req_video while leaving video_h_end past graphic_h_end
+	 * (lib/overlay.c:327-338), and nothing anywhere handles a left or top
+	 * overhang at all. Rather than guess at either, require the
+	 * destination rectangle to land wholly on screen: the helper above has
+	 * already clipped ->dst, so any disagreement with what userspace asked
+	 * for is exactly "this needed clipping".
+	 */
+	if (new_plane_state->dst.x1 != new_plane_state->crtc_x ||
+	    new_plane_state->dst.y1 != new_plane_state->crtc_y ||
+	    drm_rect_width(&new_plane_state->dst) != (int)new_plane_state->crtc_w ||
+	    drm_rect_height(&new_plane_state->dst) != (int)new_plane_state->crtc_h)
+		return -EINVAL;
+
+	/* mmVIDEO_Y_OFFSET/PITCH are plain byte quantities -- there is no
+	 * fractional source addressing, so the 16.16 source rectangle has to
+	 * be pixel-exact.
+	 */
+	if ((new_plane_state->src.x1 | new_plane_state->src.y1 |
+	     new_plane_state->src.x2 | new_plane_state->src.y2) & 0xffff)
+		return -EINVAL;
+
+	src_x = new_plane_state->src.x1 >> 16;
+	src_y = new_plane_state->src.y1 >> 16;
+	src_w = drm_rect_width(&new_plane_state->src) >> 16;
+	src_h = drm_rect_height(&new_plane_state->src) >> 16;
+	dst_w = drm_rect_width(&new_plane_state->dst);
+	dst_h = drm_rect_height(&new_plane_state->dst);
+
+	/* drm_atomic_helper_check_plane_state() can only range-check the
+	 * scale, and a range cannot express "1x, 2x, 3x or 4x and nothing in
+	 * between" -- it will happily accept 1.5x, which a 2-bit exp field has
+	 * no representation for. So reject non-integer ratios here.
+	 */
+	if (dst_w % src_w || dst_h % src_h)
+		return -EINVAL;
+
+	/* A source rectangle that does not start and end on a chroma sample
+	 * has no representation in the U/V offset+pitch registers.
+	 */
+	if (src_x % fb->format->hsub || src_w % fb->format->hsub ||
+	    src_y % fb->format->vsub || src_h % fb->format->vsub)
+		return -EINVAL;
+
+	if (w100_overlay_src_size(fb->format, src_w, src_h) > W100_OVERLAY_VRAM_SIZE)
+		return -EINVAL;
+
+	return 0;
+}
+
+/*
+ * Copy the overlay's source into the VRAM reservation (when @copy) and
+ * program the video front-end. The caller holds drm_dev_enter().
+ *
+ * @copy is false when the CRTC has just been enabled: the plane update ran
+ * earlier in the same commit tail, before w100_apply_mode() brought the
+ * clocks and the graphics plane up, and the front-end does not start from
+ * registers written at that point. The pixels are already in VRAM, which
+ * w100_apply_mode() leaves alone, so only the registers are written again.
+ */
+static void w100_overlay_program(struct w100_device *w100,
+				 struct drm_plane_state *plane_state,
+				 const struct w100_hw_mode *hw, bool copy)
+{
+	const struct w100_overlay_plane_state *w100_state;
+	const struct drm_shadow_plane_state *shadow;
+	const struct drm_framebuffer *fb = plane_state->fb;
+	unsigned int offset[DRM_FORMAT_MAX_PLANES], pitch[DRM_FORMAT_MAX_PLANES];
+	unsigned int src_x, src_y, src_w, src_h, dst_w, dst_h;
+	unsigned int i, vram_offset;
+	u32 ctrl;
+
+	/* A plane still attached to the CRTC but entirely clipped away has no
+	 * register programming that makes sense; park the front-end instead of
+	 * leaving the previous frame latched.
+	 */
+	if (!plane_state->visible) {
+		w100_overlay_park(w100);
+		return;
+	}
+
+	w100_state = to_w100_overlay_plane_state(plane_state);
+	shadow = to_drm_shadow_plane_state(plane_state);
+
+	/* The position is relative to the graphics window, whose start is the
+	 * mode's left/upper margin: ac_overlay_setpos() derives video_h_start
+	 * from graphic_h_start the same way (lib/overlay.c:320-325).
+	 */
+	src_x = plane_state->src.x1 >> 16;
+	src_y = plane_state->src.y1 >> 16;
+	src_w = drm_rect_width(&plane_state->src) >> 16;
+	src_h = drm_rect_height(&plane_state->src) >> 16;
+	dst_w = drm_rect_width(&plane_state->dst);
+	dst_h = drm_rect_height(&plane_state->dst);
+
+	vram_offset = W100_OVERLAY_VRAM_OFFSET;
+	for (i = 0; i < fb->format->num_planes; i++) {
+		unsigned int hsub = i ? fb->format->hsub : 1;
+		unsigned int vsub = i ? fb->format->vsub : 1;
+		unsigned int lines = src_h / vsub;
+
+		pitch[i] = src_w / hsub;
+		offset[i] = W100_FB_BASE + vram_offset;
+
+		if (copy)
+			w100_overlay_copy_plane(w100, shadow, fb, i, vram_offset,
+						src_x / hsub, src_y / vsub,
+						pitch[i], lines);
+
+		/* Vertical flip: the front-end walks the source backwards from
+		 * the address it is handed, so each plane points at its own
+		 * last line -- lib/overlay.c:215-224.
+		 */
+		if (plane_state->rotation & DRM_MODE_REFLECT_Y)
+			offset[i] += (lines - 1) * pitch[i];
+
+		vram_offset += pitch[i] * lines;
+	}
+
+	ctrl = W100_VIDEO_CTRL_EN_VIDEO_REQ | W100_VIDEO_CTRL_EN_VIDEO_CRTC |
+	       W100_VIDEO_CTRL_YUV2RGB_EN |
+	       FIELD_PREP(W100_VIDEO_CTRL_HOR_EXP, dst_w / src_w - 1) |
+	       FIELD_PREP(W100_VIDEO_CTRL_VER_EXP, dst_h / src_h - 1) |
+	       /* total_req_video, the per-line fetch request count, for the
+		* YUV path: (destination width + 3) / 4, from
+		* ac_overlay_setup()/ac_overlay_setpos() (lib/overlay.c:181,
+		* 337) -- both compute it from the *expanded* width.
+		*/
+	       FIELD_PREP(W100_VIDEO_CTRL_TOTAL_REQ_VIDEO, (dst_w + 3) / 4);
+
+	/* video_mode: 0 = YUV422, 1 = YUV420 (lib/acconstants.h:144-145). */
+	if (fb->format->format == DRM_FORMAT_YUV420)
+		ctrl |= W100_VIDEO_CTRL_VIDEO_MODE;
+
+	/*
+	 * On the hx4700 panel, BT.601- and BT.709-encoded test patches both
+	 * decoded as BT.601 with yuv2rgb_option set, so this is the one
+	 * setting known to give the only encoding the plane advertises.
+	 */
+	ctrl |= W100_VIDEO_CTRL_YUV2RGB_OPTION;
+
+	if (plane_state->rotation & DRM_MODE_REFLECT_Y)
+		ctrl |= W100_VIDEO_CTRL_VIDEO_INV_VER;
+
+	/* en_graphic_req_video must track keyer_en. libw100 does this in both
+	 * ac_overlay_enable() and ac_overlay_disable() (lib/overlay.c:29-31,
+	 * 45-47); it is a hardware coupling, not a policy choice, so it is not
+	 * exposed as a property.
+	 */
+	if (w100_state->colorkey_mode != W100_COLORKEY_DISABLED)
+		ctrl |= W100_VIDEO_CTRL_KEYER_EN |
+			W100_VIDEO_CTRL_EN_GRAPHIC_REQ_VIDEO;
+
+	/*
+	 * One mmDISP_DB_BUF_CNTL-bracketed batch. libw100 brackets every
+	 * overlay register update with exactly this pair -- around the
+	 * mmVIDEO_CTRL/offset/pitch block in ac_overlay_setup()
+	 * (lib/overlay.c:265-277) and around the mmVIDEO_H_POS/V_POS block in
+	 * ac_overlay_setpos() (lib/overlay.c:340-344). Collapsing its three
+	 * separate brackets (setup, setpos, enable) into one is what makes
+	 * this a genuinely atomic, tear-free plane update, and it needs no
+	 * vblank interrupt -- which matters, because this driver has none:
+	 * its vblank events come from a timer.
+	 */
+	w100_update_disable(w100);
+
+	if (w100_state->colorkey_mode != W100_COLORKEY_DISABLED)
+		writel(FIELD_PREP(W100_GRAPHIC_KEY_COLOR, w100_state->colorkey) |
+		       FIELD_PREP(W100_GRAPHIC_KEY_MASK, w100_state->colorkey_mask),
+		       w100->regs + W100_REG_GRAPHIC_KEY);
+
+	/* Y, U and V are all unconditionally programmed: both advertised
+	 * formats are three-plane, so the loop above filled all three slots.
+	 */
+	writel(ctrl, w100->regs + W100_REG_VIDEO_CTRL);
+	writel(FIELD_PREP(W100_VIDEO_OFFSET, offset[0]), w100->regs + W100_REG_VIDEO_Y_OFFSET);
+	writel(FIELD_PREP(W100_VIDEO_PITCH, pitch[0]), w100->regs + W100_REG_VIDEO_Y_PITCH);
+	writel(FIELD_PREP(W100_VIDEO_OFFSET, offset[1]), w100->regs + W100_REG_VIDEO_U_OFFSET);
+	writel(FIELD_PREP(W100_VIDEO_PITCH, pitch[1]), w100->regs + W100_REG_VIDEO_U_PITCH);
+	writel(FIELD_PREP(W100_VIDEO_OFFSET, offset[2]), w100->regs + W100_REG_VIDEO_V_OFFSET);
+	writel(FIELD_PREP(W100_VIDEO_PITCH, pitch[2]), w100->regs + W100_REG_VIDEO_V_PITCH);
+
+	writel(W100_DISP_RANGE(hw->left_margin + plane_state->dst.x1,
+			       hw->left_margin + plane_state->dst.x1 + dst_w),
+	       w100->regs + W100_REG_VIDEO_H_POS);
+	writel(W100_DISP_RANGE(hw->upper_margin + plane_state->dst.y1,
+			       hw->upper_margin + plane_state->dst.y1 + dst_h),
+	       w100->regs + W100_REG_VIDEO_V_POS);
+
+	w100_update_enable(w100);
+}
+
+static void w100_overlay_plane_helper_atomic_update(struct drm_plane *plane,
+						    struct drm_atomic_commit *state)
+{
+	struct w100_device *w100 = to_w100(plane->dev);
+	struct drm_plane_state *plane_state = drm_atomic_get_new_plane_state(state, plane);
+	struct drm_crtc_state *crtc_state;
+	const struct w100_hw_mode *hw;
+	int idx;
+
+	if (!drm_dev_enter(&w100->drm, &idx))
+		return;
+
+	if (!plane_state->visible) {
+		w100_overlay_park(w100);
+		goto out;
+	}
+
+	/* The position is relative to the graphics window, whose start is the
+	 * mode's margin. Take the mode from the new CRTC state rather than
+	 * reading the register back: on an enabling commit the plane update runs
+	 * before w100_crtc_helper_atomic_enable() has programmed the chip.
+	 */
+	crtc_state = drm_atomic_get_new_crtc_state(state, plane_state->crtc);
+	hw = w100_find_hw_mode(crtc_state->mode.hdisplay, crtc_state->mode.vdisplay);
+	if (WARN_ON(!hw))
+		goto out;
+
+	w100_overlay_program(w100, plane_state, hw, true);
+
+out:
+	drm_dev_exit(idx);
+}
+
+/*
+ * Called from w100_crtc_helper_atomic_enable() once the chip is running the
+ * mode: write the overlay registers again for a plane that was enabled in the
+ * same commit as the modeset (see w100_overlay_program()).
+ */
+static void w100_overlay_replay(struct w100_device *w100, const struct w100_hw_mode *hw)
+{
+	struct drm_plane_state *plane_state = w100->overlay_plane.state;
+
+	if (!plane_state || !plane_state->crtc || !plane_state->fb ||
+	    !plane_state->visible)
+		return;
+
+	w100_overlay_program(w100, plane_state, hw, false);
+}
+
+static void w100_overlay_plane_helper_atomic_disable(struct drm_plane *plane,
+						     struct drm_atomic_commit *state)
+{
+	struct w100_device *w100 = to_w100(plane->dev);
+	int idx;
+
+	if (!drm_dev_enter(&w100->drm, &idx))
+		return;
+
+	w100_overlay_park(w100);
+
+	drm_dev_exit(idx);
+}
+
+static void w100_overlay_plane_destroy_state(struct drm_plane *plane,
+					     struct drm_plane_state *plane_state)
+{
+	__drm_gem_destroy_shadow_plane_state(to_drm_shadow_plane_state(plane_state));
+	kfree(to_w100_overlay_plane_state(plane_state));
+}
+
+static void w100_overlay_plane_reset(struct drm_plane *plane)
+{
+	struct w100_overlay_plane_state *new_state;
+
+	if (plane->state) {
+		w100_overlay_plane_destroy_state(plane, plane->state);
+		plane->state = NULL;	/* must be set to NULL here */
+	}
+
+	/* The private fields must match the defaults the properties were
+	 * attached with; everything standard (rotation, zpos, COLOR_ENCODING,
+	 * COLOR_RANGE) is picked up from the attached properties' own defaults
+	 * by __drm_atomic_helper_plane_state_reset().
+	 */
+	new_state = kzalloc_obj(*new_state);
+	if (new_state) {
+		new_state->colorkey_mask = W100_COLORKEY_MASK_ALL;
+		new_state->colorkey_mode = W100_COLORKEY_DISABLED;
+	}
+	__drm_gem_reset_shadow_plane(plane, new_state ? &new_state->base : NULL);
+}
+
+static struct drm_plane_state *w100_overlay_plane_duplicate_state(struct drm_plane *plane)
+{
+	const struct w100_overlay_plane_state *old_state;
+	struct w100_overlay_plane_state *new_state;
+
+	if (WARN_ON(!plane->state))
+		return NULL;
+
+	old_state = to_w100_overlay_plane_state(plane->state);
+
+	new_state = kzalloc_obj(*new_state);
+	if (!new_state)
+		return NULL;
+
+	__drm_gem_duplicate_shadow_plane_state(plane, &new_state->base);
+
+	new_state->colorkey = old_state->colorkey;
+	new_state->colorkey_mask = old_state->colorkey_mask;
+	new_state->colorkey_mode = old_state->colorkey_mode;
+
+	return &new_state->base.base;
+}
+
+static int w100_overlay_plane_atomic_set_property(struct drm_plane *plane,
+						  struct drm_plane_state *plane_state,
+						  struct drm_property *property,
+						  u64 val)
+{
+	struct w100_device *w100 = to_w100(plane->dev);
+	struct w100_overlay_plane_state *w100_state = to_w100_overlay_plane_state(plane_state);
+
+	if (property == w100->colorkey_prop)
+		w100_state->colorkey = val;
+	else if (property == w100->colorkey_mask_prop)
+		w100_state->colorkey_mask = val;
+	else if (property == w100->colorkey_mode_prop)
+		w100_state->colorkey_mode = val;
+	else
+		return -EINVAL;
+
+	return 0;
+}
+
+static int w100_overlay_plane_atomic_get_property(struct drm_plane *plane,
+						  const struct drm_plane_state *plane_state,
+						  struct drm_property *property,
+						  u64 *val)
+{
+	struct w100_device *w100 = to_w100(plane->dev);
+	const struct w100_overlay_plane_state *w100_state;
+
+	w100_state = to_w100_overlay_plane_state(plane_state);
+
+	if (property == w100->colorkey_prop)
+		*val = w100_state->colorkey;
+	else if (property == w100->colorkey_mask_prop)
+		*val = w100_state->colorkey_mask;
+	else if (property == w100->colorkey_mode_prop)
+		*val = w100_state->colorkey_mode;
+	else
+		return -EINVAL;
+
+	return 0;
+}
+
+static const struct drm_plane_helper_funcs w100_overlay_plane_helper_funcs = {
+	DRM_GEM_SHADOW_PLANE_HELPER_FUNCS,
+	.atomic_check = w100_overlay_plane_helper_atomic_check,
+	.atomic_update = w100_overlay_plane_helper_atomic_update,
+	.atomic_disable = w100_overlay_plane_helper_atomic_disable,
+};
+
+/* DRM_GEM_SHADOW_PLANE_FUNCS is not used here: all three of
+ * the hooks it supplies are overridden so the driver-private colour-key
+ * fields ride along in a subclassed drm_shadow_plane_state.
+ */
+static const struct drm_plane_funcs w100_overlay_plane_funcs = {
+	.update_plane = drm_atomic_helper_update_plane,
+	.disable_plane = drm_atomic_helper_disable_plane,
+	.destroy = drm_plane_cleanup,
+	.reset = w100_overlay_plane_reset,
+	.atomic_duplicate_state = w100_overlay_plane_duplicate_state,
+	.atomic_destroy_state = w100_overlay_plane_destroy_state,
+	.atomic_set_property = w100_overlay_plane_atomic_set_property,
+	.atomic_get_property = w100_overlay_plane_atomic_get_property,
+};
+
+static int w100_overlay_plane_init(struct w100_device *w100)
+{
+	struct drm_device *dev = &w100->drm;
+	struct drm_plane *plane = &w100->overlay_plane;
+	struct drm_property *prop;
+	int ret;
+
+	ret = drm_universal_plane_init(dev, plane, 0, &w100_overlay_plane_funcs,
+				       w100_overlay_plane_formats,
+				       ARRAY_SIZE(w100_overlay_plane_formats),
+				       w100_overlay_plane_format_modifiers,
+				       DRM_PLANE_TYPE_OVERLAY, NULL);
+	if (ret)
+		return ret;
+	drm_plane_helper_add(plane, &w100_overlay_plane_helper_funcs);
+
+	/* Immutable: the video front-end composites above the graphics plane
+	 * and there is no ordering control anywhere in the register map.
+	 */
+	ret = drm_plane_create_zpos_immutable_property(plane, 1);
+	if (ret)
+		return ret;
+
+	/*
+	 * Vertical reflection only.
+	 *
+	 * video_inv_hor exists too, and DRM_MODE_REFLECT_X is not
+	 * advertised for it: libw100's horizontally-flipped source-offset
+	 * arithmetic carries unexplained "+1" and "-4" fudge terms that do not
+	 * even agree between the luma and chroma planes
+	 * (lib/overlay.c:230-238), nothing documents them, and no consumer
+	 * ever set inv_hor -- every caller in libw100's own tests and in
+	 * vo_imageon.c passes 0. The vertical case has no such fudge (it is a
+	 * plain "point at the last line", lib/overlay.c:215-224), so it is the
+	 * one that can be implemented without guessing.
+	 *
+	 * 90/270 rotation is not offered at all: video_portrait exists, but
+	 * libw100's handling of it is corner-pointing offset fixups its own
+	 * comment says work only for RGB surfaces (lib/overlay.c:142-164).
+	 */
+	ret = drm_plane_create_rotation_property(plane, DRM_MODE_ROTATE_0,
+						 DRM_MODE_ROTATE_0 | DRM_MODE_REFLECT_Y);
+	if (ret)
+		return ret;
+
+	/*
+	 * The hardware has exactly one colour-space selector, yuv2rgb_option,
+	 * whose meaning no register map documents. With it set, BT.601- and
+	 * BT.709-encoded test patches both decoded as BT.601 on the hx4700
+	 * panel, so only BT.601 is advertised: what the other value of the
+	 * bit selects has not been observed. No range choice is offered
+	 * either, as there is no range control bit anywhere in the register
+	 * map.
+	 */
+	ret = drm_plane_create_color_properties(plane,
+						BIT(DRM_COLOR_YCBCR_BT601),
+						BIT(DRM_COLOR_YCBCR_LIMITED_RANGE),
+						DRM_COLOR_YCBCR_BT601,
+						DRM_COLOR_YCBCR_LIMITED_RANGE);
+	if (ret)
+		return ret;
+
+	/*
+	 * Colour key. There is no core drm_plane_create_colorkey_property(),
+	 * so these are driver-private, following armada_overlay.c's precedent
+	 * (armada_overlay_create_properties()) but cut to what mmGRAPHIC_KEY
+	 * really is: a single 16-bit RGB565 key plus a 16-bit compare mask,
+	 * not Armada's six-property min/max/val/alpha range.
+	 *
+	 * Semantics as measured on the hx4700 panel (neither libw100 nor
+	 * vo_imageon.c ever set a key, so there is no prior art): the video
+	 * shows wherever the stored RGB565 value of the primary-plane pixel
+	 * matches "colorkey" in every bit selected by "colorkey_mask", and the
+	 * graphics show everywhere else. A 1 mask bit means "compared", a 0
+	 * bit "ignored"; the compare is exact per pixel, with no tolerance and
+	 * no chroma shift against luma.
+	 *
+	 * The mask therefore defaults to 0xffff, so enabling the key with only
+	 * a key value compares every bit; a zero mask would match every pixel
+	 * and hide the graphics plane entirely. The mode still defaults to
+	 * "disabled": whether the plane is visible at all with the keyer off
+	 * has not been settled on hardware, so enabling it is left to
+	 * userspace rather than tied to the plane being enabled.
+	 */
+	prop = drm_property_create_range(dev, 0, "colorkey", 0, 0xffff);
+	if (!prop)
+		return -ENOMEM;
+	w100->colorkey_prop = prop;
+	drm_object_attach_property(&plane->base, prop, 0);
+
+	prop = drm_property_create_range(dev, 0, "colorkey_mask", 0, 0xffff);
+	if (!prop)
+		return -ENOMEM;
+	w100->colorkey_mask_prop = prop;
+	drm_object_attach_property(&plane->base, prop, W100_COLORKEY_MASK_ALL);
+
+	prop = drm_property_create_enum(dev, 0, "colorkey_mode",
+					w100_colorkey_modes,
+					ARRAY_SIZE(w100_colorkey_modes));
+	if (!prop)
+		return -ENOMEM;
+	w100->colorkey_mode_prop = prop;
+	drm_object_attach_property(&plane->base, prop, W100_COLORKEY_DISABLED);
+
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
+
 static enum drm_mode_status w100_crtc_helper_mode_valid(struct drm_crtc *crtc,
 							  const struct drm_display_mode *mode)
 {
@@ -3120,6 +3865,7 @@ static void w100_crtc_helper_atomic_enable(struct drm_crtc *crtc, struct drm_ato
 
 	w100_panel_power_up(w100);
 	w100_apply_mode(w100, hw);
+	w100_overlay_replay(w100, hw);
 
 	/*
 	 * Backlight last, once the panel rails are up and the chip is
@@ -3246,11 +3992,43 @@ static int w100_pipe_init(struct w100_device *w100)
 	drm_plane_helper_add(primary_plane, &w100_primary_plane_helper_funcs);
 	drm_plane_enable_fb_damage_clips(primary_plane);
 
+	/* Immutable, to give the overlay plane's own zpos something to be
+	 * above -- the graphics plane is the bottom layer in silicon.
+	 */
+	ret = drm_plane_create_zpos_immutable_property(primary_plane, 0);
+	if (ret)
+		return ret;
+
+	/* The overlay is not passed as the cursor argument here: it is not a
+	 * cursor plane, and this chip has no cursor hardware at all (no
+	 * mmCUR_* register in any of the three register maps).
+	 */
 	ret = drm_crtc_init_with_planes(dev, crtc, primary_plane, NULL,
 					 &w100_crtc_funcs, NULL);
 	if (ret)
 		return ret;
 	drm_crtc_helper_add(crtc, &w100_crtc_helper_funcs);
+
+	/*
+	 * The overlay's source buffers live in VRAM above the primary
+	 * framebuffer, so a device tree whose "fb" window is too small to hold
+	 * both simply gets no overlay plane. The display itself is fine either
+	 * way, and an older device tree describing only the 1 MiB this driver
+	 * used to need keeps working.
+	 */
+	if (w100->vram_size >= W100_OVERLAY_VRAM_OFFSET + W100_OVERLAY_VRAM_SIZE) {
+		ret = w100_overlay_plane_init(w100);
+		if (ret)
+			return ret;
+		/* Set after drm_crtc_init_with_planes(), which only fixes up
+		 * the primary and cursor planes it was handed.
+		 */
+		w100->overlay_plane.possible_crtcs = drm_crtc_mask(crtc);
+	} else {
+		drm_info(dev, "video memory window is %zu bytes, %u needed for the overlay plane -- overlay disabled\n",
+			 w100->vram_size,
+			 W100_OVERLAY_VRAM_OFFSET + W100_OVERLAY_VRAM_SIZE);
+	}
 
 	ret = drm_encoder_init(dev, encoder, &w100_encoder_funcs,
 				DRM_MODE_ENCODER_DPI, NULL);
@@ -3284,9 +4062,21 @@ static int w100_mode_config_init(struct w100_device *w100)
 	if (ret)
 		return ret;
 
-	dev->mode_config.min_width = 240;
+	/*
+	 * These bound *framebuffer* dimensions, not modes -- they are what
+	 * framebuffer_check() (drivers/gpu/drm/drm_framebuffer.c) validates an
+	 * ADDFB2 against -- so they cannot be pinned to the smallest panel
+	 * timing. The overlay plane's whole point is scanning out a source
+	 * smaller than the screen and letting the hardware upscale it:
+	 * vo_imageon.c's own full-screen path feeds a 240x320 YUV420 surface
+	 * and asks for 2x in both axes. Modes are constrained separately, by
+	 * w100_crtc_helper_mode_valid()/w100_find_hw_mode(), and an
+	 * undersized primary framebuffer is still rejected by
+	 * w100_primary_plane_helper_atomic_check()'s own can_position=false.
+	 */
+	dev->mode_config.min_width = 1;
 	dev->mode_config.max_width = 480;
-	dev->mode_config.min_height = 320;
+	dev->mode_config.min_height = 1;
 	dev->mode_config.max_height = 640;
 	dev->mode_config.preferred_depth = 16;
 	dev->mode_config.prefer_shadow = 0;
@@ -3366,9 +4156,9 @@ static void w100_wrap_init(struct w100_device *w100, struct platform_device *pde
 static int w100_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct resource *res;
 	struct w100_device *w100;
 	struct drm_device *drm;
+	struct resource *res;
 	u32 chip_id;
 	int ret;
 
@@ -3497,6 +4287,12 @@ static int w100_probe(struct platform_device *pdev)
 	drm_info(drm, "Found W3220 (chip ID 0x%08x)\n", chip_id);
 
 	w100_chip_bringup(w100);
+
+	/* The video front-end comes out of reset in an undefined state and
+	 * nothing in this driver touches it again unless an overlay commit
+	 * does, so park it disabled once, here.
+	 */
+	w100_overlay_park(w100);
 
 	ret = w100_mode_config_init(w100);
 	if (ret)

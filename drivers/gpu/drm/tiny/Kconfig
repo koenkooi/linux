@@ -103,7 +103,10 @@ config DRM_W100
 	  controller is unwired, this chip drives the Sony panel's parallel
 	  RGB interface itself. It is memory-mapped off a PXA static memory
 	  bank and uses its own 2 MiB on-chip SDRAM as video memory. Two
-	  panel timings are supported: 480x640 and 240x320.
+	  panel timings are supported: 480x640 and 240x320. The chip's
+	  fixed-function video overlay is exposed as a second KMS plane:
+	  planar YUV420/YUV422 with hardware YUV to RGB conversion, 1x to
+	  4x integer upscaling and a colour keyer.
 
 	  The chip's 2D engine is optionally driven through its command
 	  processor, which needs the microcode file imageon/W3220_cp.bin.
