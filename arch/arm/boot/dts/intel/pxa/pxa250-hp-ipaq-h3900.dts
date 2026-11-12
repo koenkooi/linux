@@ -550,6 +550,45 @@
 			wakeup-source;
 		};
 	};
+
+	/*
+	 * AC adapter presence. GPIO8 is AC_IN_N, a plain SoC GPIO that reads
+	 * low while an adapter is connected. It wakes the system on both
+	 * edges, the edges gpio-charger requests its interrupt with.
+	 *
+	 * The charge enable line is bit 4 of ASIC3's GPIO bank B (CH_TIMER),
+	 * active high. gpio-charger asserts it at probe and charge_behaviour
+	 * switches it from userspace; the time, temperature and full-cell
+	 * cutoffs that WinCE applies in software are not in the kernel.
+	 */
+	charger {
+		compatible = "gpio-charger";
+		charger-type = "mains";
+		gpios = <&gpio 8 GPIO_ACTIVE_LOW>;
+		charge-enable-gpios = <&asic3 20 GPIO_ACTIVE_HIGH>;
+	};
+
+	/*
+	 * adc-battery.yaml requires a "monitored-battery" phandle, but
+	 * nothing about the pack (capacity, chemistry, voltage range) is
+	 * known, so the node carries only its compatible.
+	 */
+	simple_battery: simple-battery {
+		compatible = "simple-battery";
+	};
+
+	/*
+	 * Battery voltage through the VS_MBAT channel of the ASIC2 ADC,
+	 * channel 2 in the channel array of asic2-adc.c. The channel has no
+	 * scale: no count-to-microvolt divider is known for this sense line,
+	 * so voltage_now is the raw 10 bit count, not a voltage.
+	 */
+	battery {
+		compatible = "adc-battery";
+		io-channels = <&asic2_adc 2>;
+		io-channel-names = "voltage";
+		monitored-battery = <&simple_battery>;
+	};
 };
 
 /*
