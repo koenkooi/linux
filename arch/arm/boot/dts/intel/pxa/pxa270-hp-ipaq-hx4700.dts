@@ -21,6 +21,7 @@
 /dts-v1/;
 
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 
 #include "pxa27x.dtsi"
@@ -175,6 +176,51 @@
 			ngpios = <8>;
 			htc,direction = <0xff>;
 			htc,initial-values = <0x00>;
+		};
+	};
+
+	/*
+	 * Power is the only wakeup source. Record, Calendar and Home are
+	 * ASIC3 lines; ASIC3_GPIO(D, n) is 16 * 3 + n.
+	 */
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		key-power {
+			label = "Power";
+			linux,code = <KEY_POWER>;
+			gpios = <&gpio 0 GPIO_ACTIVE_LOW>;
+			wakeup-source;
+		};
+
+		key-mail {
+			label = "Mail";
+			linux,code = <KEY_MAIL>;
+			gpios = <&gpio 94 GPIO_ACTIVE_HIGH>;
+		};
+
+		key-addressbook {
+			label = "Contacts";
+			linux,code = <KEY_ADDRESSBOOK>;
+			gpios = <&gpio 99 GPIO_ACTIVE_HIGH>;
+		};
+
+		key-record {
+			label = "Record";
+			linux,code = <KEY_RECORD>;
+			gpios = <&asic3 54 GPIO_ACTIVE_LOW>;
+		};
+
+		key-calendar {
+			label = "Calendar";
+			linux,code = <KEY_CALENDAR>;
+			gpios = <&asic3 49 GPIO_ACTIVE_LOW>;
+		};
+
+		key-homepage {
+			label = "Home";
+			linux,code = <KEY_HOMEPAGE>;
+			gpios = <&asic3 51 GPIO_ACTIVE_LOW>;
 		};
 	};
 };
