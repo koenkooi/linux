@@ -3025,6 +3025,7 @@ F:	arch/arm/boot/dts/intel/pxa/pxa250-hp-ipaq-h3900.dts
 F:	arch/arm/mach-pxa/h3900*
 F:	drivers/gpu/drm/panel/panel-ipaq-h3900.c
 F:	drivers/gpu/drm/tiny/pxa-lcdc.c
+F:	drivers/pcmcia/pxa2xx_h39xx.c
 
 ARM/HP IPAQ H5000 SUPPORT
 M:	Koen Kooi <koen@dominion.thruhere.net>
