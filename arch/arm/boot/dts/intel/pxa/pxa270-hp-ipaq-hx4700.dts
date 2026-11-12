@@ -261,6 +261,14 @@
 		power-gpios = <&egpio0 4 GPIO_ACTIVE_HIGH>;
 	};
 
+	bluetooth {
+		compatible = "hp,ipaq-hx4700-bt";
+		reset-gpios = <&gpio 106 GPIO_ACTIVE_LOW>;
+		power-gpios = <&egpio0 5 GPIO_ACTIVE_HIGH>;
+		pinctrl-0 = <&bt_reset_pins>;
+		pinctrl-names = "default";
+	};
+
 	/*
 	 * Power is the only wakeup source. Record, Calendar and Home are
 	 * ASIC3 lines; ASIC3_GPIO(D, n) is 16 * 3 + n.
@@ -670,10 +678,53 @@
 		function = "PWM_OUT<1>";
 		low-power-disable;
 	};
+
+	btuart_pins: btuart-pins {
+		btuart-rxd-pins {
+			groups = "P42";
+			function = "BTRXD";
+		};
+
+		btuart-txd-pins {
+			groups = "P43";
+			function = "BTTXD";
+			low-power-disable;
+		};
+
+		btuart-cts-pins {
+			groups = "P44";
+			function = "BTCTS";
+		};
+
+		btuart-rts-pins {
+			groups = "P45";
+			function = "BTRTS";
+			low-power-disable;
+		};
+	};
+
+	/* CPU_BT_nRESET */
+	bt_reset_pins: bt-reset-pins {
+		groups = "P106";
+		function = "gpio_in";
+		low-power-disable;
+	};
 };
 
 &ffuart {
 	pinctrl-0 = <&ffuart_pins>;
+	pinctrl-names = "default";
+
+	status = "okay";
+};
+
+/*
+ * The BTUART is the transport of the BRF6150 Bluetooth module, attached
+ * from userspace with hciattach. The node only switches the module's
+ * power: BT_3V3_ON is EGPIO line 5 and the active-low reset is GPIO106.
+ */
+&btuart {
+	pinctrl-0 = <&btuart_pins>;
 	pinctrl-names = "default";
 
 	status = "okay";
