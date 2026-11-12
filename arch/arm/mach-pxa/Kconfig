@@ -80,6 +80,7 @@ config MACH_H2200
 config MACH_H3900
 	bool "HP/Compaq iPAQ h39xx"
 	depends on MACH_PXA25X_DT
+	depends on PM
 	select ARM_APPENDED_DTB
 	select ARM_ATAG_DTB_COMPAT
 	select MFD_ASIC2
@@ -89,7 +90,8 @@ config MACH_H3900
 	  h3970 and h3975). Boots as a PXA25x device tree machine from
 	  pxa250-hp-ipaq-h3900.dts, pin muxing included. The board file sets
 	  the nCS_5 timing of the ASIC2 and ASIC3 companion chips; the
-	  devices themselves come from the devicetree.
+	  devices themselves come from the devicetree. It also installs
+	  the suspend operations of the board.
 
 	  The boot loader only passes ATAGS, so this also selects the
 	  appended DTB support with ATAG compatibility.
