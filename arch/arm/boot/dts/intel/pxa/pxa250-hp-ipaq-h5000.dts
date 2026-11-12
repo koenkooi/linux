@@ -27,6 +27,11 @@
  * ranges, so the devices on the static chip selects are described at
  * their raw physical addresses.
  *
+ * ssp1 is a plain SoC peripheral from pxa25x.dtsi and carries no child
+ * node: the expansion pack's ID EEPROM is discovered only by reading it,
+ * so it has no fixed identity to describe in advance; the sleeve node
+ * borrows the port instead, see drivers/misc/samcop-sleeve.c.
+ *
  * Copyright (C) 2026 Koen Kooi
  */
 
@@ -134,6 +139,19 @@
 		regulator-name = "LIGHT_SENSOR_POWER";
 		gpio = <&gpio 71 GPIO_ACTIVE_LOW>;
 		startup-delay-us = <110000>;
+	};
+
+	/*
+	 * CompactFlash socket of an expansion pack, on the PXA's own PC Card
+	 * interface. Its card detect, card interrupt and reset are SAMCOP
+	 * register bits reached through the sleeve node below, so the node
+	 * has no properties. It is disabled because the socket driver looks
+	 * the node up and assigns it to the socket device it registers once
+	 * a pack with a CF slot has been detected.
+	 */
+	pcmcia {
+		compatible = "hp,ipaq-h5000-pcmcia";
+		status = "disabled";
 	};
 
 	/*
@@ -288,6 +306,40 @@
 		fsi {
 			compatible = "samsung,samcop-fsi";
 		};
+
+		/*
+		 * The expansion-pack connector. nvram-gpios is GPIO64, the rail
+		 * that powers the pack's ID EEPROM ahead of everything else;
+		 * opt-reset-gpios is SAMCOP GPA18; opt-int-gpios is GPIO2, the
+		 * pack's interrupt to the host, separate from the PCMCIA
+		 * IRQ0_N/IRQ1_N bits of the SAMCOP status register.
+		 *
+		 * No opt-on-gpios: SAMCOP GPA17 (OPT_ON) has to stay in its
+		 * reset-time mode 2 and not be driven. Made an output, low or
+		 * high, it leaves the CF slot of a CF Plus pack undriven and
+		 * every read of the PC Card windows returns 0xff; with the pin
+		 * left alone the card enumerates. The factory firmware never
+		 * drives it either.
+		 *
+		 * cs-gpios is the chip select of the ID EEPROM, GPIO24. It is
+		 * here and not on &ssp1 because the spi_controller registered
+		 * for the port takes this node as its firmware node, and the
+		 * SPI core reads cs-gpios from the controller's own node.
+		 *
+		 * samsung,sleeve-port is the SSP the node borrows through
+		 * pxa_ssp_request_of(). ssp1 has no DT child, so
+		 * drivers/soc/pxa/ssp.c claims it first and spi-pxa2xx never
+		 * sees it; the driver resolves the phandle and registers the
+		 * SPI controller itself.
+		 */
+		sleeve {
+			compatible = "samsung,samcop-sleeve";
+			nvram-gpios = <&gpio 64 GPIO_ACTIVE_HIGH>;
+			opt-reset-gpios = <&samcop 18 GPIO_ACTIVE_HIGH>;
+			opt-int-gpios = <&gpio 2 GPIO_ACTIVE_HIGH>;
+			cs-gpios = <&gpio 24 GPIO_ACTIVE_LOW>;
+			samsung,sleeve-port = <&ssp1>;
+		};
 	};
 };
 
@@ -301,5 +353,16 @@
  * pads.
  */
 &hwuart {
+	status = "okay";
+};
+
+/*
+ * SPI to the expansion-pack connector. The chip select is GPIO24, a plain
+ * GPIO and not the SSP1_SFRM alternate function, and is described by the
+ * sleeve node's cs-gpios. No dmas: the SPI controller's DT path sets a
+ * burst size of 1, which the PXA DMA driver maps to no DCMD burst bits,
+ * so the link stays PIO.
+ */
+&ssp1 {
 	status = "okay";
 };
