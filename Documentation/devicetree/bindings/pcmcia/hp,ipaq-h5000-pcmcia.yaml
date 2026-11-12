@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/pcmcia/hp,ipaq-h5000-pcmcia.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HP iPAQ h5000 CompactFlash socket
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: |
+  The CompactFlash socket of the HP iPAQ h5000 family. The h5000 has no
+  slot of its own: the socket sits in an expansion pack ("sleeve") clipped
+  onto the base connector, and its address and data signals pass straight
+  through to the first of the PXA25x's PC Card sockets, whose pins the
+  board muxes.
+
+  The socket's card detect, card interrupt and card reset are not SoC
+  GPIOs. They are bits of the expansion-pack status and control register
+  of the SAMCOP companion chip, which the SAMCOP sleeve node of the same
+  board provides to the socket driver. The node therefore has no GPIO
+  properties, register window or interrupt of its own and exists to
+  describe the socket's presence on the board. The driver registers the
+  socket only once a sleeve that carries a CompactFlash or PC Card slot
+  has been detected.
+
+properties:
+  $nodename:
+    const: pcmcia
+
+  compatible:
+    const: hp,ipaq-h5000-pcmcia
+
+required:
+  - compatible
+
+additionalProperties: false
+
+examples:
+  - |
+    pcmcia {
+        compatible = "hp,ipaq-h5000-pcmcia";
+    };
+...
