@@ -40,6 +40,18 @@
 	};
 
 	/*
+	 * SYNAPTICS_POWER_ON. Neither boot-on nor always-on, so the pad stays
+	 * unpowered until the input device is opened: the driver arms the SSP
+	 * before enabling this, as the stock WinCE driver does.
+	 */
+	navpoint_vdd: regulator-navpoint {
+		compatible = "regulator-fixed";
+		regulator-name = "navpoint-vdd";
+		gpios = <&gpio 102 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	/*
 	 * Two Intel StrataFlash banks of 64 MiB, on nCS0 and nCS1, 32 bits
 	 * wide. The program and erase supply is switched by FLASH_VPEN, GPIO91,
 	 * which the boot loader and the stock flash code assert around every
@@ -709,6 +721,29 @@
 		function = "gpio_in";
 		low-power-disable;
 	};
+
+	ssp1_pins: ssp1-pins {
+		ssp1-sclk-pins {
+			groups = "P23";
+			function = "SSPSCLK_IN";
+		};
+
+		ssp1-sfrm-pins {
+			groups = "P24";
+			function = "SSPSFRM_IN";
+		};
+
+		ssp1-txd-pins {
+			groups = "P25";
+			function = "SSPTXD";
+			low-power-disable;
+		};
+
+		ssp1-rxd-pins {
+			groups = "P26";
+			function = "SSPRXD";
+		};
+	};
 };
 
 &ffuart {
@@ -737,6 +772,26 @@
 	status = "okay";
 	gpios = <&gpio 76 GPIO_ACTIVE_HIGH>;
 	usb-phy = <&usb_connector>;
+};
+
+/*
+ * SSP1: the NavPoint touchpad. The pad drives SCLK and SFRM itself, so the
+ * SSP is a SPI target and the child node carries no reg. The WinCE driver
+ * also drives GPIO103 as an output strobe after loading its Tx FIFO; the
+ * receive-only driver never transmits and leaves that line alone.
+ */
+&ssp1 {
+	pinctrl-0 = <&ssp1_pins>;
+	pinctrl-names = "default";
+
+	status = "okay";
+	spi-slave;
+	#address-cells = <0>;
+
+	slave {
+		compatible = "synaptics,navpoint";
+		vdd-supply = <&navpoint_vdd>;
+	};
 };
 
 /*
