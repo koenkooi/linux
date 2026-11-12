@@ -13,11 +13,12 @@
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/io.h>
+#include <linux/module.h>
+#include <linux/of.h>
 #include <linux/spinlock.h>
 #include <linux/platform_data/gpio-htc-egpio.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <linux/init.h>
 #include <linux/gpio/driver.h>
 
 struct egpio_chip {
@@ -260,15 +261,121 @@ static void egpio_write_cache(struct egpio_info *ei)
  * Setup
  */
 
-static int __init egpio_probe(struct platform_device *pdev)
+/*
+ * Build the descriptor a legacy board file passes as platform_data from the
+ * devicetree node, so both probe paths share the register geometry code.
+ * irq_base/num_irqs have no devicetree equivalent: they are raw Linux IRQ
+ * numbers and this driver has no irq_domain, see the chained IRQ handling
+ * in egpio_probe().
+ */
+static struct htc_egpio_platform_data *
+egpio_parse_dt(struct device *dev, struct fwnode_handle ***fwnodes)
+{
+	struct htc_egpio_platform_data *pdata;
+	struct fwnode_handle **nodes;
+	struct htc_egpio_chip *chips;
+	struct device_node *child;
+	int nchips, i = 0;
+	u32 val;
+	int ret;
+
+	nchips = of_get_available_child_count(dev->of_node);
+	if (!nchips)
+		return ERR_PTR(dev_err_probe(dev, -EINVAL,
+					     "no gpio-chip@ child node\n"));
+
+	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
+	if (!pdata)
+		return ERR_PTR(-ENOMEM);
+
+	chips = devm_kcalloc(dev, nchips, sizeof(*chips), GFP_KERNEL);
+	if (!chips)
+		return ERR_PTR(-ENOMEM);
+
+	nodes = devm_kcalloc(dev, nchips, sizeof(*nodes), GFP_KERNEL);
+	if (!nodes)
+		return ERR_PTR(-ENOMEM);
+
+	ret = of_property_read_u32(dev->of_node, "htc,reg-width", &val);
+	if (ret)
+		return ERR_PTR(dev_err_probe(dev, ret,
+					     "missing htc,reg-width\n"));
+	pdata->reg_width = val;
+
+	ret = of_property_read_u32(dev->of_node, "htc,bus-width", &val);
+	if (ret)
+		return ERR_PTR(dev_err_probe(dev, ret,
+					     "missing htc,bus-width\n"));
+	pdata->bus_width = val;
+
+	if (!of_property_read_u32(dev->of_node, "htc,ack-register", &val))
+		pdata->ack_register = val;
+	pdata->invert_acks = of_property_read_bool(dev->of_node,
+						   "htc,invert-acks");
+
+	for_each_available_child_of_node(dev->of_node, child) {
+		ret = of_property_read_u32(child, "reg", &val);
+		if (ret)
+			goto err_child;
+		chips[i].reg_start = val;
+
+		ret = of_property_read_u32(child, "ngpios", &val);
+		if (ret)
+			goto err_child;
+		/* is_out and cached_values are single words indexed by pin */
+		if (!val || val > BITS_PER_LONG) {
+			ret = -EINVAL;
+			goto err_child;
+		}
+		chips[i].num_gpios = val;
+
+		ret = of_property_read_u32(child, "htc,direction", &val);
+		if (ret)
+			goto err_child;
+		chips[i].direction = val;
+
+		if (!of_property_read_u32(child, "htc,initial-values", &val))
+			chips[i].initial_values = val;
+
+		/* Consumers use a phandle, so gpiolib may pick the base. */
+		chips[i].gpio_base = -1;
+		/* Consumer phandles point at the child, not the parent node. */
+		nodes[i] = of_fwnode_handle(child);
+		i++;
+	}
+
+	pdata->chip = chips;
+	pdata->num_chips = nchips;
+	*fwnodes = nodes;
+
+	return pdata;
+
+err_child:
+	dev_err(dev, "%pOF: bad or missing reg/ngpios/htc,direction\n", child);
+	of_node_put(child);
+	return ERR_PTR(ret);
+}
+
+static int egpio_probe(struct platform_device *pdev)
 {
 	struct htc_egpio_platform_data *pdata = dev_get_platdata(&pdev->dev);
+	struct fwnode_handle **fwnodes = NULL;
 	struct resource   *res;
 	struct egpio_info *ei;
 	struct gpio_chip  *chip;
 	unsigned int      irq, irq_end;
 	int               i;
 	int               ret;
+
+	if (!pdata) {
+		if (!pdev->dev.of_node)
+			return dev_err_probe(&pdev->dev, -EINVAL,
+					     "neither platform_data nor a devicetree node\n");
+
+		pdata = egpio_parse_dt(&pdev->dev, &fwnodes);
+		if (IS_ERR(pdata))
+			return PTR_ERR(pdata);
+	}
 
 	/* Initialize ei data structure. */
 	ei = devm_kzalloc(&pdev->dev, struct_size(ei, chip, pdata->num_chips), GFP_KERNEL);
@@ -283,6 +390,18 @@ static int __init egpio_probe(struct platform_device *pdev)
 	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
 	if (res)
 		ei->chained_irq = res->start;
+
+	/*
+	 * A DT-probed chip has no irq_base/num_irqs, so a chained handler
+	 * would consume the parent line and ack the chip forever without
+	 * dispatching anything.
+	 */
+	if (ei->chained_irq && !dev_get_platdata(&pdev->dev)) {
+		dev_warn(&pdev->dev,
+			 "ignoring chained IRQ %u: DT probing has no irq_domain yet, input pins cannot raise interrupts\n",
+			 ei->chained_irq);
+		ei->chained_irq = 0;
+	}
 
 	/* Map egpio chip into virtual address space. */
 	ei->base_addr = devm_platform_ioremap_resource(pdev, 0);
@@ -318,6 +437,8 @@ static int __init egpio_probe(struct platform_device *pdev)
 			return -ENOMEM;
 
 		chip->parent          = &pdev->dev;
+		if (fwnodes)
+			chip->fwnode  = fwnodes[i];
 		chip->owner           = THIS_MODULE;
 		chip->get             = egpio_get;
 		chip->set             = egpio_set;
@@ -387,17 +508,22 @@ static int egpio_resume(struct device *dev)
 
 static DEFINE_SIMPLE_DEV_PM_OPS(egpio_pm_ops, egpio_suspend, egpio_resume);
 
+static const struct of_device_id egpio_of_match[] = {
+	{ .compatible = "htc,egpio" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, egpio_of_match);
+
 static struct platform_driver egpio_driver = {
 	.driver = {
 		.name = "htc-egpio",
 		.suppress_bind_attrs = true,
 		.pm = pm_sleep_ptr(&egpio_pm_ops),
+		.of_match_table = egpio_of_match,
 	},
+	.probe = egpio_probe,
 };
+module_platform_driver(egpio_driver);
 
-static int __init egpio_init(void)
-{
-	return platform_driver_probe(&egpio_driver, egpio_probe);
-}
-/* start early for dependencies */
-subsys_initcall(egpio_init);
+MODULE_DESCRIPTION("HTC EGPIO CPLD GPIO/IRQ expander driver");
+MODULE_LICENSE("GPL");
