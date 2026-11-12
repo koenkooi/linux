@@ -3014,6 +3014,14 @@ F:	include/dt-bindings/clock/intel,sa1100-clocks.h
 F:	sound/soc/codecs/uda1341.c
 F:	sound/soc/sa11x0/
 
+ARM/HP IPAQ H5000 SUPPORT
+M:	Koen Kooi <koen@dominion.thruhere.net>
+L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
+S:	Maintained
+F:	Documentation/devicetree/bindings/arm/marvell,pxa2xx.yaml
+F:	arch/arm/boot/dts/intel/pxa/pxa250-hp-ipaq-h5000.dts
+F:	arch/arm/mach-pxa/h5000*
+
 ARM/HP JORNADA 7XX MACHINE SUPPORT
 M:	Kristoffer Ericson <kristoffer.ericson@gmail.com>
 S:	Maintained
