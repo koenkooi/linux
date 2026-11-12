@@ -1,0 +1,190 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Device tree for the HP iPAQ hx4700.
+ *
+ * Named pxa270-*: "marvell,pxa270" is the compatible the generic PXA27x
+ * devicetree machine matches (arch/arm/mach-pxa/pxa-dt.c).
+ *
+ * The memory node is a 64 MiB placeholder. The boot loader is ATAGS-only,
+ * so the board boots from an appended DTB with ARM_ATAG_DTB_COMPAT, which
+ * lets the loader's ATAG_MEM replace the reg property
+ * (arch/arm/boot/compressed/atags_to_fdt.c).
+ *
+ * pxa27x.dtsi has no static memory controller node or chip-select
+ * ranges, so the devices on the static chip selects are described at
+ * their raw physical addresses: the NOR flash on nCS0 and nCS1, the ASIC3
+ * on nCS3 and the EGPIO CPLD on nCS5.
+ *
+ * Copyright (C) 2026 Koen Kooi
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+#include "pxa27x.dtsi"
+
+/ {
+	model = "HP iPAQ hx4700";
+	compatible = "hp,ipaq-hx4700", "marvell,pxa270";
+
+	chosen {
+		stdout-path = &ffuart;
+	};
+
+	memory@a0000000 {
+		device_type = "memory";
+		reg = <0xa0000000 0x04000000>; /* 64 MiB, ATAG_MEM overrides */
+	};
+
+	/*
+	 * Two Intel StrataFlash banks of 64 MiB, on nCS0 and nCS1, 32 bits
+	 * wide. The program and erase supply is switched by FLASH_VPEN, GPIO91,
+	 * which the boot loader and the stock flash code assert around every
+	 * erase and program operation and keep low otherwise.
+	 *
+	 * The partition layout is the one the boot loader and the stock
+	 * kernel use.
+	 */
+	flash@0 {
+		compatible = "cfi-flash";
+		reg = <0x00000000 0x04000000>,
+		      <0x04000000 0x04000000>;
+		bank-width = <4>;
+		vpp-gpios = <&gpio 91 GPIO_ACTIVE_HIGH>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "bootloader";
+				reg = <0x00000000 0x00100000>;
+				read-only;
+			};
+
+			partition@100000 {
+				label = "kernel";
+				reg = <0x00100000 0x00200000>;
+			};
+
+			partition@300000 {
+				label = "root";
+				reg = <0x00300000 0x04cc0000>;
+			};
+
+			partition@4fc0000 {
+				label = "home";
+				reg = <0x04fc0000 0x03000000>;
+			};
+
+			partition@7fc0000 {
+				label = "asset";
+				reg = <0x07fc0000 0x00040000>;
+			};
+		};
+	};
+
+	/*
+	 * ASIC3 on nCS3. The "sd" window is the SD host block, 32 MiB into
+	 * the chip select. The chip interrupt is GPIO12 and the SD block
+	 * interrupt is GPIO66, a line of the SoC and not of this chip. The
+	 * chip reset, ASIC3_nRESET, is GPIO71.
+	 */
+	asic3: companion-chip@c000000 {
+		compatible = "htc,asic3";
+		reg = <0x0c000000 0x1000>, <0x0e000000 0x1000>;
+		reg-names = "core", "sd";
+		interrupt-parent = <&gpio>;
+		interrupts = <12 IRQ_TYPE_EDGE_RISING>,
+			     <66 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-names = "core", "sd";
+		reset-gpios = <&gpio 71 GPIO_ACTIVE_LOW>;
+
+		gpio-controller;
+		#gpio-cells = <2>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+
+		/*
+		 * The charging trigger of the amber LED is named after the
+		 * battery gauge supply and stays idle until that supply exists.
+		 */
+		led-controller {
+			compatible = "htc,asic3-leds";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			led@0 {
+				reg = <0>;
+				label = "hx4700:amber";
+				linux,default-trigger =
+					"ds2760-battery.0-charging-blink-full-solid";
+			};
+
+			led@1 {
+				reg = <1>;
+				label = "hx4700:green";
+				linux,default-trigger = "heartbeat";
+			};
+
+			led@2 {
+				reg = <2>;
+				label = "hx4700:blue";
+				linux,default-trigger = "mmc0";
+			};
+		};
+
+		/*
+		 * Card detect is the register bit of the host, so the node
+		 * has no properties. It exists so that the host cell finds
+		 * a firmware node.
+		 */
+		mmc {
+			compatible = "htc,asic3-sd";
+		};
+	};
+
+	/*
+	 * Write-only CPLD on nCS5 that switches the supplies of the CF
+	 * socket, the Bluetooth and Wi-Fi modules: eight output lines, all
+	 * off until a consumer turns its supply on. Line 4 is CF_3V3_ON and
+	 * line 5 is BT_3V3_ON. No input line exists, so the chip has no
+	 * interrupt.
+	 */
+	egpio: gpio-expander@14000000 {
+		compatible = "htc,egpio";
+		reg = <0x14000000 0x4>;
+		htc,reg-width = <16>;
+		htc,bus-width = <16>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		egpio0: gpio-chip@0 {
+			reg = <0>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <8>;
+			htc,direction = <0xff>;
+			htc,initial-values = <0x00>;
+		};
+	};
+};
+
+/*
+ * RS232_ON enables the level shifter of the FFUART, the serial console.
+ */
+&gpio {
+	rs232-on-hog {
+		gpio-hog;
+		gpios = <32 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "RS232_ON";
+	};
+};
+
+&ffuart {
+	status = "okay";
+};
