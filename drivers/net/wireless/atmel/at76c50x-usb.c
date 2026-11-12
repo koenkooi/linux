@@ -1631,6 +1631,7 @@ static struct fwentry *at76_load_firmware(struct usb_device *udev,
 {
 	int ret;
 	char *str;
+	u32 str_off, int_off, int_len, ext_off, ext_len, end;
 	struct at76_fw_header *fwh;
 	struct fwentry *fwe = &firmwares[board_type];
 
@@ -1657,7 +1658,7 @@ static struct fwentry *at76_load_firmware(struct usb_device *udev,
 	if (fwe->fw->size <= sizeof(*fwh)) {
 		dev_err(&udev->dev,
 			"firmware is too short (0x%zx)\n", fwe->fw->size);
-		goto exit;
+		goto fw_err;
 	}
 
 	/* CRC currently not checked */
@@ -1666,7 +1667,22 @@ static struct fwentry *at76_load_firmware(struct usb_device *udev,
 		dev_err(&udev->dev,
 			"board type mismatch, requested %u, got %u\n",
 			board_type, fwe->board_type);
-		goto exit;
+		goto fw_err;
+	}
+
+	str_off = le32_to_cpu(fwh->str_offset);
+	int_off = le32_to_cpu(fwh->int_fw_offset);
+	int_len = le32_to_cpu(fwh->int_fw_len);
+	ext_off = le32_to_cpu(fwh->ext_fw_offset);
+	ext_len = le32_to_cpu(fwh->ext_fw_len);
+
+	if (str_off >= fwe->fw->size ||
+	    check_add_overflow(int_off, int_len, &end) ||
+	    end > fwe->fw->size ||
+	    check_add_overflow(ext_off, ext_len, &end) ||
+	    end > fwe->fw->size) {
+		dev_err(&udev->dev, "firmware header is inconsistent\n");
+		goto fw_err;
 	}
 
 	fwe->fw_version.major = fwh->major;
@@ -1674,11 +1690,11 @@ static struct fwentry *at76_load_firmware(struct usb_device *udev,
 	fwe->fw_version.patch = fwh->patch;
 	fwe->fw_version.build = fwh->build;
 
-	str = (char *)fwh + le32_to_cpu(fwh->str_offset);
-	fwe->intfw = (u8 *)fwh + le32_to_cpu(fwh->int_fw_offset);
-	fwe->intfw_size = le32_to_cpu(fwh->int_fw_len);
-	fwe->extfw = (u8 *)fwh + le32_to_cpu(fwh->ext_fw_offset);
-	fwe->extfw_size = le32_to_cpu(fwh->ext_fw_len);
+	str = (char *)fwh + str_off;
+	fwe->intfw = (u8 *)fwh + int_off;
+	fwe->intfw_size = int_len;
+	fwe->extfw = (u8 *)fwh + ext_off;
+	fwe->extfw_size = ext_len;
 
 	fwe->loaded = 1;
 
@@ -1689,7 +1705,13 @@ static struct fwentry *at76_load_firmware(struct usb_device *udev,
 	at76_dbg(DBG_DEVSTART, "board %u, int %d:%d, ext %d:%d", board_type,
 		 le32_to_cpu(fwh->int_fw_offset), le32_to_cpu(fwh->int_fw_len),
 		 le32_to_cpu(fwh->ext_fw_offset), le32_to_cpu(fwh->ext_fw_len));
-	at76_dbg(DBG_DEVSTART, "firmware id %s", str);
+	at76_dbg(DBG_DEVSTART, "firmware id %.*s",
+		 (int)strnlen(str, fwe->fw->size - str_off), str);
+	goto exit;
+
+fw_err:
+	release_firmware(fwe->fw);
+	fwe->fw = NULL;
 
 exit:
 	mutex_unlock(&fw_mutex);
