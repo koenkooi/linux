@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Device tree for the HP/Compaq iPAQ h39xx handheld family (h3950, h3955,
+ * h3970 and h3975: one board design, differing in flash size and in
+ * whether Bluetooth and the consumer IR are fitted).
+ *
+ * Named pxa250-* like the other iPAQ boards: the board is a 400 MHz
+ * PXA250 and "marvell,pxa250" is the compatible the generic PXA25x
+ * devicetree machine matches.
+ *
+ * The memory node is a 64 MiB placeholder. The boot loader is ATAGS-only,
+ * so the board boots from an appended DTB with ARM_ATAG_DTB_COMPAT, which
+ * lets the loader's ATAG_MEM replace the reg property
+ * (arch/arm/boot/compressed/atags_to_fdt.c).
+ *
+ * pxa25x.dtsi has no static memory controller node or chip-select
+ * ranges, so the devices on the static chip selects are described at
+ * their raw physical addresses. The nCS_5 timing is set up from
+ * arch/arm/mach-pxa/h3900.c.
+ *
+ * Copyright (C) 2026 Koen Kooi
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+
+#include "pxa25x.dtsi"
+
+/ {
+	model = "HP iPAQ h3900";
+	compatible = "hp,ipaq-h3900", "marvell,pxa250";
+
+	chosen {
+		stdout-path = &ffuart;
+	};
+
+	memory@a0000000 {
+		device_type = "memory";
+		reg = <0xa0000000 0x04000000>; /* 64 MiB, ATAG_MEM overrides */
+	};
+
+	/*
+	 * NOR flash on nCS_0: two Intel 28F128J3A (16 MiB, 16 bit each) in a
+	 * 2x16 interleave, one 32 MiB CFI window with a 32 bit bus. The
+	 * window is 32 MiB on every model; the extra 16 MiB of the 48 MiB
+	 * models is the second device on nCS_1 below.
+	 */
+	flash@0 {
+		compatible = "cfi-flash";
+		reg = <0x00000000 0x02000000>;
+		bank-width = <4>;
+
+		/*
+		 * Program and erase supply enable, FLASH_VPEN, active high.
+		 * Without it the chip reports "bad VPP" and refuses every
+		 * erase and write.
+		 */
+		vpp-gpios = <&gpio 16 GPIO_ACTIVE_HIGH>;
+
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/*
+		 * A fixed-partitions node because cmdlinepart matches its
+		 * mtd_id against the device name, which registers as
+		 * "0.flash" and never matches the loader's "ipaq".
+		 */
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "bootldr";
+				reg = <0x00000000 0x00040000>;
+				read-only;
+			};
+
+			partition@40000 {
+				label = "root";
+				reg = <0x00040000 0x01f80000>;
+			};
+
+			partition@1fc0000 {
+				label = "asset";
+				reg = <0x01fc0000 0x00040000>;
+			};
+		};
+	};
+
+	/*
+	 * Second flash device on nCS_1, fitted on the 48 MiB models. It is
+	 * a node of its own, not a second reg entry of flash@0, because
+	 * physmap fails the whole device when one window does not probe and
+	 * units without it must keep their first bank. It has no partitions
+	 * and no Vpp line (flash@0 owns it), so it registers as one
+	 * read-only mtd device.
+	 */
+	flash@4000000 {
+		compatible = "cfi-flash";
+		reg = <0x04000000 0x01000000>;
+		bank-width = <4>;
+	};
+};
+
+&ffuart {
+	status = "okay";
+};
