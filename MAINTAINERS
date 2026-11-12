@@ -3038,6 +3038,14 @@ F:	Documentation/devicetree/bindings/pcmcia/hp,ipaq-h5000-pcmcia.yaml
 F:	arch/arm/boot/dts/intel/pxa/pxa250-hp-ipaq-h5000.dts
 F:	arch/arm/mach-pxa/h5000*
 
+ARM/HP IPAQ HX4700 SUPPORT
+M:	Koen Kooi <koen@dominion.thruhere.net>
+L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
+S:	Maintained
+F:	Documentation/devicetree/bindings/arm/marvell,pxa2xx.yaml
+F:	arch/arm/boot/dts/intel/pxa/pxa270-hp-ipaq-hx4700.dts
+F:	arch/arm/mach-pxa/hx4700*
+
 ARM/HP JORNADA 7XX MACHINE SUPPORT
 M:	Kristoffer Ericson <kristoffer.ericson@gmail.com>
 S:	Maintained
