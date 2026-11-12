@@ -415,6 +415,19 @@ config DRM_PANEL_IPAQ_H3800
 
 	  If M is selected the module will be called panel-ipaq-h3800.
 
+config DRM_PANEL_IPAQ_H3900
+	tristate "HP iPAQ h3900 320x240 TFT panel"
+	depends on OF
+	depends on GPIOLIB
+	depends on BACKLIGHT_CLASS_DEVICE
+	help
+	  DRM panel driver for the 320x240 16bpp reflective TFT fitted to the
+	  HP iPAQ h3900 series. The panel has five separately gated supply
+	  rails with an asymmetric power-up and power-down order, which this
+	  driver sequences from its enable and disable callbacks.
+
+	  If M is selected the module will be called panel-ipaq-h3900.
+
 config DRM_PANEL_JADARD_JD9365DA_H3
 	tristate "Jadard JD9365DA-H3 WXGA DSI panel"
 	depends on OF
