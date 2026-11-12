@@ -150,6 +150,23 @@
 		mmc {
 			compatible = "htc,asic3-sd";
 		};
+
+		/*
+		 * The block sits on a 16-bit bus: the registers are at byte
+		 * offsets 0, 2, 4, 6 and 8, so the register stride is 1.
+		 * The gauge is inside the battery pack and the bus has no
+		 * slave with no pack fitted.
+		 */
+		onewire {
+			compatible = "htc,asic3-onewire", "dallas,ds1wm";
+			dallas,bus-shift = <1>;
+			dallas,active-high;
+			dallas,reset-recover-delay-ms = <1>;
+
+			battery {
+				compatible = "maxim,ds2760";
+			};
+		};
 	};
 
 	/*
