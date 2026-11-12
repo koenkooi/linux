@@ -223,6 +223,17 @@
 			gpios = <&asic3 51 GPIO_ACTIVE_LOW>;
 		};
 	};
+
+	/*
+	 * VBUS sense for the USB device controller: ASIC3 GPIOD14
+	 * (offset 62), low with a host attached. The transceiver is
+	 * phy-gpio-vbus-usb, not usb-conn-gpio, which matches the same
+	 * compatible but has no usb-phy interface.
+	 */
+	usb_connector: connector {
+		compatible = "gpio-usb-b-connector", "usb-b-connector";
+		vbus-gpios = <&asic3 62 GPIO_ACTIVE_LOW>;
+	};
 };
 
 /*
@@ -512,4 +523,13 @@
 	pinctrl-names = "default";
 
 	status = "okay";
+};
+
+/*
+ * GPIO76 is the D+ pullup of the device controller.
+ */
+&pxa27x_udc {
+	status = "okay";
+	gpios = <&gpio 76 GPIO_ACTIVE_HIGH>;
+	usb-phy = <&usb_connector>;
 };
