@@ -341,6 +341,69 @@
 			samsung,sleeve-port = <&ssp1>;
 		};
 	};
+
+	/*
+	 * The MediaQ's supply (MQ_POWER_ON, SAMCOP GPB4) and the panel's
+	 * (LCD_EN, SAMCOP GPB7), both active high; SAMCOP_GPIO(B, n) is
+	 * 32 + n. Polarity comes from enable-active-high alone, as on
+	 * sd_vmmc. The 10 ms startup delay of MQ_POWER_ON is the chip's
+	 * power-on settle time taken from the h2200's MediaQ supply switch.
+	 */
+	mq_power: regulator-mq-power {
+		compatible = "regulator-fixed";
+		regulator-name = "MQ_POWER_ON";
+		gpio = <&samcop 36 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		startup-delay-us = <10000>;
+	};
+
+	lcd_power: regulator-lcd {
+		compatible = "regulator-fixed";
+		regulator-name = "LCD_EN";
+		gpio = <&samcop 39 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	/*
+	 * MediaQ 1132 on nCS_1: 256 KiB of video memory at the chip-select
+	 * base, the 8 KiB register window right after it. fix_msc() in
+	 * arch/arm/mach-pxa/h5000.c programs the nCS_1 timing at
+	 * arch_initcall, before the display driver can bind. The chip's
+	 * interrupt output is not wired on this board. The display driver
+	 * switches the backlight off when it blanks the panel.
+	 */
+	mediaq: display@4000000 {
+		compatible = "mediaq,mq1132";
+		reg = <0x04000000 0x40000>, <0x04040000 0x2000>;
+		power-supply = <&mq_power>;
+		panel-supply = <&lcd_power>;
+		backlight = <&backlight>;
+		#pwm-cells = <3>;
+	};
+
+	/*
+	 * PXA GPIO16/17 are not connected on this board, so the brightness
+	 * comes from the MediaQ's own PWM0. The enable is SAMCOP GPB6
+	 * (SAMCOP_GPIO(B, 6) = 38), high to enable.
+	 *
+	 * The levels are in units of 0.1% duty. Battery current of an h5550
+	 * does not rise above its light-off value up to 5% duty and is
+	 * clearly up at 25%, so the first level above off is 12% rather
+	 * than something near zero. From there each step is the same ratio,
+	 * about 1.12, because the eye judges a change of brightness by its
+	 * ratio to the one before. Level 18 is PWM0 duty field 0x38, the
+	 * brightest setting the factory firmware programs, and is the
+	 * default; the two levels above it draw more current than the
+	 * factory firmware ever asked for.
+	 */
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&mediaq 0 1000000 0>;
+		enable-gpios = <&samcop 38 GPIO_ACTIVE_HIGH>;
+		brightness-levels = <0 120 134 150 167 186 208 232 259 289 323
+				     361 403 450 502 561 626 699 781 885 1000>;
+		default-brightness-level = <18>;
+	};
 };
 
 &ffuart {
