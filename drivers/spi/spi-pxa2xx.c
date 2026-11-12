@@ -651,6 +651,21 @@ static irqreturn_t interrupt_transfer(struct driver_data *drv_data)
 			int_transfer_complete(drv_data);
 			return IRQ_HANDLED;
 		}
+		/*
+		 * A receive-only target cannot know how long the remote's
+		 * burst is, so the idle timeout ends the transfer with what
+		 * arrived. Nothing received yet means the burst has not
+		 * started.
+		 */
+		if (spi_controller_is_target(drv_data->controller) &&
+		    drv_data->cur_xfer && drv_data->rx &&
+		    drv_data->rx != drv_data->cur_xfer->rx_buf &&
+		    (drv_data->controller->cur_msg->spi->mode & SPI_NO_TX)) {
+			drv_data->cur_xfer->len = drv_data->rx -
+						  drv_data->cur_xfer->rx_buf;
+			int_transfer_complete(drv_data);
+			return IRQ_HANDLED;
+		}
 	}
 
 	/* Drain Rx FIFO, Fill Tx FIFO and prevent overruns */
@@ -959,6 +974,7 @@ static int pxa2xx_spi_transfer_one(struct spi_controller *controller,
 		dev_err(&spi->dev, "Flush failed\n");
 		return -EIO;
 	}
+	drv_data->cur_xfer = transfer;
 	drv_data->tx = (void *)transfer->tx_buf;
 	drv_data->tx_end = drv_data->tx + transfer->len;
 	drv_data->rx = transfer->rx_buf;
@@ -1090,6 +1106,10 @@ static int pxa2xx_spi_target_abort(struct spi_controller *controller)
 {
 	struct driver_data *drv_data = spi_controller_get_devdata(controller);
 
+	/* Between messages there is nothing to abort and no status to set. */
+	if (!controller->cur_msg)
+		return -EINVAL;
+
 	int_error_stop(drv_data, "transfer aborted", -EINTR);
 
 	return 0;
@@ -1194,6 +1214,23 @@ static int setup(struct spi_device *spi)
 		chip->cr1 |= SSCR1_SCLKDIR;
 		chip->cr1 |= SSCR1_SFRMDIR;
 		chip->cr1 |= SSCR1_SPH;
+		/*
+		 * Without RWOT every word clocked in by the remote needs a
+		 * word in the Tx FIFO, or the transfer dies with an underrun.
+		 */
+		if (spi->mode & SPI_NO_TX) {
+			chip->cr1 |= SSCR1_RWOT;
+			/*
+			 * The receive timeout only runs while the Rx FIFO
+			 * holds unread words. A low threshold drains a short
+			 * burst completely, so the timeout never fires and the
+			 * burst would only be delivered by the next one. PXA25x
+			 * has no timeout, there the low threshold is kept.
+			 */
+			if (!pxa25x_ssp_comp(drv_data) &&
+			    rx_thres < RX_THRESH_DFLT)
+				rx_thres = RX_THRESH_DFLT;
+		}
 	}
 
 	if (is_lpss_ssp(drv_data)) {

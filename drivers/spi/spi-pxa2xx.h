@@ -43,6 +43,7 @@ struct driver_data {
 	atomic_t dma_running;
 
 	/* Current transfer state info */
+	struct spi_transfer *cur_xfer;
 	void *tx;
 	void *tx_end;
 	void *rx;
