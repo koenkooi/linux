@@ -3021,6 +3021,7 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/arm/marvell,pxa2xx.yaml
 F:	Documentation/devicetree/bindings/display/panel/hp,ipaq-h3900-panel.yaml
 F:	Documentation/devicetree/bindings/pcmcia/hp,ipaq-h3900-pcmcia.yaml
+F:	Documentation/devicetree/bindings/sound/hp,ipaq-h3900-audio.yaml
 F:	arch/arm/boot/dts/intel/pxa/pxa250-hp-ipaq-h3900.dts
 F:	arch/arm/mach-pxa/h3900*
 F:	drivers/gpu/drm/panel/panel-ipaq-h3900.c

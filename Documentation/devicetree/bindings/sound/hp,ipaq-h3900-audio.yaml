@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/hp,ipaq-h3900-audio.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HP iPAQ h3900 audio
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  The audio subsystem of the HP iPAQ h3950/h3955/h3970/h3975 family: the
+  SoC's I2S controller (marvell,pxa2xx-i2s.yaml) wired to an onboard NXP
+  UDA1380 codec (nxp,uda1380.yaml), with the SoC driving the bit and frame
+  clocks. The codec's reset and power lines and the speaker amplifier
+  enable are outputs of the board's ASIC3 companion chip rather than SoC
+  pins. The only microphone is a built-in electret on the codec's VINM/LNA
+  input, biased by the codec itself; there is no board GPIO, regulator or
+  microphone jack for it.
+
+properties:
+  compatible:
+    const: hp,ipaq-h3900-audio
+
+  cpu-dai:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the PXA I2S controller node (marvell,pxa2xx-i2s.yaml).
+
+  audio-codec:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the UDA1380 codec node (nxp,uda1380.yaml).
+
+  speaker-gpios:
+    maxItems: 1
+    description:
+      Enable for the speaker amplifier (SPK_ON), an ASIC3 output.
+
+  jack-gpios:
+    maxItems: 1
+    description:
+      Headphone jack detect, ASIC2 GPIO2 bit 7 (EAR_IN_N). Asserted (low)
+      when a plug is inserted.
+
+required:
+  - compatible
+  - cpu-dai
+  - audio-codec
+  - speaker-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    sound {
+        compatible = "hp,ipaq-h3900-audio";
+
+        cpu-dai = <&i2s>;
+        audio-codec = <&uda1380>;
+
+        speaker-gpios = <&asic3 28 GPIO_ACTIVE_HIGH>;
+        jack-gpios = <&asic2 7 GPIO_ACTIVE_LOW>;
+    };
