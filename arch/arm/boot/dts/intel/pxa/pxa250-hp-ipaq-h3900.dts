@@ -95,15 +95,220 @@
 	 * physmap fails the whole device when one window does not probe and
 	 * units without it must keep their first bank. It has no partitions
 	 * and no Vpp line (flash@0 owns it), so it registers as one
-	 * read-only mtd device.
+	 * read-only mtd device. Its chip select pad is muxed by its own pin
+	 * state, so the probe waits for the pin controller.
 	 */
 	flash@4000000 {
 		compatible = "cfi-flash";
 		reg = <0x04000000 0x01000000>;
 		bank-width = <4>;
+		pinctrl-0 = <&ncs1_pins>;
+		pinctrl-names = "default";
+	};
+};
+
+/*
+ * Pin muxing and sleep levels of the PXA pads. A pad with a consumer node
+ * gets its state from that node; the pads that the board uses without one
+ * (plain GPIOs, chip selects, the PC Card strobes) are set by the default
+ * state of the pin controller itself when it probes. The muxing and the
+ * sleep levels are those of the vendor 2.4 kernel; GPIO81-84 are not used
+ * and stay as the boot loader left them.
+ *
+ * low-power-disable and low-power-enable select the level an output pad is
+ * driven to while the SoC sleeps; a pad without either keeps the sleep
+ * level the boot loader programmed. Inputs are not driven in sleep.
+ */
+&pinctrl {
+	pinctrl-names = "default";
+	pinctrl-0 = <&board_pins>;
+
+	board_pins: board-pins {
+		/*
+		 * POWER_BUTTON_N, RTS, PCMCIA_CD0_N, MMC_INT_N, OPT_IND_N,
+		 * GPIO6, PCMCIA_IRQ0_N, AC_IN_N, OPT_INT, ASIC2_INT,
+		 * PCMCIA_CD1_N, PCMCIA_IRQ1_N, COM_DCD, SD_IRQ, OPT_BAT_FAULT,
+		 * GPIO21 and SD_WP_N. GPIO27 is the audio clock tap of ASIC2
+		 * and stays an input so that the SoC never drives against it.
+		 */
+		gpio-in-pins {
+			groups = "P0", "P1", "P3", "P4", "P5", "P6", "P7", "P8",
+				 "P9", "P10", "P12", "P13", "P14", "P17", "P19",
+				 "P21", "P27", "P38";
+			function = "gpio_in";
+		};
+
+		/*
+		 * CIR_RST, FLASH_VPEN, USBP_PULLUP, GPIO22 and the four SSP
+		 * pads, used as plain outputs.
+		 */
+		gpio-out-low-pins {
+			groups = "P2", "P16", "P20", "P22", "P23", "P24", "P25",
+				 "P26";
+			function = "gpio_out";
+			low-power-disable;
+		};
+
+		/* A plain output on this board, not the FFUART DCD input. */
+		gpio-out-high-pins {
+			groups = "P36";
+			function = "gpio_out";
+			low-power-enable;
+		};
+
+		clk-out-pins {
+			groups = "P11";
+			function = "3_6_MHz";
+			low-power-disable;
+		};
+
+		ncs2-pins {
+			groups = "P78";
+			function = "nCS<2>";
+			low-power-enable;
+		};
+
+		ncs3-pins {
+			groups = "P79";
+			function = "nCS<3>";
+			low-power-enable;
+		};
+
+		ncs4-pins {
+			groups = "P80";
+			function = "nCS<4>";
+			low-power-enable;
+		};
+
+		/* ASIC2 and ASIC3 */
+		ncs5-pins {
+			groups = "P33";
+			function = "nCS[5]";
+			low-power-enable;
+		};
+
+		rdy-pins {
+			groups = "P18";
+			function = "RDY";
+		};
+
+		irda-rxd-pins {
+			groups = "P46";
+			function = "ICP_RXD";
+		};
+
+		irda-txd-pins {
+			groups = "P47";
+			function = "ICP_TXD";
+			low-power-disable;
+		};
+
+		/* The two PC Card sockets of an expansion pack */
+		pcmcia-npoe-pins {
+			groups = "P48";
+			function = "nPOE";
+			low-power-enable;
+		};
+
+		pcmcia-npwe-pins {
+			groups = "P49";
+			function = "nPWE";
+			low-power-enable;
+		};
+
+		pcmcia-npior-pins {
+			groups = "P50";
+			function = "nPIOR";
+			low-power-enable;
+		};
+
+		pcmcia-npiow-pins {
+			groups = "P51";
+			function = "nPIOW";
+			low-power-enable;
+		};
+
+		pcmcia-npce1-pins {
+			groups = "P52";
+			function = "nPCE[1]";
+			low-power-enable;
+		};
+
+		pcmcia-npce2-pins {
+			groups = "P53";
+			function = "nPCE[2]";
+			low-power-enable;
+		};
+
+		pcmcia-npsktsel-pins {
+			groups = "P54";
+			function = "nPSKTSEL";
+			low-power-enable;
+		};
+
+		pcmcia-npreg-pins {
+			groups = "P55";
+			function = "nPREG";
+			low-power-enable;
+		};
+
+		pcmcia-npwait-pins {
+			groups = "P56";
+			function = "nPWAIT";
+		};
+
+		pcmcia-niois16-pins {
+			groups = "P57";
+			function = "nIOIS16";
+		};
+	};
+
+	/* The second flash device of the 48 MiB models */
+	ncs1_pins: ncs1-pins {
+		groups = "P15";
+		function = "nCS_1";
+		low-power-enable;
+	};
+
+	ffuart_pins: ffuart-pins {
+		ffuart-rxd-pins {
+			groups = "P34";
+			function = "FFRXD";
+		};
+
+		ffuart-cts-pins {
+			groups = "P35";
+			function = "CTS";
+		};
+
+		ffuart-dsr-pins {
+			groups = "P37";
+			function = "DSR";
+		};
+
+		ffuart-txd-pins {
+			groups = "P39";
+			function = "FFTXD";
+			low-power-disable;
+		};
+
+		ffuart-dtr-pins {
+			groups = "P40";
+			function = "DTR";
+			low-power-enable;
+		};
+
+		ffuart-rts-pins {
+			groups = "P41";
+			function = "RTS";
+			low-power-disable;
+		};
 	};
 };
 
 &ffuart {
+	pinctrl-0 = <&ffuart_pins>;
+	pinctrl-names = "default";
+
 	status = "okay";
 };

@@ -77,6 +77,23 @@ config MACH_H2200
 	  not needed on this boot path (verified by reading
 	  arch/arm/kernel/setup.c).
 
+config MACH_H3900
+	bool "HP/Compaq iPAQ h39xx"
+	depends on MACH_PXA25X_DT
+	select ARM_APPENDED_DTB
+	select ARM_ATAG_DTB_COMPAT
+	select MFD_ASIC2
+	select MFD_ASIC3
+	help
+	  Say Y here for the HP/Compaq iPAQ h39xx family (h3950, h3955,
+	  h3970 and h3975). Boots as a PXA25x device tree machine from
+	  pxa250-hp-ipaq-h3900.dts, pin muxing included. The board file sets
+	  the nCS_5 timing of the ASIC2 and ASIC3 companion chips; the
+	  devices themselves come from the devicetree.
+
+	  The boot loader only passes ATAGS, so this also selects the
+	  appended DTB support with ATAG compatibility.
+
 config MACH_H5000
 	bool "HP iPAQ h5000 family"
 	depends on MACH_PXA25X_DT
