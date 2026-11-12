@@ -1207,8 +1207,22 @@ static const struct tmio_mmc_data asic3_sd_cell_data = {
 	 */
 	.hclk		= 24576000,
 	.ocr_mask	= MMC_VDD_32_33 | MMC_VDD_33_34,
-	/* SD_CTRL reports the slot in the "_A" status bits only. */
-	.flags		= TMIO_MMC_CD_IN_ALT_BITS,
+	/*
+	 * The SD interrupt is a raw PXA GPIO, which detects edges only, so
+	 * the host drains CTL_STATUS instead of servicing one source per
+	 * edge. The hardware auto-stop is relied on for every multi-block
+	 * transfer and does not run when the transfer had errors.
+	 * SD_CTRL reports the slot in the "_A" status bits only.
+	 */
+	.flags		= TMIO_MMC_CD_IN_ALT_BITS | TMIO_MMC_EDGE_IRQ_PARENT |
+			  TMIO_MMC_NO_AUTO_CMD12_ON_ERROR,
+	/*
+	 * The read engine of the vendor SD driver clamps every CMD18 chunk
+	 * to 128 blocks, which also bounds the longest run of hard-IRQ PIO
+	 * accesses through the variable-latency SD window; the generic
+	 * fallback is 256.
+	 */
+	.max_blk_count	= 128,
 };
 
 static int asic3_sd_host_init(struct asic3 *asic, struct resource *sd_mem)
@@ -1570,14 +1584,19 @@ static int asic3_probe(struct platform_device *pdev)
 			DEFINE_RES_MEM(ASIC3_SD_CTRL_BASE, 0x400),
 			DEFINE_RES_IRQ(0),
 		};
+		struct tmio_mmc_data sd_data = asic3_sd_cell_data;
 		struct mfd_cell sd_cell = {
 			.name		= "tmio-mmc",
 			.id		= PLATFORM_DEVID_NONE,
-			.platform_data	= &asic3_sd_cell_data,
-			.pdata_size	= sizeof(asic3_sd_cell_data),
+			.platform_data	= &sd_data,
+			.pdata_size	= sizeof(sd_data),
 			.resources	= sd_res,
 			.num_resources	= ARRAY_SIZE(sd_res),
 		};
+
+		/* The h3900 SD host was brought up with APP_CMD on CMD55 */
+		if (of_machine_is_compatible("hp,ipaq-h3900"))
+			sd_data.flags |= TMIO_MMC_CMD55_APP_CMD;
 
 		ret = asic3_sd_host_init(asic, sd_mem);
 		if (ret)
