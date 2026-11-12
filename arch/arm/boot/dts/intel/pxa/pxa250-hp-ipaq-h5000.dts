@@ -32,6 +32,7 @@
 
 /dts-v1/;
 
+#include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 
 #include "pxa25x.dtsi"
@@ -89,6 +90,33 @@
 	};
 
 	/*
+	 * Internal SD slot power switch, PXA GPIO60. The "_N" in the vendor
+	 * header name (H5000_GPIO_POWER_SD_N) is a misnomer, the pin is active
+	 * high. It is a DT regulator and not a board-file platform device so
+	 * that fw_devlink orders the SD host's probe after it: the regulator
+	 * core's optional supply lookup never defers, so a host that probed
+	 * first found no supply for good and the settle delay below never ran.
+	 *
+	 * enable-active-high, not the phandle flag, sets the polarity of a
+	 * regulator-fixed gpio; GPIO_ACTIVE_HIGH is written on the phandle for
+	 * readability. No regulator-boot-on: the pad is muxed driving low, so
+	 * the rail is off at reset.
+	 *
+	 * The factory firmware's slot power-up waits a full second before the
+	 * first SD command, and boots without an equivalent delay never saw
+	 * ACMD41 report ready. startup-delay-us carries that second.
+	 */
+	sd_vmmc: regulator-vmmc {
+		compatible = "regulator-fixed";
+		regulator-name = "SD_POWER";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&gpio 60 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		startup-delay-us = <1000000>;
+	};
+
+	/*
 	 * SAMCOP companion ASIC on nCS_5 (PXA_CS5_PHYS). The window is the
 	 * chip's own 1 MiB register space. Its single upstream interrupt,
 	 * ASIC_INT_N, is PXA GPIO10, active low, caught on the falling edge.
@@ -107,6 +135,30 @@
 
 		gpio-controller;
 		#gpio-cells = <2>;
+
+		/*
+		 * The SD/MMC slot. cd-gpios is SAMCOP GPA16, active low (pin
+		 * low = card present), muxed to EXTIN and pulled up by the MFD
+		 * core. The matching edge interrupt is the cell's own second IRQ
+		 * resource, because GPA16 is not in the GPIO interrupt map.
+		 *
+		 * wp-gpios is PXA GPIO74, active high despite the vendor name
+		 * (H5000_GPIO_SD_WP_N): the factory SD driver reads GPLR2 bit 10
+		 * and reports the card write-protected when the pin reads high,
+		 * which also matches the usual socket wiring of a switch opened
+		 * by the locked tab with the line pulled up. Active low would
+		 * make every unlocked card read-only. The polarity has not been
+		 * checked on hardware with a locked card.
+		 *
+		 * Slot power is the sd_vmmc regulator, a supply and not a gpiod
+		 * lookup.
+		 */
+		mmc {
+			compatible = "samsung,samcop-sdi";
+			cd-gpios = <&samcop 16 GPIO_ACTIVE_LOW>;
+			wp-gpios = <&gpio 74 GPIO_ACTIVE_HIGH>;
+			vmmc-supply = <&sd_vmmc>;
+		};
 	};
 };
 
