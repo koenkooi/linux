@@ -8154,6 +8154,13 @@ S:	Supported
 T:	git https://gitlab.freedesktop.org/drm/misc/kernel.git
 F:	drivers/gpu/drm/ast/
 
+DRM DRIVER FOR ATI IMAGEON W3220 DISPLAY CONTROLLER
+M:	Koen Kooi <koen@dominion.thruhere.net>
+S:	Maintained
+T:	git https://gitlab.freedesktop.org/drm/misc/kernel.git
+F:	Documentation/devicetree/bindings/display/amd,imageon-w3220.yaml
+F:	drivers/gpu/drm/tiny/w100.c
+
 DRM DRIVER FOR BOCHS VIRTUAL GPU
 M:	Gerd Hoffmann <kraxel@redhat.com>
 L:	virtualization@lists.linux.dev

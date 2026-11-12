@@ -10,6 +10,7 @@ obj-$(CONFIG_DRM_PANEL_MIPI_DBI)	+= panel-mipi-dbi.o
 obj-$(CONFIG_DRM_PIXPAPER)              += pixpaper.o
 obj-$(CONFIG_DRM_PXA_LCDC)		+= pxa-lcdc.o
 obj-$(CONFIG_DRM_SA11X0_LCDC)		+= sa1100-lcdc.o
+obj-$(CONFIG_DRM_W100)			+= w100.o
 obj-$(CONFIG_TINYDRM_HX8357D)		+= hx8357d.o
 obj-$(CONFIG_TINYDRM_ILI9163)		+= ili9163.o
 obj-$(CONFIG_TINYDRM_ILI9225)		+= ili9225.o
