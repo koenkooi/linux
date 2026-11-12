@@ -1565,6 +1565,19 @@ static void at76_rx_tasklet(struct tasklet_struct *t)
 				 "%s %s: - nonzero Rx bulk status received: %d",
 				 __func__, wiphy_name(priv->hw->wiphy),
 				 urb->status);
+
+		/* There is only one rx urb: not resubmitting it after a
+		 * transient bus error ends reception for good while tx keeps
+		 * working. Unlink, shutdown and disconnect are final.
+		 */
+		switch (urb->status) {
+		case -EPROTO:
+		case -EILSEQ:
+		case -ETIME:
+		case -EOVERFLOW:
+			at76_submit_rx_urb(priv);
+			break;
+		}
 		return;
 	}
 
@@ -1572,6 +1585,18 @@ static void at76_rx_tasklet(struct tasklet_struct *t)
 		 "%s: rx frame: rate %d rssi %d noise %d link %d",
 		 wiphy_name(priv->hw->wiphy), buf->rx_rate, buf->rssi,
 		 buf->noise_level, buf->link_quality);
+
+	/* wlength comes from the device; don't hand mac80211 bytes the
+	 * transfer did not fill.
+	 */
+	if (urb->actual_length < AT76_RX_HDRLEN ||
+	    le16_to_cpu(buf->wlength) > urb->actual_length - AT76_RX_HDRLEN) {
+		at76_dbg(DBG_URB, "%s: bad rx length: actual %u wlength %u",
+			 __func__, urb->actual_length,
+			 le16_to_cpu(buf->wlength));
+		at76_submit_rx_urb(priv);
+		return;
+	}
 
 	skb_pull(priv->rx_skb, AT76_RX_HDRLEN);
 	skb_trim(priv->rx_skb, le16_to_cpu(buf->wlength));
