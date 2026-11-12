@@ -23,7 +23,9 @@
 
 /dts-v1/;
 
+#include <dt-bindings/clock/htc,asic2.h>
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
 
 #include "pxa25x.dtsi"
 
@@ -104,6 +106,104 @@
 		bank-width = <4>;
 		pinctrl-0 = <&ncs1_pins>;
 		pinctrl-names = "default";
+	};
+
+	/*
+	 * ASIC2 companion chip on nCS_5, 0x15000000, interrupting the SoC on
+	 * GPIO10 (rising edge), one of the pads that can wake a PXA25x.
+	 * interrupt-parent is spelled out because the root's is the SoC
+	 * interrupt controller, not the GPIO block; the probe is deferred
+	 * until the GPIO irqdomain exists.
+	 *
+	 * nCS_5 has no bus error timeout, so an access before its
+	 * variable-latency I/O timing is programmed hangs the core. h3900.c
+	 * writes MSC2 from an arch_initcall and the built-in driver binds at
+	 * device_initcall, which keeps the order.
+	 *
+	 * The 16-line gpiochip of the chip serves the SD card detect, the
+	 * sleeve connector and the other ASIC2 lines of this board, and the
+	 * clock gates are exposed as a provider for the blocks below. The SD
+	 * clock tap defaults to 24.576 MHz, which is what this board needs.
+	 */
+	asic2: companion-chip@15000000 {
+		compatible = "htc,asic2";
+		reg = <0x15000000 0x2000>;
+		interrupt-parent = <&gpio>;
+		interrupts = <10 IRQ_TYPE_EDGE_RISING>;
+		wakeup-source;
+
+		gpio-controller;
+		#gpio-cells = <2>;
+		#clock-cells = <1>;
+
+		/*
+		 * The byte-at-a-time SPI block. Its register window and
+		 * interrupt come from the MFD core; the node exists so that
+		 * the sleeve driver can find the controller by its device
+		 * node. It has no child nodes: the only two devices on the bus,
+		 * the ID EEPROM and the microcontroller of the jacket that is
+		 * plugged in, have no fixed identity and are allocated at probe
+		 * time.
+		 */
+		spi {
+			compatible = "htc,asic2-spi";
+			clocks = <&asic2 ASIC2_CLK_SPI>, <&asic2 ASIC2_CLK_EX1>;
+			clock-names = "ref", "ex1";
+		};
+
+		/*
+		 * Expansion pack ("sleeve" or "option jacket") backend of the
+		 * generic iPAQ sleeve bus. Jacket presence is PXA GPIO5
+		 * (OPT_IND_N, active low) and the connector's interrupt is
+		 * GPIO9 (OPT_INT, rising edge, PXA GPIO interrupts being edge
+		 * only). Neither has an alternate function and no other node
+		 * uses them; the PC Card interrupt is a different pin. The
+		 * jacket's NVRAM supply, main supply and reset are bits 13, 12
+		 * and 9 of the ASIC2 GPIO bank.
+		 *
+		 * Bit 8 (OPT_PCM_RESET, the reset of a single PC Card as
+		 * opposed to the whole jacket) is not listed because the
+		 * PCMCIA socket driver owns it.
+		 *
+		 * OPT_BAT_FAULT, GPIO19, is left out: its polarity on this
+		 * board is not known, and a wrong flag would report a
+		 * permanent battery fault for every jacket without a battery.
+		 */
+		sleeve {
+			compatible = "htc,asic2-sleeve";
+
+			detect-gpios = <&gpio 5 GPIO_ACTIVE_LOW>;
+			nvram-gpios = <&asic2 13 GPIO_ACTIVE_HIGH>;
+			opt-int-gpios = <&gpio 9 GPIO_ACTIVE_HIGH>;
+			power-gpios = <&asic2 12 GPIO_ACTIVE_HIGH>;
+			reset-gpios = <&asic2 9 GPIO_ACTIVE_HIGH>;
+		};
+
+		/*
+		 * The 1-Wire master of the chip, with the tunables the MFD
+		 * driver otherwise hardcodes: register stride 2, an active
+		 * high interrupt and a 1 ms reset recovery delay.
+		 */
+		onewire {
+			compatible = "htc,asic2-onewire", "dallas,ds1wm";
+			dallas,bus-shift = <2>;
+			dallas,active-high;
+			dallas,reset-recover-delay-ms = <1>;
+		};
+
+		/*
+		 * PWM0 drives the frontlight. Divider 7 and period 10 are
+		 * what the boot loader programs, stated here so that the board
+		 * and not the driver owns them.
+		 */
+		asic2_pwm: pwm {
+			compatible = "htc,asic2-pwm";
+			#pwm-cells = <2>;
+			clocks = <&asic2 ASIC2_CLK_PWM>, <&asic2 ASIC2_CLK_EX1>;
+			clock-names = "ref", "ex1";
+			htc,pwm-divider = <7>;
+			htc,pwm-period = <10>;
+		};
 	};
 };
 
