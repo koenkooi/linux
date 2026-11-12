@@ -39,6 +39,17 @@
  */
 #define TMIO_MMC_USE_BUSY_TIMEOUT	BIT(5)
 
+/*
+ * The host's interrupt reaches the CPU through an edge-only parent
+ * interrupt controller, so every unmasked source must be consumed before
+ * the handler returns or the remaining ones are lost. CTL_STATUS is a
+ * level-style aggregate behind a single output pin: acking one source
+ * while another is still asserted leaves that pin low, and a parent that
+ * can only detect edges never reports the survivor. Set by ASIC3 for
+ * boards whose SD interrupt is a raw PXA GPIO.
+ */
+#define TMIO_MMC_EDGE_IRQ_PARENT	BIT(6)
+
 /* Some controllers have CMD12 automatically issue/non-issue register */
 #define TMIO_MMC_HAVE_CMD12_CTRL	BIT(7)
 

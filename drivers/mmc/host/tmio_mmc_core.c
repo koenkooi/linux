@@ -288,6 +288,15 @@ static void tmio_mmc_reset_work(struct work_struct *work)
 	host->cmd = NULL;
 	host->data = NULL;
 
+	/*
+	 * With the request pointers gone, a command or data source that
+	 * fires while tmio_mmc_reset() sleeps cannot complete anything, and
+	 * on an edge-only parent it is re-asserted as fast as it is acked.
+	 */
+	if (host->pdata->flags & TMIO_MMC_EDGE_IRQ_PARENT)
+		tmio_mmc_disable_mmc_irqs(host, TMIO_MASK_CMD |
+					  TMIO_MASK_READOP | TMIO_MASK_WRITEOP);
+
 	spin_unlock_irqrestore(&host->lock, flags);
 
 	tmio_mmc_reset(host, true);
@@ -353,6 +362,15 @@ static int tmio_mmc_start_command(struct tmio_mmc_host *host,
 		if (data->flags & MMC_DATA_READ)
 			c |= TRANSFER_READ;
 	}
+
+	/*
+	 * Clear stale flags before unmasking this command, while no transfer
+	 * is in flight; clearing all status at interrupt exit could erase a
+	 * newly latched DATAEND.
+	 */
+	if (host->pdata->flags & TMIO_MMC_EDGE_IRQ_PARENT)
+		sd_ctrl_write32_as_16_and_16(host, CTL_STATUS,
+					     TMIO_STAT_ALWAYS_SET_27);
 
 	tmio_mmc_enable_mmc_irqs(host, TMIO_MASK_CMD);
 
@@ -476,6 +494,16 @@ static void tmio_mmc_pio_irq(struct tmio_mmc_host *host)
 		return;
 	} else if (!data) {
 		pr_debug("Spurious PIO IRQ\n");
+		return;
+	}
+
+	/*
+	 * tmio_mmc_next_sg() leaves sg_ptr NULL after the terminal entry, so
+	 * a late RXRDY/TXRQ would fault in sg_page() below.
+	 */
+	if (!host->sg_ptr || !host->sg_len) {
+		dev_warn_ratelimited(&host->pdev->dev,
+				     "PIO IRQ with sg list exhausted\n");
 		return;
 	}
 
@@ -765,6 +793,69 @@ irqreturn_t tmio_mmc_irq(int irq, void *devid)
 {
 	struct tmio_mmc_host *host = devid;
 	unsigned int ireg, status;
+
+	/*
+	 * An edge-only parent cannot re-report a source that is still
+	 * asserted when this handler returns: CTL_STATUS is a level-style
+	 * aggregate behind one output pin, so acking one source while a
+	 * second is pending leaves the pin low and no further edge occurs.
+	 * The usual loss is the DATAEND that latches while the last RXRDY of
+	 * a CMD18 is being drained. Returning after one source, as
+	 * e312eb1e66e4 does, is only safe for a parent that is level
+	 * triggered or demuxed by a chained handler.
+	 *
+	 * The command sources are masked before dispatch so that RESPEND
+	 * cannot re-assert behind the handler; the loop is only usable
+	 * together with that mask.
+	 */
+	if (host->pdata->flags & TMIO_MMC_EDGE_IRQ_PARENT) {
+		bool handled = false;
+		int budget = 32;
+
+		do {
+			status = sd_ctrl_read16_and_16_as_32(host, CTL_STATUS);
+			ireg = status & TMIO_MASK_IRQ & ~host->sdcard_irq_mask;
+			if (!ireg)
+				break;
+
+			/*
+			 * Write 0 only to non-dispatchable status bits. Ones
+			 * preserve pending IRQ flags; bit 27 is reserved and
+			 * must remain one.
+			 */
+			sd_ctrl_write32_as_16_and_16(host, CTL_STATUS,
+						     TMIO_MASK_IRQ |
+						     TMIO_STAT_ALWAYS_SET_27);
+
+			/*
+			 * Command completion is deferred to host->done.
+			 * start_command() unmasks the sources again.
+			 */
+			if (ireg & (TMIO_STAT_CMDRESPEND | TMIO_STAT_CMDTIMEOUT))
+				tmio_mmc_disable_mmc_irqs(host, TMIO_MASK_CMD);
+
+			if (!__tmio_mmc_card_detect_irq(host, ireg, status) &&
+			    !__tmio_mmc_sdcard_irq(host, ireg, status) &&
+			    !__tmio_mmc_sdio_irq(host))
+				break;
+
+			handled = true;
+		} while (--budget);
+
+		/*
+		 * A source that re-asserts as fast as it is acked would never
+		 * let this handler return. Masking the data sources turns that
+		 * into a request timeout in delayed_reset_work.
+		 */
+		if (!budget) {
+			dev_err_ratelimited(&host->pdev->dev,
+					    "IRQ budget exhausted, masking data sources\n");
+			tmio_mmc_disable_mmc_irqs(host, TMIO_MASK_READOP |
+						  TMIO_MASK_WRITEOP);
+		}
+
+		return handled ? IRQ_HANDLED : IRQ_NONE;
+	}
 
 	status = sd_ctrl_read16_and_16_as_32(host, CTL_STATUS);
 	ireg = status & TMIO_MASK_IRQ & ~host->sdcard_irq_mask;
