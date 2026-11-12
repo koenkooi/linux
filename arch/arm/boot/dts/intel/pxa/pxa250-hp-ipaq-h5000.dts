@@ -699,6 +699,24 @@
 	};
 
 	/*
+	 * VBUS sense for the pxa25x_udc gadget controller, bound by compatible
+	 * string: phy-gpio-vbus-usb.c (USB_GPIO_VBUS) matches
+	 * "gpio-usb-b-connector" and reads "vbus-gpios", and the UDC finds
+	 * the transceiver it registers without a phandle.
+	 *
+	 * The sense line is SAMCOP GPA14, active high. SAMCOP has no GPIO
+	 * interrupt for GPA14, so the change comes from one of the chip's
+	 * wake sources, as the factory driver does: SAMCOP_IRQ_WAKEUP2 (19)
+	 * on the PXA255 h51xx and h55xx, which this node describes, and
+	 * SAMCOP_IRQ_WAKEUP3 (24) on the PXA250 h54xx.
+	 */
+	connector {
+		compatible = "gpio-usb-b-connector", "usb-b-connector";
+		vbus-gpios = <&samcop 14 GPIO_ACTIVE_HIGH>;
+		interrupts-extended = <&samcop 19 IRQ_TYPE_EDGE_BOTH>;
+	};
+
+	/*
 	 * The audio card of the AK4535. codec-power-gpios is SAMCOP GPB0 and
 	 * audio-power-gpios GPB2 (SAMCOP_GPIO(B, n) = 32 + n): the first
 	 * supplies the codec, the second the output stage and microphone
@@ -795,5 +813,15 @@
  * so the link stays PIO.
  */
 &ssp1 {
+	status = "okay";
+};
+
+/*
+ * GPIO66 (USB_PULLUP) switches the D+ pullup. The driver owns it directly
+ * rather than through the gpio-vbus transceiver, which only senses VBUS
+ * here (see the "connector" node).
+ */
+&pxa25x_udc {
+	pullup-gpios = <&gpio 66 GPIO_ACTIVE_HIGH>;
 	status = "okay";
 };
