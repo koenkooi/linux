@@ -1,0 +1,148 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/amd,imageon-w3220.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: ATI/AMD Imageon W3220 display controller
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description:
+  The W3220 ("w32xx") is one of the ATI/AMD Imageon family of external
+  display controllers used on several mid-2000s PDAs (HP iPAQ hx4700),
+  hanging off a static-memory chip select as a plain memory-mapped 32-bit
+  device -- there is no host LCD controller involved at all, this chip
+  drives the panel's own parallel RGB interface directly out of its own
+  on-chip SDRAM. "amd,imageon" is already the vendor/family compatible
+  prefix upstream uses for this same IP lineage on a different piece of
+  silicon (drivers/gpu/drm/msm/adreno/adreno_device.c's imx5 GPU core,
+  descended from the same ATI Imageon graphics IP before AMD sold the
+  mobile GPU business to Qualcomm in 2009); this binding follows that
+  existing "amd,imageon-<part>" shape for the standalone companion-chip
+  side of the same family rather than inventing an unrelated prefix.
+
+properties:
+  compatible:
+    const: amd,imageon-w3220
+
+  reg:
+    minItems: 3
+    items:
+      - description:
+          The chip's 16-byte indirect CIF configuration window (chip
+          offset 0).
+      - description:
+          The chip's 8 KiB memory-mapped register window (chip offset
+          0x10000).
+      - description:
+          The video memory window, anchored at the chip-internal address
+          the driver programs its memory controller to place pixel data
+          at (chip offset 0x800000). This is the whole of the chip's
+          on-chip SDRAM as its memory controller maps it, not just the
+          primary framebuffer. The scanout buffer for the largest
+          supported mode occupies the bottom of the window and the
+          hardware video overlay's own source buffers live above it,
+          because the overlay's source address register is a
+          chip-internal address and the chip has no bus-master path to
+          system memory.
+      - description:
+          The CIF wrap aperture (chip offset 0x80000), a second, smaller
+          host-side view onto part of the same on-chip SDRAM. Writes into
+          it are redirected by the chip's wrap unit to whatever
+          chip-internal address its wrap-buffer register names, which is
+          how the host reaches the command processor's ring buffer -- the
+          ring lives in video memory, but the command processor and the
+          host address it differently. Optional, and needed only for
+          command-processor command submission; a device tree that omits
+          it gets a driver that programs the 2D engine by polled register
+          writes instead.
+
+  reg-names:
+    minItems: 3
+    items:
+      - const: cfg
+      - const: reg
+      - const: fb
+      - const: wrap
+
+  reset-gpios:
+    maxItems: 1
+    description:
+      The chip's own active-low reset line, deasserted once at probe and
+      never toggled again.
+
+  sqn-gpios:
+    maxItems: 1
+    description: Panel sequence-enable line, active-high.
+
+  lvdd-gpios:
+    maxItems: 1
+    description: Panel logic-supply (3.3 V) enable, active-high.
+
+  avdd-gpios:
+    maxItems: 1
+    description: Panel analog-supply (3.3 V) enable, active-high.
+
+  slin1-gpios:
+    maxItems: 1
+    description: Panel serial-interface control line, active-high.
+
+  panel-reset-gpios:
+    maxItems: 1
+    description:
+      The panel's own active-low reset line -- distinct from
+      reset-gpios above, which resets the W3220 chip itself, not the
+      panel.
+
+  pc1-gpios:
+    maxItems: 1
+    description: Panel control line, active-high.
+
+  n2v7-gpios:
+    maxItems: 1
+    description: Panel negative-supply (-7.3 V) enable, active-high.
+
+  backlight:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      The backlight that illuminates the attached panel, switched off
+      whenever the display is blanked.
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - reset-gpios
+  - sqn-gpios
+  - lvdd-gpios
+  - avdd-gpios
+  - slin1-gpios
+  - panel-reset-gpios
+  - pc1-gpios
+  - n2v7-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    display@8000000 {
+        compatible = "amd,imageon-w3220";
+        reg = <0x08000000 0x10>, <0x08010000 0x2000>, <0x08800000 0x200000>,
+              <0x08080000 0x40000>;
+        reg-names = "cfg", "reg", "fb", "wrap";
+
+        reset-gpios = <&gpio 61 GPIO_ACTIVE_LOW>;
+
+        sqn-gpios = <&gpio 84 GPIO_ACTIVE_HIGH>;
+        lvdd-gpios = <&gpio 110 GPIO_ACTIVE_HIGH>;
+        avdd-gpios = <&gpio 111 GPIO_ACTIVE_HIGH>;
+        slin1-gpios = <&gpio 70 GPIO_ACTIVE_HIGH>;
+        panel-reset-gpios = <&gpio 62 GPIO_ACTIVE_LOW>;
+        pc1-gpios = <&gpio 59 GPIO_ACTIVE_HIGH>;
+        n2v7-gpios = <&gpio 112 GPIO_ACTIVE_HIGH>;
+        backlight = <&backlight>;
+    };
