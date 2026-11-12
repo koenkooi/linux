@@ -25,6 +25,7 @@
 
 #include <dt-bindings/clock/htc,asic2.h>
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/leds/common.h>
 
@@ -267,6 +268,118 @@
 			htc,pwm-divider = <7>;
 			htc,pwm-period = <10>;
 		};
+
+		/*
+		 * The ADC of ASIC2, which also serves the resistive
+		 * touchscreen. Labelled so that the "touchscreen" node below
+		 * reaches it through a real "io-channels" phandle: a
+		 * probe-ordering race against this node then becomes an
+		 * ordinary deferred probe instead of a permanent failure.
+		 */
+		asic2_adc: adc {
+			compatible = "htc,asic2-adc";
+			#io-channel-cells = <1>;
+			clocks = <&asic2 ASIC2_CLK_ADC>, <&asic2 ASIC2_CLK_EX1>;
+			clock-names = "ref", "ex1";
+		};
+
+		/*
+		 * The generic resistive-adc-touch driver, consuming the two
+		 * touch-plate channels of the ADC block above. The cell values
+		 * 3 and 4 are the positions of TP_X0 and TP_Y1 in asic2-adc.c's
+		 * channel array: that driver installs no fwnode_xlate, so IIO
+		 * indexes the channels directly by this cell value. There is no
+		 * "touchscreen-x-plate-ohms" and there are no z1/z2 channels,
+		 * since asic2-adc.c synthesises only x and y. The size is the
+		 * ADC's real 10 bits.
+		 */
+		touchscreen {
+			compatible = "resistive-adc-touch";
+			io-channels = <&asic2_adc 3>, <&asic2_adc 4>;
+			io-channel-names = "x", "y";
+			touchscreen-size-x = <1024>;
+			touchscreen-size-y = <1024>;
+		};
+
+		/*
+		 * The KPIO keypad. A key is pressed when
+		 * (~Data & htc,key-mask) == htc,key-match, which is why each
+		 * key has its own child node: the bits of the 5-way pad
+		 * combine, and a matrix "linux,keymap" cannot express that.
+		 */
+		keys {
+			compatible = "htc,asic2-keys";
+
+			button-record {
+				label = "Record";
+				linux,code = <KEY_RECORD>;
+				htc,key-mask = <0x001>;
+				htc,key-match = <0x001>;
+			};
+
+			button-calendar {
+				label = "Calendar";
+				linux,code = <KEY_CALENDAR>;
+				htc,key-mask = <0x040>;
+				htc,key-match = <0x040>;
+			};
+
+			button-contacts {
+				label = "Contacts";
+				linux,code = <KEY_ADDRESSBOOK>;
+				htc,key-mask = <0x080>;
+				htc,key-match = <0x080>;
+			};
+
+			button-ap1 {
+				label = "Envelope (AP1)";
+				linux,code = <KEY_MAIL>;
+				htc,key-mask = <0x100>;
+				htc,key-match = <0x100>;
+			};
+
+			button-ap2 {
+				label = "Start (AP2)";
+				linux,code = <KEY_HOMEPAGE>;
+				htc,key-mask = <0x200>;
+				htc,key-match = <0x200>;
+			};
+
+			button-nav-left {
+				label = "5-way left (AP3)";
+				linux,code = <KEY_LEFT>;
+				htc,key-mask = <0x400>;
+				htc,key-match = <0x400>;
+			};
+
+			button-nav-right {
+				label = "5-way right (AP4)";
+				linux,code = <KEY_RIGHT>;
+				htc,key-mask = <0x800>;
+				htc,key-match = <0x800>;
+			};
+
+			button-nav-up {
+				label = "5-way up";
+				linux,code = <KEY_UP>;
+				htc,key-mask = <0x03e>;
+				htc,key-match = <0x032>;
+			};
+
+			button-nav-down {
+				label = "5-way down";
+				linux,code = <KEY_DOWN>;
+				htc,key-mask = <0x03e>;
+				htc,key-match = <0x02c>;
+			};
+
+			button-nav-center {
+				label = "5-way centre";
+				linux,code = <KEY_ENTER>;
+				htc,key-mask = <0x03e>;
+				htc,key-match = <0x020>;
+			};
+		};
 	};
 
 	/*
@@ -420,6 +533,22 @@
 		enable-gpios = <&asic3 29 GPIO_ACTIVE_HIGH>;
 		brightness-levels = <0 4 5 6 7 8 9 10>;
 		default-brightness-level = <1>;
+	};
+
+	/*
+	 * The power button is GPIO0 (POWER_BUTTON_N), active low. It wakes the
+	 * system on both edges, the edges gpio-keys requests its interrupt
+	 * with.
+	 */
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		power-button {
+			label = "Power Button";
+			linux,code = <KEY_POWER>;
+			gpios = <&gpio 0 GPIO_ACTIVE_LOW>;
+			wakeup-source;
+		};
 	};
 };
 
