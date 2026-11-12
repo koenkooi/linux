@@ -26599,6 +26599,13 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/regulator/silergy,sy8106a.yaml
 F:	drivers/regulator/sy8106a-regulator.c
 
+SYNAPTICS NAVPOINT TOUCHPAD DRIVER
+M:	Koen Kooi <koen@dominion.thruhere.net>
+L:	linux-input@vger.kernel.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/input/synaptics,navpoint.yaml
+F:	drivers/input/mouse/navpoint.c
+
 SYNC FILE FRAMEWORK
 M:	Sumit Semwal <sumit.semwal@linaro.org>
 L:	linux-media@vger.kernel.org

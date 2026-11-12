@@ -393,4 +393,17 @@ config MOUSE_SYNAPTICS_USB
 	  To compile this driver as a module, choose M here: the
 	  module will be called synaptics_usb.
 
+config MOUSE_NAVPOINT
+	tristate "Synaptics NavPoint (SPI target) touchpad"
+	depends on SPI_SLAVE
+	help
+	  Say Y here if you have a Synaptics NavPoint touchpad connected to
+	  a SPI controller operating as a target, as found on the PXA27x SSP
+	  of the HP iPAQ hx4700. The pad reports absolute finger position
+	  and pressure, and a tap or tap-and-a-half drag gesture as the
+	  left button.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called navpoint.
+
 endif
