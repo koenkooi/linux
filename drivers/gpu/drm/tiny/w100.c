@@ -19,6 +19,11 @@
  * crystal frequency) from the former arch/arm/mach-pxa/hx4700.c. Register
  * and field comments below cite the w100fb source they were taken from.
  *
+ * The chip's GFX block, a ROP3 blitter that addresses chip memory only,
+ * is brought up too. It is driven by polled register writes, needs no
+ * microcode, and is used for the power-on video-memory clear and for
+ * solid-colour damage fills.
+ *
  * Not carried over: the chip-ID branches for the W100 and W3200, the
  * rotate/flip modes (the two modes here are independent panel timings),
  * suspend/resume, and the chip interrupt, which is not described in the
@@ -177,6 +182,36 @@
 #define W100_REG_LCD_FORMAT		0x0410	/* mmLCD_FORMAT */
 #define W100_REG_DISP_DEBUG2		0x0538	/* mmDISP_DEBUG2 */
 
+/* Block GFX, the chip's 2D drawing engine ("E2"): a ROP3 blitter that
+ * reads and writes the chip's own memory only. Offsets from the
+ * recovered w100fb.h:121-146,195, plus the one register that file never
+ * declares at all -- mmRBBM_SOFT_RESET, needed only by the engine-reset
+ * recovery path -- taken from kdrive's own w100_regs.h:286
+ * (reconstructed from w100.patch, md5 0477bc6766ed74206d3a1ece1f1d7a16).
+ * Unlike the video front-end above, this block was driven in production
+ * by *both* historical drivers, so every offset here is doubly
+ * confirmed.
+ */
+#define W100_REG_RBBM_STATUS		0x0140	/* mmRBBM_STATUS */
+#define W100_REG_RBBM_SOFT_RESET	0x0148	/* mmRBBM_SOFT_RESET */
+#define W100_REG_DST_OFFSET		0x1004	/* mmDST_OFFSET */
+#define W100_REG_DST_PITCH		0x1008	/* mmDST_PITCH */
+#define W100_REG_SRC_Y_X		0x1034	/* mmSRC_Y_X */
+#define W100_REG_DST_Y_X		0x1038	/* mmDST_Y_X */
+#define W100_REG_DP_GUI_MASTER_CNTL	0x106c	/* mmDP_GUI_MASTER_CNTL */
+#define W100_REG_DP_BRUSH_FRGD_CLR	0x107c	/* mmDP_BRUSH_FRGD_CLR */
+#define W100_REG_DEFAULT_SC_BOTTOM_RIGHT 0x10a8	/* mmDEFAULT_SC_BOTTOM_RIGHT */
+#define W100_REG_DST_WIDTH_HEIGHT	0x1198	/* mmDST_WIDTH_HEIGHT */
+#define W100_REG_SRC_OFFSET		0x11ac	/* mmSRC_OFFSET */
+#define W100_REG_SRC_PITCH		0x11b0	/* mmSRC_PITCH */
+#define W100_REG_SC_TOP_LEFT		0x11bc	/* mmSC_TOP_LEFT */
+#define W100_REG_SC_BOTTOM_RIGHT	0x11c0	/* mmSC_BOTTOM_RIGHT */
+#define W100_REG_SRC_SC_BOTTOM_RIGHT	0x11c4	/* mmSRC_SC_BOTTOM_RIGHT */
+#define W100_REG_DP_CNTL		0x11c8	/* mmDP_CNTL */
+#define W100_REG_DP_DATATYPE		0x12c4	/* mmDP_DATATYPE */
+#define W100_REG_DP_MIX		0x12c8	/* mmDP_MIX */
+#define W100_REG_DP_WRITE_MSK		0x12cc	/* mmDP_WRITE_MSK */
+
 #define W100_CHIP_ID_W3220		0x57441002	/* CHIP_ID_W3220 */
 
 /* defCIF_IO -- fixed drive-strength/timing constant, every known board
@@ -328,6 +363,179 @@
  */
 #define W100_DISP_DB_BUF_CNTL_DISABLE	0x78	/* db_buf_cntl=0x1e, rest 0 */
 #define W100_DISP_DB_BUF_CNTL_ENABLE	0x7b	/* + update_db_buf|en_db_buf */
+
+/* rbbm_status_t, w100fb.h:818-845. Only these two fields are polled;
+ * the rest are per-block busy bits nothing here consumes (and several
+ * of them, rb3d/se/re/tam/tdm/pb, have no register block on this chip
+ * at all).
+ */
+#define W100_RBBM_STATUS_CMDFIFO_AVAIL	GENMASK(6, 0)
+#define W100_RBBM_STATUS_GUI_ACTIVE	BIT(31)
+
+/* rbbm_soft_reset_t, kdrive w100_regs.h:3582-3593. Only the 2D engine's
+ * own reset bit is ever pulsed here.
+ */
+#define W100_RBBM_SOFT_RESET_E2	BIT(5)
+
+/* sclk_cntl_t clock-force bits, w100fb.h:702-726. kdrive's engine-reset
+ * path forces exactly these three on across the reset pulse.
+ */
+#define W100_SCLK_CNTL_FORCE_E2	BIT(21)
+#define W100_SCLK_CNTL_FORCE_E3	BIT(22)
+#define W100_SCLK_CNTL_FORCE_IDCT	BIT(23)
+
+/* dp_gui_master_cntl_t, w100fb.h:795-816 -- the 2D operation
+ * descriptor. Writing it is what selects fill vs. copy vs. ROP.
+ */
+#define W100_GMC_SRC_PITCH_OFFSET_CNTL	BIT(0)
+#define W100_GMC_DST_PITCH_OFFSET_CNTL	BIT(1)
+#define W100_GMC_SRC_CLIPPING		BIT(2)
+#define W100_GMC_DST_CLIPPING		BIT(3)
+#define W100_GMC_BRUSH_DATATYPE	GENMASK(7, 4)
+#define W100_GMC_DST_DATATYPE		GENMASK(11, 8)
+#define W100_GMC_SRC_DATATYPE		GENMASK(14, 12)
+#define W100_GMC_BYTE_PIX_ORDER	BIT(15)
+#define W100_GMC_DEFAULT_SEL		BIT(16)
+#define W100_GMC_ROP3			GENMASK(24, 17)
+#define W100_GMC_DP_SRC_SOURCE		GENMASK(27, 25)
+#define W100_GMC_CLR_CMP_FCN_DIS	BIT(28)
+#define W100_GMC_WR_MSK_DIS		BIT(30)
+#define W100_GMC_DP_OP			BIT(31)
+
+/* dp_cntl_t, w100fb.h:896-909. The two dst_*_dir bits carry
+ * overlapping-copy correctness; the src_*_dir/major_x bits are only
+ * written as part of the engine's quiescent state.
+ */
+#define W100_DP_CNTL_DST_X_DIR		BIT(0)
+#define W100_DP_CNTL_DST_Y_DIR		BIT(1)
+#define W100_DP_CNTL_SRC_X_DIR		BIT(2)
+#define W100_DP_CNTL_SRC_Y_DIR		BIT(3)
+#define W100_DP_CNTL_DST_MAJOR_X	BIT(4)
+#define W100_DP_CNTL_SRC_MAJOR_X	BIT(5)
+
+/* dp_datatype_t, w100fb.h:847-862 */
+#define W100_DP_DATATYPE_DST		GENMASK(3, 0)
+#define W100_DP_DATATYPE_BRUSH		GENMASK(11, 8)
+#define W100_DP_DATATYPE_SRC2_TYPE	BIT(12)
+#define W100_DP_DATATYPE_SRC2		GENMASK(15, 13)
+#define W100_DP_DATATYPE_SRC		GENMASK(18, 16)
+#define W100_DP_DATATYPE_BYTE_PIX_ORDER BIT(30)
+
+/* dp_mix_t, w100fb.h:864-877 */
+#define W100_DP_MIX_SRC_SOURCE		GENMASK(10, 8)
+#define W100_DP_MIX_SRC2_SOURCE	GENMASK(13, 11)
+#define W100_DP_MIX_ROP3		GENMASK(23, 16)
+#define W100_DP_MIX_OP			BIT(24)
+
+/* dst_pitch_t/src_pitch_t (kdrive w100_regs.h:2088-2092,2422-2426): a
+ * 14-bit pitch plus a 2-bit multiplier selector both historical drivers
+ * leave at zero. dst_offset_t/src_offset_t (:2078,:2412) are plain
+ * 24-bit chip-internal byte addresses.
+ */
+#define W100_2D_PITCH			GENMASK(13, 0)
+#define W100_2D_OFFSET			GENMASK(23, 0)
+
+/* dst_y_x_t/src_y_x_t/sc_top_left_t/sc_bottom_right_t all share one
+ * 14-bit-X/2-reserved/14-bit-Y/2-reserved shape (kdrive w100_regs.h:
+ * 2142-2147, 2476-2481, 2918-2923 and default_sc_bottom_right_t at
+ * :2799-2804), matching w100fb.c:376's own (y << 16) | x.
+ */
+#define W100_2D_X			GENMASK(13, 0)
+#define W100_2D_Y			GENMASK(29, 16)
+#define W100_2D_YX(x, y) \
+	(FIELD_PREP(W100_2D_X, (x)) | FIELD_PREP(W100_2D_Y, (y)))
+
+/* dst_width_height_t, kdrive w100_regs.h:2175-2181: a 14-bit height at
+ * [13:0] and a 14-bit width at [29:16] (declared there as an 8-bit b0
+ * and a 6-bit b1 half, contiguous). This is mmDST_WIDTH_HEIGHT (0x1198)
+ * and it is *not* mmDST_HEIGHT_WIDTH (0x103C), whose own struct
+ * (:2188-2194) transposes the two fields. w100fb.c:377-378 drives the
+ * former and kdrive's non-packet3 path drives the latter; both are
+ * correct against their own register. This driver uses w100fb.c's,
+ * because every other offset in the GFX block here is transcribed from
+ * that same file.
+ */
+#define W100_2D_HEIGHT			GENMASK(13, 0)
+#define W100_2D_WIDTH			GENMASK(29, 16)
+#define W100_2D_WH(w, h) \
+	(FIELD_PREP(W100_2D_HEIGHT, (h)) | FIELD_PREP(W100_2D_WIDTH, (w)))
+
+/* Largest coordinate any of the 14-bit geometry fields can carry;
+ * W100_MAXINT in kdrive's own w100_const.h.
+ */
+#define W100_2D_MAXINT			0x1fff
+
+/* w100_const.h's own BRUSH_SOLIDCOLOR/BRUSH_NONE (kdrive) == w100fb.h:
+ * 788-789's GMC_BRUSH_SOLID_COLOR/GMC_BRUSH_NONE, DP_SRC_MEM_RECTANGULAR
+ * == SOURCE_MEM_RECTANGULAR, DP_OP_ROP == OP_ROP. Both sources agree on
+ * every value.
+ */
+#define W100_BRUSH_SOLIDCOLOR		13
+#define W100_BRUSH_NONE		15
+#define W100_DP_SRC_MEM_RECTANGULAR	2
+#define W100_DP_OP_ROP			0
+
+/*
+ * The 16bpp datatype. Both historical drivers use the value 3 and call
+ * it different things: kdrive's w100_const.h names it
+ * DATATYPE_ARGB1555, while w100fb.c:328 assigns a bare 3 to
+ * gmc_dst_datatype with its own trailing comment naming it
+ * DstType_16Bpp_444. Neither name matches this driver's RGB565 scanout
+ * (W100_GRAPHIC_CTRL_COLOR_DEPTH == 6 plus the mmDISP_DEBUG2 565 bit,
+ * see w100_set_dispregs()),
+ * and that is fine: a ROP3 is a bitwise operation on raw pixel bits and
+ * a solid fill's colour goes into mmDP_BRUSH_FRGD_CLR raw, so the
+ * datatype selects *pixel size*, not channel layout. w100fb.c drove a
+ * 565 panel with datatype 3 in production for years. Fill colours
+ * therefore have to be supplied already in RGB565 layout.
+ *
+ * w100fb.c's own engine init writes SRC_DATATYPE_EQU_DST (w100fb.h:783)
+ * into gmc_src_datatype rather than the datatype itself -- that
+ * constant is also 3, so the two sources emit an identical register
+ * value here and there is nothing to choose between them.
+ */
+#define W100_DATATYPE_16BPP		3
+
+/*
+ * The 16 raster operations the engine's ROP3 unit can perform, in X11's
+ * own GXclear..GXset order -- that order is not incidental, it is the
+ * index both of kdrive's tables below are written against.
+ */
+enum w100_rop {
+	W100_ROP_CLEAR,		/* 0 */
+	W100_ROP_AND,		/* src AND dst */
+	W100_ROP_AND_REVERSE,	/* src AND NOT dst */
+	W100_ROP_COPY,		/* src */
+	W100_ROP_AND_INVERTED,	/* NOT src AND dst */
+	W100_ROP_NOOP,		/* dst */
+	W100_ROP_XOR,		/* src XOR dst */
+	W100_ROP_OR,		/* src OR dst */
+	W100_ROP_NOR,		/* NOT src AND NOT dst */
+	W100_ROP_EQUIV,		/* NOT src XOR dst */
+	W100_ROP_INVERT,	/* NOT dst */
+	W100_ROP_OR_REVERSE,	/* src OR NOT dst */
+	W100_ROP_COPY_INVERTED,	/* NOT src */
+	W100_ROP_OR_INVERTED,	/* NOT src OR dst */
+	W100_ROP_NAND,		/* NOT src OR NOT dst */
+	W100_ROP_SET,		/* 1 */
+	W100_ROP_COUNT
+};
+
+/*
+ * A 2D operand: a rectangle of RGB565 pixels somewhere in the chip's own
+ * memory. "offset" is a chip-internal byte address (the same address
+ * space W100_FB_BASE names), not a host address and not an offset into
+ * the ioremapped window -- the GFX engine can only address chip memory,
+ * and has no bus-master path to system RAM at all
+ * (ATIGetPixmapOffsetPitch()'s own "XXX this only works for surfaces
+ * allocated in external memory", ati_draw.c:201).
+ */
+struct w100_2d_surface {
+	u32 offset;
+	u32 pitch;	/* bytes per line */
+	u16 width;	/* pixels */
+	u16 height;	/* lines */
+};
 
 /*
  * ------------------------------------------------------------------
@@ -561,7 +769,8 @@ struct w100_device {
 
 	void __iomem *cfg;	/* 16 B indirect CIF config window */
 	void __iomem *regs;	/* 8 KiB memory-mapped register window */
-	void __iomem *vram;	/* framebuffer window at chip offset W100_FB_BASE */
+	void __iomem *vram;	/* video memory window at chip offset W100_FB_BASE */
+	size_t vram_size;	/* ...and how much of it the device tree maps */
 
 	struct drm_plane primary_plane;
 	struct drm_crtc crtc;
@@ -603,6 +812,27 @@ struct w100_device {
 	u32 pll_cntl;
 	u32 pll_ref_fb_div;
 	u32 pwrmgt_cntl;
+
+	/*
+	 * GFX 2D engine. @accel_lock serialises whole operations: each one
+	 * is a burst of register writes that only means anything as a unit,
+	 * and the engine has exactly one set of them. The atomic commit
+	 * path is already serialised by DRM, but the lock keeps the engine
+	 * state consistent against the teardown paths. @accel_ready tracks
+	 * whether the engine's quiescent state is currently established:
+	 * false until the
+	 * first w100_2d_setup(), i.e. until a modeset has brought up the
+	 * memory controller and SCLK the engine needs, set by every
+	 * w100_2d_setup_locked() and cleared again by every
+	 * w100_2d_engine_reset(), which wipes exactly that state. @hw_mode is
+	 * the mode that brought it up -- the reset path needs it to rebuild
+	 * the engine's quiescent state. @vram_cleared latches the one-shot
+	 * power-on clear, see w100_2d_clear_vram().
+	 */
+	struct mutex accel_lock;
+	const struct w100_hw_mode *hw_mode;
+	bool accel_ready;
+	bool vram_cleared;
 };
 
 #define to_w100(_dev) container_of(_dev, struct w100_device, drm)
@@ -1137,16 +1367,612 @@ static void w100_update_enable(struct w100_device *w100)
 	writel(W100_DISP_DB_BUF_CNTL_ENABLE, w100->regs + W100_REG_DISP_DB_BUF_CNTL);
 }
 
-/* w100fb_activate_var() (w100fb.c:412-432), minus w100fb_clear_screen()
- * (the shadow-plane pipeline's first damage-clipped update already does
- * this in effect) and w100_init_graphic_engine()/calc_hsync()/tg->change()
- * (all dropped, see the file comment).
+/* ------------------------------------------------------------------ */
+/*
+ * The GFX 2D engine: solid fill and screen-to-screen copy, all 16
+ * raster operations, driven by polled MMIO with no command ring and no
+ * microcode.
+ *
+ * Ported from the two independent working sources for this block:
+ * w100fb.c's own w100_fifo_wait()/w100fb_sync()/w100_init_graphic_
+ * engine()/w100fb_fillrect()/w100fb_copyarea() (w100fb.c:262-406), and
+ * kdrive's ATIWaitAvailMMIO()/ATIWaitIdle()/ATIEngineReset()
+ * (ati_dma.c:111-172) plus ATIDrawSetup()/ATIPrepareSolid()/ATISolid()/
+ * ATIPrepareCopy()/ATICopy() (ati_draw.c:112-403). Where the two differ
+ * the choice is recorded at the point it is made. What is taken from
+ * each, in one line: the register set and the engine's quiescent state
+ * from w100fb.c, the full 16-entry ROP3 tables and the timeout/reset
+ * recovery from kdrive (w100fb.c has neither -- it hardcodes SRCCOPY
+ * and PATCOPY, and on a timeout it only prints).
+ *
+ * Not implemented, because the hardware cannot do it:
+ * colour-expand/imageblit (w100fb.c:560 falls back to cfb_imageblit and
+ * kdrive wires no such hook), alpha compositing (kdrive NULLs every
+ * PrepareBlend/Composite hook in ATIDrawEnable()), and a hardware
+ * cursor (no mmCUR_* register exists in any of the three register maps).
+ */
+
+/*
+ * ATISolidRop[16] and ATIBltRop[16], ati_draw.c:38-105, transcribed
+ * verbatim and indexed by enum w100_rop. The two tables are genuinely
+ * different rather than a copy of each other -- GXcopy is 0xf0 here and
+ * 0xcc below -- because a ROP3 combines pattern, source and destination
+ * and the solid path's "source" is the brush, not a source surface.
+ */
+static const u8 w100_solid_rop3[W100_ROP_COUNT] = {
+	0x00, 0xa0, 0x50, 0xf0, 0x0a, 0xaa, 0x5a, 0xfa,
+	0x05, 0xa5, 0x55, 0xf5, 0x0f, 0xaf, 0x5f, 0xff,
+};
+
+static const u8 w100_blt_rop3[W100_ROP_COUNT] = {
+	0x00, 0x88, 0x44, 0xcc, 0x22, 0xaa, 0x66, 0xee,
+	0x11, 0x99, 0x55, 0xdd, 0x33, 0xbb, 0x77, 0xff,
+};
+
+/*
+ * kdrive's own WHILE_NOT_TIMEOUT(.2) bound (ati_dma.c:124,152), in
+ * microseconds. w100fb.c polls ten times longer (2,000,000 udelay(1)
+ * iterations, w100fb.c:268,283) but only to print and give up, so
+ * kdrive's shorter bound is the one that pairs with a real recovery.
+ */
+#define W100_2D_TIMEOUT_US		200000
+
+/*
+ * Depth of the host-side command FIFO, i.e. the cmdfifo_avail value that
+ * means "empty". kdrive's ATIWaitIdle() asks for exactly 16 slots under
+ * the comment "Empty the fifo" (ati_dma.c:150-151), and since every other
+ * ATIWaitAvailMMIO() call there asks for 8 or fewer and the server worked,
+ * 16 is both reachable and the author's own figure for a drained FIFO.
+ *
+ * If the real FIFO were shallower than this, cmdfifo_avail could never
+ * reach 16 and every operation would fail its idle wait -- which kdrive
+ * would have hit on every ATIWaitIdle() too, so it is well attested. On
+ * first hardware the symptom would still be unmissable and the diagnosis
+ * is one line: a "timeout waiting for 16 command FIFO slots" on the very
+ * first 2D operation means this number is too high, not that the chip is
+ * dead.
+ */
+#define W100_2D_CMDFIFO_DEPTH		16
+
+static int w100_2d_fifo_wait(struct w100_device *w100, unsigned int entries)
+{
+	u32 status;
+	int ret;
+
+	ret = readl_poll_timeout_atomic(w100->regs + W100_REG_RBBM_STATUS, status,
+					FIELD_GET(W100_RBBM_STATUS_CMDFIFO_AVAIL,
+						  status) >= entries,
+					1, W100_2D_TIMEOUT_US);
+	if (ret)
+		drm_err(&w100->drm, "2D engine: timeout waiting for %u command FIFO slots (RBBM_STATUS 0x%08x)\n",
+			entries, status);
+
+	return ret;
+}
+
+/*
+ * Wait for the engine to go idle -- ATIWaitIdle(), ati_dma.c:139-172.
+ *
+ * The command-FIFO drain is not optional and is the whole reason this is
+ * two waits rather than one. gui_active reports the *engine*, while the
+ * register writes that start an operation land in the command FIFO first
+ * and are consumed from it asynchronously; rbbm_status_t carries
+ * cf_pipe_busy/cp_cmdstrm_busy separately from gui_active precisely
+ * because they are different things. So polling gui_active straight after
+ * writing the launch register can observe 0 for the window before the
+ * engine has even seen that write, and return with the operation not
+ * merely unfinished but unstarted. Every caller here then reads the
+ * destination back or hands it to a CPU copy, so what that produces is
+ * stale pixels rather than a visible stall.
+ *
+ * kdrive drains first for exactly this reason, under its own "Empty the
+ * fifo" comment. w100fb.c has no equivalent because it never waited after
+ * issuing at all: w100fb_fillrect()/w100fb_copyarea() return with the blit
+ * in flight and w100fb_sync() is the fbdev core's .fb_sync hook, called
+ * before CPU access rather than after issue.
+ *
+ * kdrive follows its gui_active loop with ATIFlushPixelCache(); that
+ * function is nothing but a second poll of the same bit (ati_dma.c:66-82 --
+ * it writes no cache register at all, despite its name and its comment), so
+ * there is nothing further to do here.
+ */
+static int w100_2d_wait_idle(struct w100_device *w100)
+{
+	u32 status;
+	int ret;
+
+	ret = w100_2d_fifo_wait(w100, W100_2D_CMDFIFO_DEPTH);
+	if (ret)
+		return ret;
+
+	ret = readl_poll_timeout_atomic(w100->regs + W100_REG_RBBM_STATUS, status,
+					!(status & W100_RBBM_STATUS_GUI_ACTIVE),
+					1, W100_2D_TIMEOUT_US);
+	if (ret)
+		drm_err(&w100->drm, "2D engine: idle timeout (RBBM_STATUS 0x%08x)\n",
+			status);
+
+	return ret;
+}
+
+/*
+ * ATIEngineReset(), ati_dma.c:83-109: force the E2/E3/IDCT clocks on
+ * across a soft-reset pulse of the 2D block, then put mmSCLK_CNTL back.
+ * The register is read back rather than taken from w100->sclk_cntl
+ * because that shadow tracks what w100_pll_set_clk() last programmed,
+ * which is the same thing here but would silently stop being so if the
+ * clock code ever grew another writer.
+ *
+ * kdrive calls ATIFlushPixelCache() first; that is another poll for
+ * gui_active to fall, and every path that reaches this function got
+ * here *because* that bit is stuck, so it is skipped -- it would only
+ * add another timeout before the reset that clears the condition.
+ *
+ * The reset clears the source and default scissors that
+ * w100_2d_setup_locked() exists to establish, so @accel_ready is dropped
+ * here and only the next w100_2d_setup_locked() puts it back. Every
+ * caller that means to keep using the engine already re-runs that -- the
+ * same pairing kdrive has, where an ATIEngineReset() is always followed
+ * by an ATIDrawSetup(). The one that does not is .atomic_disable's ring
+ * teardown, which is exactly the case this matters for: without it the
+ * engine is left reset with @accel_ready still true, and the next
+ * operation to reach it runs against wiped scissors.
+ */
+static void w100_2d_engine_reset(struct w100_device *w100)
+{
+	u32 sclk_cntl = readl(w100->regs + W100_REG_SCLK_CNTL);
+
+	w100->accel_ready = false;
+
+	writel(sclk_cntl | W100_SCLK_CNTL_FORCE_E2 | W100_SCLK_CNTL_FORCE_E3 |
+	       W100_SCLK_CNTL_FORCE_IDCT, w100->regs + W100_REG_SCLK_CNTL);
+
+	writel(W100_RBBM_SOFT_RESET_E2, w100->regs + W100_REG_RBBM_SOFT_RESET);
+	writel(0, w100->regs + W100_REG_RBBM_SOFT_RESET);
+
+	writel(sclk_cntl, w100->regs + W100_REG_SCLK_CNTL);
+}
+
+/*
+ * Both historical drivers write the pitch registers in units of 16-bit
+ * words -- w100fb.c:302 writes par->xres for a 16bpp framebuffer, and
+ * ATIGetPixmapOffsetPitch() (ati_draw.c:196-206) writes devKind >> 1,
+ * i.e. the byte pitch halved. Those are the same number, and this
+ * driver's only pixel format is 16bpp, so the two agree exactly.
+ */
+static u32 w100_2d_pitch_reg(u32 pitch_bytes)
+{
+	return FIELD_PREP(W100_2D_PITCH, pitch_bytes >> 1);
+}
+
+static void w100_2d_setup_locked(struct w100_device *w100,
+				 const struct w100_hw_mode *hw);
+
+/*
+ * kdrive's recovery, ati_dma.c:130-134: on a FIFO timeout, reset the
+ * engine and re-establish its static state, then retry the wait once.
+ *
+ * Two things differ from kdrive, both because kdrive could get away with
+ * what it did and this cannot. It resumes the interrupted operation as
+ * if nothing had happened; the reset has just wiped every operand
+ * register the caller queued before the timeout, so what would resume is
+ * a half-programmed blit against the freshly re-established defaults.
+ * This fails the operation instead, with -EAGAIN once the engine is
+ * answering again so a caller can tell "reset, reissue me" from "this
+ * chip is not responding". And it reports the second failure at all,
+ * where kdrive only prints: a wedged 2D engine on a device with no
+ * interrupt is otherwise completely invisible.
+ */
+static int w100_2d_fifo_wait_recover(struct w100_device *w100, unsigned int entries)
+{
+	int ret;
+
+	if (!w100_2d_fifo_wait(w100, entries))
+		return 0;
+
+	drm_err(&w100->drm, "2D engine: resetting\n");
+	w100_2d_engine_reset(w100);
+	w100_2d_setup_locked(w100, w100->hw_mode);
+
+	ret = w100_2d_fifo_wait(w100, entries);
+
+	return ret ? : -EAGAIN;
+}
+
+/*
+ * w100_init_graphic_engine() (w100fb.c:294-357) -- the engine's
+ * quiescent state, re-established on every mode apply exactly as the
+ * recovered driver re-ran it from every w100fb_activate_var().
+ * mmDEFAULT_SC_BOTTOM_RIGHT is the one addition, from kdrive's
+ * ATIDrawSetup() (ati_draw.c:120-129); w100fb.c leaves that register at
+ * whatever reset left it, and it is what the engine clips against
+ * whenever gmc_default_sel selects the default scissor instead of the
+ * mmSC_* pair.
+ *
+ * Every per-operation register written here is overwritten by
+ * w100_2d_fill()/w100_2d_copy() before use. What actually has to
+ * survive from here is the source scissor and the default scissor.
+ */
+static void w100_2d_setup_locked(struct w100_device *w100,
+				 const struct w100_hw_mode *hw)
+{
+	u32 gmc, dp_cntl, dp_datatype, dp_mix;
+	int ret;
+
+	ret = w100_2d_fifo_wait(w100, 4);
+	writel(W100_FB_BASE, w100->regs + W100_REG_DST_OFFSET);
+	writel(w100_2d_pitch_reg(hw->xres * 2), w100->regs + W100_REG_DST_PITCH);
+	writel(W100_FB_BASE, w100->regs + W100_REG_SRC_OFFSET);
+	writel(w100_2d_pitch_reg(hw->xres * 2), w100->regs + W100_REG_SRC_PITCH);
+
+	/*
+	 * Both scissor sets are programmed wide open here because the two
+	 * sources disagree about which one gmc_default_sel == 0 actually
+	 * selects, and neither says. w100fb.c writes the mmSC_* pair (to
+	 * the visible size) and never touches mmDEFAULT_SC_BOTTOM_RIGHT;
+	 * kdrive writes mmDEFAULT_SC_BOTTOM_RIGHT (to W100_MAXINT) and
+	 * never touches the mmSC_* pair -- and both drivers worked. So the
+	 * safe reading is that one of the two is live and the other is
+	 * inert, without knowing which. Programming both, as here and
+	 * per-operation in w100_2d_fill()/w100_2d_copy(), is correct under
+	 * either reading; the software bounds check in
+	 * w100_2d_rect_valid() is what the driver actually relies on.
+	 */
+	ret |= w100_2d_fifo_wait(w100, 4);
+	writel(0, w100->regs + W100_REG_SC_TOP_LEFT);
+	writel(W100_2D_YX(hw->xres, hw->yres), w100->regs + W100_REG_SC_BOTTOM_RIGHT);
+	writel(W100_2D_YX(W100_2D_MAXINT, W100_2D_MAXINT),
+	       w100->regs + W100_REG_SRC_SC_BOTTOM_RIGHT);
+	writel(W100_2D_YX(W100_2D_MAXINT, W100_2D_MAXINT),
+	       w100->regs + W100_REG_DEFAULT_SC_BOTTOM_RIGHT);
+
+	dp_cntl = W100_DP_CNTL_DST_X_DIR | W100_DP_CNTL_DST_Y_DIR |
+		  W100_DP_CNTL_SRC_X_DIR | W100_DP_CNTL_SRC_Y_DIR |
+		  W100_DP_CNTL_DST_MAJOR_X | W100_DP_CNTL_SRC_MAJOR_X;
+
+	gmc = W100_GMC_SRC_PITCH_OFFSET_CNTL | W100_GMC_DST_PITCH_OFFSET_CNTL |
+	      W100_GMC_SRC_CLIPPING | W100_GMC_DST_CLIPPING |
+	      FIELD_PREP(W100_GMC_BRUSH_DATATYPE, W100_BRUSH_NONE) |
+	      FIELD_PREP(W100_GMC_DST_DATATYPE, W100_DATATYPE_16BPP) |
+	      FIELD_PREP(W100_GMC_SRC_DATATYPE, W100_DATATYPE_16BPP) |
+	      W100_GMC_BYTE_PIX_ORDER |
+	      FIELD_PREP(W100_GMC_ROP3, w100_blt_rop3[W100_ROP_COPY]) |
+	      FIELD_PREP(W100_GMC_DP_SRC_SOURCE, W100_DP_SRC_MEM_RECTANGULAR) |
+	      W100_GMC_CLR_CMP_FCN_DIS | W100_GMC_WR_MSK_DIS |
+	      FIELD_PREP(W100_GMC_DP_OP, W100_DP_OP_ROP);
+
+	dp_datatype = FIELD_PREP(W100_DP_DATATYPE_DST, W100_DATATYPE_16BPP) |
+		      FIELD_PREP(W100_DP_DATATYPE_BRUSH, W100_BRUSH_NONE) |
+		      FIELD_PREP(W100_DP_DATATYPE_SRC2, W100_DATATYPE_16BPP) |
+		      FIELD_PREP(W100_DP_DATATYPE_SRC, W100_DATATYPE_16BPP) |
+		      W100_DP_DATATYPE_BYTE_PIX_ORDER;
+
+	dp_mix = FIELD_PREP(W100_DP_MIX_SRC_SOURCE, W100_DP_SRC_MEM_RECTANGULAR) |
+		 FIELD_PREP(W100_DP_MIX_SRC2_SOURCE, 1) |
+		 FIELD_PREP(W100_DP_MIX_ROP3, w100_blt_rop3[W100_ROP_COPY]) |
+		 FIELD_PREP(W100_DP_MIX_OP, W100_DP_OP_ROP);
+
+	ret |= w100_2d_fifo_wait(w100, 4);
+	writel(dp_cntl, w100->regs + W100_REG_DP_CNTL);
+	writel(gmc, w100->regs + W100_REG_DP_GUI_MASTER_CNTL);
+	writel(dp_datatype, w100->regs + W100_REG_DP_DATATYPE);
+	writel(dp_mix, w100->regs + W100_REG_DP_MIX);
+
+	w100->hw_mode = hw;
+
+	/*
+	 * A chip whose command FIFO never reports a free slot is one whose
+	 * engine is not there. Leaving accel_ready clear in that case is
+	 * what stops every later operation paying three 200 ms timeouts to
+	 * rediscover it; the fill callers fall back to the CPU instead.
+	 */
+	w100->accel_ready = !ret;
+}
+
+static void w100_2d_setup(struct w100_device *w100, const struct w100_hw_mode *hw)
+{
+	mutex_lock(&w100->accel_lock);
+	w100_2d_setup_locked(w100, hw);
+	mutex_unlock(&w100->accel_lock);
+}
+
+static bool w100_2d_surface_valid(struct w100_device *w100,
+				  const struct w100_2d_surface *s)
+{
+	u32 last_byte;
+
+	if (!s->width || !s->height ||
+	    s->width > W100_2D_MAXINT || s->height > W100_2D_MAXINT)
+		return false;
+
+	/* Odd pitches cannot be expressed at all, see w100_2d_pitch_reg(). */
+	if ((s->pitch & 1) || s->pitch < (u32)s->width * 2 ||
+	    !FIELD_FIT(W100_2D_PITCH, s->pitch >> 1))
+		return false;
+
+	if (s->offset < W100_FB_BASE || !FIELD_FIT(W100_2D_OFFSET, s->offset))
+		return false;
+
+	last_byte = s->offset - W100_FB_BASE +
+		    s->pitch * (u32)(s->height - 1) + (u32)s->width * 2;
+
+	return last_byte <= w100->vram_size;
+}
+
+static bool w100_2d_rect_valid(const struct w100_2d_surface *s,
+			       int x, int y, int width, int height)
+{
+	return width > 0 && height > 0 && x >= 0 && y >= 0 &&
+	       x + width <= s->width && y + height <= s->height;
+}
+
+/*
+ * ATIPrepareSolid() + ATISolid() (ati_draw.c:210-289), collapsed into
+ * one function because there is no command ring here to batch a
+ * prepare/emit/emit/... sequence into, and no consumer that would issue
+ * more than one rectangle per setup anyway.
+ *
+ * @color is a raw destination-format pixel, i.e. RGB565 on this driver
+ * -- see W100_DATATYPE_16BPP's comment for why the datatype's name says
+ * otherwise and why that does not matter.
+ *
+ * Returns once the engine is idle again: both historical drivers left
+ * the operation in flight and synchronised lazily (fb_sync,
+ * waitMarker), which is the right shape for a batching consumer. There
+ * is none here, and every caller in this driver either reads the result
+ * back or hands the memory straight to a CPU memcpy, so paying the idle
+ * poll up front is both simpler and what the callers would have to do
+ * anyway.
+ */
+static int w100_2d_fill(struct w100_device *w100, const struct w100_2d_surface *dst,
+			int x, int y, int width, int height,
+			u16 color, enum w100_rop rop)
+{
+	u32 gmc;
+	int ret;
+
+	if (WARN_ON(rop >= W100_ROP_COUNT))
+		return -EINVAL;
+	if (!w100_2d_surface_valid(w100, dst) ||
+	    !w100_2d_rect_valid(dst, x, y, width, height))
+		return -EINVAL;
+
+	gmc = W100_GMC_DST_PITCH_OFFSET_CNTL | W100_GMC_DST_CLIPPING |
+	      FIELD_PREP(W100_GMC_BRUSH_DATATYPE, W100_BRUSH_SOLIDCOLOR) |
+	      FIELD_PREP(W100_GMC_DST_DATATYPE, W100_DATATYPE_16BPP) |
+	      FIELD_PREP(W100_GMC_SRC_DATATYPE, W100_DATATYPE_16BPP) |
+	      W100_GMC_BYTE_PIX_ORDER |
+	      FIELD_PREP(W100_GMC_ROP3, w100_solid_rop3[rop]) |
+	      FIELD_PREP(W100_GMC_DP_SRC_SOURCE, W100_DP_SRC_MEM_RECTANGULAR) |
+	      W100_GMC_CLR_CMP_FCN_DIS |
+	      FIELD_PREP(W100_GMC_DP_OP, W100_DP_OP_ROP);
+
+	mutex_lock(&w100->accel_lock);
+
+	if (!w100->accel_ready) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	ret = w100_2d_fifo_wait_recover(w100, 6);
+	if (ret)
+		goto out;
+
+	/* Belt and braces: w100_2d_rect_valid() has already rejected a
+	 * rectangle that leaves the surface, and gmc_dst_clipping above
+	 * makes the engine enforce the same bound in hardware.
+	 */
+	writel(0, w100->regs + W100_REG_SC_TOP_LEFT);
+	writel(W100_2D_YX(dst->width, dst->height), w100->regs + W100_REG_SC_BOTTOM_RIGHT);
+	writel(w100_2d_pitch_reg(dst->pitch), w100->regs + W100_REG_DST_PITCH);
+	writel(dst->offset, w100->regs + W100_REG_DST_OFFSET);
+	writel(gmc, w100->regs + W100_REG_DP_GUI_MASTER_CNTL);
+	writel(color, w100->regs + W100_REG_DP_BRUSH_FRGD_CLR);
+
+	ret = w100_2d_fifo_wait_recover(w100, 4);
+	if (ret)
+		goto out;
+
+	/* Every plane writable. kdrive puts the client's own plane mask
+	 * here (ATIPrepareSolid()'s pm argument); nothing in this driver
+	 * has a use for a partial one.
+	 */
+	writel(~0u, w100->regs + W100_REG_DP_WRITE_MSK);
+	writel(W100_DP_CNTL_DST_X_DIR | W100_DP_CNTL_DST_Y_DIR,
+	       w100->regs + W100_REG_DP_CNTL);
+	writel(W100_2D_YX(x, y), w100->regs + W100_REG_DST_Y_X);
+	/* Writing the extent is what launches the operation. */
+	writel(W100_2D_WH(width, height), w100->regs + W100_REG_DST_WIDTH_HEIGHT);
+
+	ret = w100_2d_wait_idle(w100);
+
+out:
+	mutex_unlock(&w100->accel_lock);
+
+	return ret;
+}
+
+/*
+ * ATIPrepareCopy() + ATICopy() (ati_draw.c:291-403), same collapse as
+ * w100_2d_fill().
+ *
+ * Overlap handling is this driver's own, because kdrive's caller (kaa)
+ * passed the copy direction in and there is no equivalent caller here.
+ * The rule is memmove's: step away from the destination, i.e. run
+ * backwards along an axis whenever the destination coordinate is
+ * greater than the source's. kdrive's own mechanics for a backwards
+ * run are reproduced exactly -- clear the matching dp_cntl dst_*_dir
+ * bit and start both rectangles on their far edge (ati_draw.c:307-320,
+ * 370-377).
+ *
+ * This is only meaningful when @src and @dst name the same surface. Two
+ * *different* surfaces that happen to overlap in chip memory cannot be
+ * resolved from coordinates at all, and no caller here does that.
+ *
+ * __maybe_unused: nothing calls this yet. A screen-to-screen copy needs
+ * both operands in chip memory, and the framebuffer here is a shadow
+ * plane in system memory, so there is nothing in the scanout path to
+ * copy between.
+ */
+static int __maybe_unused w100_2d_copy(struct w100_device *w100,
+				       const struct w100_2d_surface *dst,
+				       int dst_x, int dst_y,
+				       const struct w100_2d_surface *src,
+				       int src_x, int src_y,
+				       int width, int height,
+				       enum w100_rop rop)
+{
+	bool x_forward, y_forward;
+	u32 gmc, dp_cntl, dp_datatype;
+	int ret;
+
+	if (WARN_ON(rop >= W100_ROP_COUNT))
+		return -EINVAL;
+	if (!w100_2d_surface_valid(w100, dst) || !w100_2d_surface_valid(w100, src) ||
+	    !w100_2d_rect_valid(dst, dst_x, dst_y, width, height) ||
+	    !w100_2d_rect_valid(src, src_x, src_y, width, height))
+		return -EINVAL;
+
+	x_forward = dst_x <= src_x;
+	y_forward = dst_y <= src_y;
+
+	if (!x_forward) {
+		src_x += width - 1;
+		dst_x += width - 1;
+	}
+	if (!y_forward) {
+		src_y += height - 1;
+		dst_y += height - 1;
+	}
+
+	gmc = W100_GMC_SRC_PITCH_OFFSET_CNTL | W100_GMC_DST_PITCH_OFFSET_CNTL |
+	      W100_GMC_SRC_CLIPPING | W100_GMC_DST_CLIPPING |
+	      FIELD_PREP(W100_GMC_BRUSH_DATATYPE, W100_BRUSH_NONE) |
+	      FIELD_PREP(W100_GMC_DST_DATATYPE, W100_DATATYPE_16BPP) |
+	      FIELD_PREP(W100_GMC_SRC_DATATYPE, W100_DATATYPE_16BPP) |
+	      W100_GMC_BYTE_PIX_ORDER |
+	      FIELD_PREP(W100_GMC_ROP3, w100_blt_rop3[rop]) |
+	      FIELD_PREP(W100_GMC_DP_SRC_SOURCE, W100_DP_SRC_MEM_RECTANGULAR) |
+	      W100_GMC_CLR_CMP_FCN_DIS |
+	      FIELD_PREP(W100_GMC_DP_OP, W100_DP_OP_ROP);
+
+	dp_cntl = (x_forward ? W100_DP_CNTL_DST_X_DIR : 0) |
+		  (y_forward ? W100_DP_CNTL_DST_Y_DIR : 0);
+
+	dp_datatype = FIELD_PREP(W100_DP_DATATYPE_DST, W100_DATATYPE_16BPP) |
+		      FIELD_PREP(W100_DP_DATATYPE_SRC, W100_DATATYPE_16BPP) |
+		      W100_DP_DATATYPE_BYTE_PIX_ORDER;
+
+	mutex_lock(&w100->accel_lock);
+
+	if (!w100->accel_ready) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	ret = w100_2d_fifo_wait_recover(w100, 5);
+	if (ret)
+		goto out;
+
+	/* The source scissor stays at w100_2d_setup_locked()'s wide-open
+	 * value, which is what both sources leave it at; the source
+	 * rectangle is already bounded by w100_2d_rect_valid().
+	 */
+	writel(0, w100->regs + W100_REG_SC_TOP_LEFT);
+	writel(W100_2D_YX(dst->width, dst->height), w100->regs + W100_REG_SC_BOTTOM_RIGHT);
+	writel(w100_2d_pitch_reg(src->pitch), w100->regs + W100_REG_SRC_PITCH);
+	writel(src->offset, w100->regs + W100_REG_SRC_OFFSET);
+	writel(w100_2d_pitch_reg(dst->pitch), w100->regs + W100_REG_DST_PITCH);
+
+	ret = w100_2d_fifo_wait_recover(w100, 4);
+	if (ret)
+		goto out;
+
+	writel(dst->offset, w100->regs + W100_REG_DST_OFFSET);
+	writel(gmc, w100->regs + W100_REG_DP_GUI_MASTER_CNTL);
+	writel(~0u, w100->regs + W100_REG_DP_WRITE_MSK);
+	writel(dp_cntl, w100->regs + W100_REG_DP_CNTL);
+
+	ret = w100_2d_fifo_wait_recover(w100, 4);
+	if (ret)
+		goto out;
+
+	writel(dp_datatype, w100->regs + W100_REG_DP_DATATYPE);
+	writel(W100_2D_YX(src_x, src_y), w100->regs + W100_REG_SRC_Y_X);
+	writel(W100_2D_YX(dst_x, dst_y), w100->regs + W100_REG_DST_Y_X);
+	/* Writing the extent is what launches the operation. */
+	writel(W100_2D_WH(width, height), w100->regs + W100_REG_DST_WIDTH_HEIGHT);
+
+	ret = w100_2d_wait_idle(w100);
+
+out:
+	mutex_unlock(&w100->accel_lock);
+
+	return ret;
+}
+
+/*
+ * w100fb_clear_screen() (w100fb.c:193-196), which is a memset_io() over
+ * the whole visible framebuffer, as a hardware fill instead: ~600 KiB
+ * that never crosses the nCS2 static-memory bus.
+ *
+ * Unlike the recovered driver this runs *once*, on the first mode apply,
+ * not on every one. w100fb.c could clear on every activate_var() because
+ * fbdev had no notion of a client having already put a frame there;
+ * DRM's commit tail does. drm_atomic_helper_commit_tail() is
+ * commit_modeset_disables -> commit_planes -> commit_modeset_enables,
+ * so on any enabling commit -- including a plain DPMS-on, where the
+ * damage machinery may legitimately produce no plane update at all --
+ * the primary plane's atomic_update has already uploaded the client's
+ * frame by the time the CRTC's atomic_enable calls this. Clearing every
+ * time would erase it, with nothing scheduled to put it back.
+ *
+ * The one-shot clear is still worth doing: chip SDRAM contents are
+ * undefined until w100_setup_memory() has run its mode-register-set
+ * training, so without this the panel's first light is whatever the
+ * memory came up holding.
+ *
+ * Falls back to the recovered driver's own memset_io() if the engine
+ * does not answer, so a chip whose GFX block never comes up is no worse
+ * off than it was under w100fb.c.
+ */
+static void w100_2d_clear_vram(struct w100_device *w100, const struct w100_hw_mode *hw)
+{
+	const struct w100_2d_surface fb = {
+		.offset	= W100_FB_BASE,
+		.pitch	= hw->xres * 2,
+		.width	= hw->xres,
+		.height	= hw->yres,
+	};
+
+	if (w100->vram_cleared)
+		return;
+
+	if (w100_2d_fill(w100, &fb, 0, 0, hw->xres, hw->yres, 0, W100_ROP_CLEAR))
+		memset_io(w100->vram, 0, (size_t)hw->xres * hw->yres * 2);
+
+	w100->vram_cleared = true;
+}
+
+/* ------------------------------------------------------------------ */
+
+/* w100fb_activate_var() (w100fb.c:412-432), minus calc_hsync()/
+ * tg->change() (both dropped, see the file comment).
+ *
+ * w100_init_graphic_engine() moves up from the tail of the recovered
+ * sequence to just after the clocks: the 2D engine is a memory-side
+ * block whose only dependencies are SCLK and the memory controller,
+ * both already programmed by that point, and having it up before
+ * w100_2d_clear_vram() runs is what lets that clear be a hardware fill
+ * rather than a 600 KiB CPU memset across the nCS2 bus.
  */
 static void w100_apply_mode(struct w100_device *w100, const struct w100_hw_mode *hw)
 {
 	w100_pwm_setup(w100);
 	w100_setup_memory(w100);
 	w100_init_clocks(w100, hw);
+	w100_2d_setup(w100, hw);
+	w100_2d_clear_vram(w100, hw);
 	w100_wait_vline(w100);
 
 	w100_update_disable(w100);
@@ -1313,6 +2139,103 @@ static int w100_primary_plane_helper_atomic_check(struct drm_plane *plane,
 						    false, false);
 }
 
+/*
+ * Smallest damage rectangle worth handing to the engine. A polled fill
+ * is about a dozen register writes plus three FIFO/idle status reads,
+ * i.e. some thirty bus cycles before the engine even starts,
+ * whereas the CPU copy it replaces costs one bus cycle per pixel. 256
+ * pixels keeps the engine path well clear of that break-even point and
+ * spares the shadow scan for cursor-sized updates; it is a margin, not
+ * a measured crossover.
+ */
+#define W100_FILL_MIN_PIXELS	256
+
+/*
+ * Whether every pixel of @clip in the shadow buffer is @*color. The
+ * shadow is cached system memory, so this costs a small fraction of the
+ * uncached bus writes it can save, and real content almost always
+ * differs within the first few pixels, which is where it stops looking.
+ */
+static bool w100_shadow_rect_uniform(const struct iosys_map *shadow,
+				     const struct drm_framebuffer *fb,
+				     const struct drm_rect *clip, u16 *color)
+{
+	unsigned int width = drm_rect_width(clip);
+	unsigned int height = drm_rect_height(clip);
+	unsigned int pitch = fb->pitches[0];
+	const u8 *first;
+	const u16 *px;
+	unsigned int x, y;
+
+	if (shadow->is_iomem)
+		return false;
+
+	first = shadow->vaddr + drm_fb_clip_offset(pitch, fb->format, clip);
+	px = (const u16 *)first;
+
+	for (x = 1; x < width; x++)
+		if (px[x] != px[0])
+			return false;
+
+	for (y = 1; y < height; y++)
+		if (memcmp(first + y * pitch, first, width * 2))
+			return false;
+
+	*color = px[0];
+
+	return true;
+}
+
+/*
+ * Write one solid-colour damage rectangle with the 2D engine instead of
+ * pushing it across the static-memory bus: a full 480x640 clear is
+ * 600 KiB of uncached VLIO writes, and it is
+ * what every letterbox bar, console clear and switch between the video
+ * overlay and a software-rendered frame costs.
+ *
+ * Only on a commit that leaves the CRTC running without a modeset. The
+ * default commit tail updates planes before .atomic_enable, so on an
+ * enabling commit the engine state @accel_ready describes may predate a
+ * chip that has since lost it; the CPU copy is always correct there.
+ *
+ * Ordering against the CPU copies of other rectangles in the same
+ * update does not matter: every writer stores the shadow's own pixels,
+ * so overlapping rectangles converge on the same content whichever
+ * lands last, and the fill has finished before w100_2d_fill() returns.
+ */
+static bool w100_primary_fill_damage(struct w100_device *w100,
+				     const struct drm_crtc_state *crtc_state,
+				     const struct iosys_map *shadow,
+				     const struct drm_framebuffer *fb,
+				     const struct drm_rect *clip)
+{
+	const struct w100_2d_surface surface = {
+		.offset	= W100_FB_BASE,
+		.pitch	= fb->pitches[0],
+		.width	= fb->width,
+		.height	= fb->height,
+	};
+	u16 color;
+
+	if (!crtc_state || !crtc_state->active ||
+	    drm_atomic_crtc_needs_modeset(crtc_state))
+		return false;
+
+	/* A hint only: w100_2d_fill() rechecks it under @accel_lock. */
+	if (!READ_ONCE(w100->accel_ready))
+		return false;
+
+	if (drm_rect_width(clip) * drm_rect_height(clip) < W100_FILL_MIN_PIXELS)
+		return false;
+
+	if (!w100_shadow_rect_uniform(shadow, fb, clip, &color))
+		return false;
+
+	return !w100_2d_fill(w100, &surface, clip->x1, clip->y1,
+			     drm_rect_width(clip), drm_rect_height(clip),
+			     color, W100_ROP_COPY);
+}
+
 static void w100_primary_plane_helper_atomic_update(struct drm_plane *plane,
 						      struct drm_atomic_commit *state)
 {
@@ -1322,6 +2245,7 @@ static void w100_primary_plane_helper_atomic_update(struct drm_plane *plane,
 	struct drm_framebuffer *fb = plane_state->fb;
 	struct drm_plane_state *old_plane_state = drm_atomic_get_old_plane_state(state, plane);
 	struct iosys_map vram_map = IOSYS_MAP_INIT_VADDR_IOMEM(w100->vram);
+	struct drm_crtc_state *crtc_state = NULL;
 	struct drm_atomic_helper_damage_iter iter;
 	struct drm_rect damage;
 	int idx;
@@ -1332,10 +2256,17 @@ static void w100_primary_plane_helper_atomic_update(struct drm_plane *plane,
 	if (!drm_dev_enter(&w100->drm, &idx))
 		return;
 
+	if (plane_state->crtc)
+		crtc_state = drm_atomic_get_new_crtc_state(state, plane_state->crtc);
+
 	drm_atomic_helper_damage_iter_init(&iter, old_plane_state, plane_state);
 	drm_atomic_for_each_plane_damage(&iter, &damage) {
 		unsigned int offset = drm_fb_clip_offset(fb->pitches[0], fb->format, &damage);
 		struct iosys_map dst = IOSYS_MAP_INIT_OFFSET(&vram_map, offset);
+
+		if (w100_primary_fill_damage(w100, crtc_state, &shadow_plane_state->data[0],
+					     fb, &damage))
+			continue;
 
 		drm_fb_memcpy(&dst, fb->pitches, shadow_plane_state->data, fb, &damage);
 	}
@@ -1573,6 +2504,7 @@ static const struct drm_driver w100_driver = {
 static int w100_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct resource *res;
 	struct w100_device *w100;
 	struct drm_device *drm;
 	u32 chip_id;
@@ -1585,6 +2517,10 @@ static int w100_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, w100);
 
+	ret = drmm_mutex_init(drm, &w100->accel_lock);
+	if (ret)
+		return ret;
+
 	w100->cfg = devm_platform_ioremap_resource_byname(pdev, "cfg");
 	if (IS_ERR(w100->cfg))
 		return dev_err_probe(dev, PTR_ERR(w100->cfg), "failed to map cfg window\n");
@@ -1593,10 +2529,15 @@ static int w100_probe(struct platform_device *pdev)
 	if (IS_ERR(w100->regs))
 		return dev_err_probe(dev, PTR_ERR(w100->regs), "failed to map register window\n");
 
-	w100->vram = devm_platform_ioremap_resource_byname(pdev, "fb");
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "fb");
+	if (!res)
+		return dev_err_probe(dev, -EINVAL, "missing video memory window\n");
+
+	w100->vram = devm_ioremap_resource(dev, res);
 	if (IS_ERR(w100->vram))
 		return dev_err_probe(dev, PTR_ERR(w100->vram),
-				      "failed to map framebuffer window\n");
+				      "failed to map video memory window\n");
+	w100->vram_size = resource_size(res);
 
 	/* W3220_nRESET (PXA GPIO61) -- deasserted once here and never
 	 * toggled again, see struct w100_device's own field comment.
