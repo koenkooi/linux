@@ -1,0 +1,126 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/marvell,pxa2xx-lcdc.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Marvell PXA2xx and PXA3xx LCD controller
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: |
+  The LCD controller integrated in the Marvell (formerly Intel) PXA25x, PXA27x
+  and PXA3xx application processors. It reads the frame buffer from system
+  memory through its own frame descriptor DMA engine and drives a parallel
+  panel over the LCD_LDD data lines: a passive monochrome or colour STN panel,
+  a dual-scan DSTN panel, an active colour TFT panel or a smart panel.
+
+  The panel, or a bridge in front of it, is reached through a single "port"
+  node using the OF graph. When the panel is not a colour TFT one, the panel
+  node at the remote end of the endpoint states its type with an "lcd-type"
+  string property, one of "unknown", "mono-stn", "mono-dstn", "color-stn",
+  "color-dstn", "color-tft" or "smart-panel". Without the property a colour
+  TFT panel is assumed. A panel node that has no driver of its own must have
+  a display-timings child. It may be a sibling of the controller node or a
+  child of it: it is found through the graph, so its position does not
+  matter.
+
+properties:
+  $nodename:
+    pattern: "^lcd-controller@[0-9a-f]+$"
+
+  compatible:
+    enum:
+      - marvell,pxa2xx-lcdc
+      - marvell,pxa270-lcdc
+      - marvell,pxa300-lcdc
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+    description:
+      LCD controller interrupt, raised for the frame start and end, FIFO
+      underrun, bus error and disable-done conditions.
+
+  clocks:
+    maxItems: 1
+    description:
+      LCD unit clock, from which the pixel clock divider derives the pixel
+      clock.
+
+  lcd-supply:
+    description:
+      Regulator powering the LCD panel.
+
+  memory-region:
+    maxItems: 1
+    description:
+      Reserved memory the frame buffers are allocated from. The controller
+      scans out of physically contiguous memory.
+
+  port:
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    unevaluatedProperties: false
+    description:
+      Connection to the panel or bridge.
+
+    properties:
+      endpoint:
+        $ref: /schemas/media/video-interfaces.yaml#
+        unevaluatedProperties: false
+
+        properties:
+          bus-width:
+            enum: [4, 8, 16]
+            description:
+              Number of LCD_LDD data lines that carry pixel data. It is also
+              the number of bits per pixel of the framebuffer, so only the
+              depths the controller supports as a plain pixel size are
+              accepted.
+
+        required:
+          - remote-endpoint
+          - bus-width
+
+    required:
+      - endpoint
+
+patternProperties:
+  "^panel(@[0-9a-f]+)?$":
+    type: object
+    additionalProperties: true
+    description:
+      The panel, when its node is placed inside the controller node.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - port
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/pxa-clock.h>
+
+    lcd-controller@44000000 {
+        compatible = "marvell,pxa2xx-lcdc";
+        reg = <0x44000000 0x10000>;
+        interrupts = <17>;
+        clocks = <&clks CLK_LCD>;
+        pinctrl-names = "default";
+        pinctrl-0 = <&lcdc_pins>;
+        lcd-supply = <&lcd_supply>;
+
+        port {
+            lcdc_out: endpoint {
+                remote-endpoint = <&panel_in>;
+                bus-width = <16>;
+            };
+        };
+    };
