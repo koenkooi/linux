@@ -60,6 +60,20 @@ config SND_PXA2XX_SOC_H2200
 	  To compile this driver as a module, choose M here: the module
 	  will be called snd-soc-h2200.
 
+config SND_PXA2XX_SOC_H5000
+	tristate "SoC Audio support for HP iPAQ h5xxx"
+	depends on SND_PXA2XX_SOC && ARCH_PXA && I2C
+	select SND_PXA2XX_SOC_I2S
+	select SND_SOC_AK4535
+	help
+	  Say Y if you want to add support for SoC audio on the HP iPAQ
+	  h5xxx (h51xx/h54xx/h55xx), using its onboard Asahi Kasei AK4535
+	  codec over I2S (PXA-master) and I2C. The driver also handles the
+	  codec and output stage supplies and the headphone jack detect.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called snd-soc-h5000.
+
 config SND_PXA910_SOC
 	tristate "SoC Audio for Marvell PXA910 chip"
 	depends on ARCH_MMP && SND
