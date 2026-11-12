@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/hp,ipaq-h5000-audio.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HP iPAQ h5xxx audio machine
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: >-
+  The audio subsystem of the HP iPAQ h51xx/h54xx/h55xx family: the SoC's
+  I2S controller (marvell,pxa2xx-i2s.yaml) wired to an onboard Asahi Kasei
+  AK4535 codec (asahi-kasei,ak4535.yaml), with the PXA driving the bit and
+  frame clocks. Because the codec has no supply-enable pin of its own, the
+  board gates it externally, and gates the output stage and microphone
+  bias behind a second, independent switch downstream of the codec; both
+  switches are SAMCOP GPB outputs. A headphone-detect line on a SoC GPIO
+  reports jack insertion.
+
+properties:
+  compatible:
+    const: hp,ipaq-h5000-audio
+
+  cpu-dai:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the PXA I2S controller node (marvell,pxa2xx-i2s.yaml).
+
+  audio-codec:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the AK4535 codec node (asahi-kasei,ak4535.yaml).
+
+  codec-power-gpios:
+    maxItems: 1
+    description:
+      Supply enable for the AK4535 itself, a SAMCOP GPB output. The codec
+      has no supply-enable pin of its own, so this must be asserted and
+      settled before any of its registers are accessed.
+
+  audio-power-gpios:
+    maxItems: 1
+    description:
+      Enable for the output-stage and microphone-bias power switch
+      downstream of the codec, a second SAMCOP GPB output independent of
+      the codec supply above.
+
+  headphone-detect-gpios:
+    maxItems: 1
+    description:
+      Headphone jack detect, a SoC GPIO asserted while a plug is inserted.
+
+required:
+  - compatible
+  - cpu-dai
+  - audio-codec
+  - codec-power-gpios
+  - audio-power-gpios
+  - headphone-detect-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    sound {
+        compatible = "hp,ipaq-h5000-audio";
+
+        cpu-dai = <&i2s>;
+        audio-codec = <&ak4535>;
+
+        codec-power-gpios     = <&samcop 32 GPIO_ACTIVE_HIGH>;
+        audio-power-gpios     = <&samcop 34 GPIO_ACTIVE_HIGH>;
+        headphone-detect-gpios = <&gpio 76 GPIO_ACTIVE_HIGH>;
+    };
