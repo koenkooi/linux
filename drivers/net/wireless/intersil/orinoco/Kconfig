@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config HERMES
+	tristate "Hermes/HFA384x chipset 802.11b support (Orinoco/Prism2/Symbol)"
+	depends on PCMCIA
+	depends on CFG80211
+	select CRYPTO
+	select CRYPTO_AES
+	select CRYPTO_AEAD
+	select CRYPTO_CCM
+	help
+	  A driver for 802.11b wireless cards based on the "Hermes" or
+	  Intersil HFA384x (Prism 2) MAC controller, as used in the Lucent
+	  Orinoco and Cabletron RoamAbout cards and most of their rebadges.
+
+	  This option builds the chip transport (register/command/BAP
+	  access) and the bus-independent driver core (net_device plus
+	  cfg80211 wiphy, nl80211-only -- no wireless-extensions ioctls).
+	  It does nothing by itself without a bus client
+	  (CONFIG_PCMCIA_HERMES below).
+
+config HERMES_PRISM
+	bool "Support Prism 2/2.5 chipset"
+	depends on HERMES
+	default y
+	help
+	  Say Y to enable support for Prism 2 and 2.5 chipsets.
+
+	  Prism firmware does no WPA crypto itself; it hands the cipher to
+	  the host (the HOSTENCRYPT/HOSTDECRYPT bits of CNFWEPFLAGS), so
+	  the driver does WPA2/CCMP in software. This needs station
+	  firmware 1.7.0 or newer, which can put the RSN element into the
+	  association request it builds.
+
+	  If you are not sure, say Y.
+
+config HERMES_PRISM_FWDL
+	bool "Volatile (RAM-only) firmware download for Prism 2/2.5"
+	depends on HERMES_PRISM
+	select FW_LOADER
+	help
+	  Say Y to let an operator load an Intersil Prism Secondary/Station
+	  firmware image into the card's RAM at runtime, replacing the
+	  flash-resident firmware until the next hardware-level reset
+	  (power cycle, PCMCIA card/COR reset, or a suspend/resume that
+	  power-cycles the socket). The Hermes INIT command the driver
+	  issues afterwards is not such a reset and does not revert the
+	  download. The download is triggered only by writing "1" to
+	  /sys/class/net/wlanN/prism_download, never automatically at probe
+	  time.
+
+	  The image is requested as intersil/prism_sta_fw.hex. Images with
+	  PDA-plug records are personalized from the card's own PDA, which
+	  must be readable and CRC-clean or the download is refused.
+
+	  If the Station image needs a PRI interface range that the
+	  card's Primary firmware does not supply (a Prism 2.5 card with
+	  Primary 1.0.x and a 1.7/1.8 Station image), the driver first
+	  downloads a RAM Primary requested as intersil/prism_pri_fw.hex,
+	  then the Station image. With no such file it refuses before
+	  touching the card.
+
+	  This only ever writes to volatile (RAM) storage: it never
+	  issues the card's non-volatile/flash programming command.
+
+	  If unsure, say N.
+
+config PCMCIA_HERMES
+	tristate "Hermes PCMCIA card support"
+	depends on HERMES && PCMCIA && HAS_IOPORT_MAP
+	help
+	  PCMCIA/CompactFlash client glue for "Hermes" chipset based wireless
+	  adaptors, such as the Lucent WavelanIEEE/Orinoco cards and their
+	  OEM (Cabletron/EnteraSys RoamAbout 802.11, ELSA Airlancer, Melco
+	  Buffalo and others). It should also be usable on various Prism II
+	  based cards such as the Linksys, D-Link and Farallon Skyline.
