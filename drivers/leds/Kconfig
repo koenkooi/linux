@@ -413,6 +413,19 @@ config LEDS_ASIC3
 	  To compile this driver as a module, choose M here: the module
 	  will be called leds-asic3.
 
+config LEDS_SAMCOP
+	tristate "LED Support for Samsung SAMCOP companion ASIC"
+	depends on LEDS_CLASS
+	depends on MFD_SAMCOP
+	help
+	  This option enables support for the LEDs on the Samsung SAMCOP
+	  companion ASIC. SAMCOP is found on HP iPAQ h51xx/h54xx/h55xx PDAs
+	  and features a 5-channel blink-capable LED controller with a
+	  shared duty-cycle/period prescaler.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called leds-samcop.
+
 config LEDS_HP6XX
 	tristate "LED Support for the HP Jornada 6xx"
 	depends on LEDS_CLASS
