@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/panel/hp,ipaq-h3900-panel.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HP iPAQ h3900 320x240 TFT panel
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: |
+  The 320x240 16bpp reflective TFT fitted to the HP iPAQ h3900 series,
+  driven over the PXA25x application processor's parallel RGB (DPI)
+  output. The part number of the glass is not recorded in any surviving
+  documentation for the machine, so the compatible names the machine the
+  panel is fitted to rather than the panel's manufacturer and part.
+
+  The panel is powered by five separately gated supply rails, brought up
+  and taken down in a fixed order with a delay after each step. The
+  power-down order is not the power-up order reversed: the panel control
+  input drops first rather than last, and the positive and negative high
+  rails drop together in a single step.
+
+  The rails are described as GPIOs rather than as regulator supplies
+  because on this machine they are raw outputs of a companion chip with
+  no regulator provider behind them and no consumer other than this
+  panel, so wrapping each one in a regulator-fixed node would add five
+  device tree nodes and a subsystem without describing anything the
+  panel driver does not already have to sequence itself. They cannot be
+  folded into panel-common.yaml's single enable-gpios, which describes
+  one enable signal.
+
+allOf:
+  - $ref: panel-common.yaml#
+
+properties:
+  compatible:
+    const: hp,ipaq-h3900-panel
+
+  lcd-on-gpios:
+    maxItems: 1
+    description:
+      Master panel enable, active high. First on, last off.
+
+  lcd-pci-gpios:
+    maxItems: 1
+    description:
+      Panel control input enable, active high. Second on, first off.
+
+  lcd-5v-gpios:
+    maxItems: 1
+    description:
+      +5 V supply enable, active high.
+
+  lcd-nv-gpios:
+    maxItems: 1
+    description:
+      Negative supply enable, active high.
+
+  lcd-9v-gpios:
+    maxItems: 1
+    description:
+      +9 V supply enable, active high. Last on.
+
+  port: true
+
+required:
+  - compatible
+  - lcd-on-gpios
+  - lcd-pci-gpios
+  - lcd-5v-gpios
+  - lcd-nv-gpios
+  - lcd-9v-gpios
+  - port
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    panel {
+        compatible = "hp,ipaq-h3900-panel";
+
+        lcd-on-gpios = <&asic3 22 GPIO_ACTIVE_HIGH>;
+        lcd-pci-gpios = <&asic3 23 GPIO_ACTIVE_HIGH>;
+        lcd-5v-gpios = <&asic3 21 GPIO_ACTIVE_HIGH>;
+        lcd-nv-gpios = <&asic3 19 GPIO_ACTIVE_HIGH>;
+        lcd-9v-gpios = <&asic3 17 GPIO_ACTIVE_HIGH>;
+
+        rotation = <90>;
+
+        port {
+            panel_in: endpoint {
+                remote-endpoint = <&lcdc_out>;
+            };
+        };
+    };
