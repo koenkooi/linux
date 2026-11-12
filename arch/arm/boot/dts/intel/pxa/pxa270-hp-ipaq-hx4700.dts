@@ -580,6 +580,24 @@
 			low-power-enable;
 		};
 	};
+
+	ssp2_pins: ssp2-pins {
+		ssp2-sclk-pins {
+			groups = "P19";
+			function = "SSPSCLK2_IN";
+		};
+
+		ssp2-rxd-pins {
+			groups = "P86";
+			function = "SSPRXD2";
+		};
+
+		ssp2-txd-pins {
+			groups = "P87";
+			function = "SSPTXD2";
+			low-power-disable;
+		};
+	};
 };
 
 &ffuart {
@@ -596,4 +614,33 @@
 	status = "okay";
 	gpios = <&gpio 76 GPIO_ACTIVE_HIGH>;
 	usb-phy = <&usb_connector>;
+};
+
+/*
+ * The TSC2046 touchscreen. The pen-down line, GPIO58, is both the
+ * interrupt, which the SPI core needs to set spi->irq, and the line the
+ * driver polls for the pen state. The panel's Y reading jitters by up to
+ * 400 counts between consecutive reads, so the debounce tolerance is far
+ * above the driver default.
+ */
+&ssp2 {
+	pinctrl-0 = <&ssp2_pins>;
+	pinctrl-names = "default";
+
+	status = "okay";
+	cs-gpios = <&gpio 88 GPIO_ACTIVE_LOW>;
+
+	touchscreen@0 {
+		compatible = "ti,tsc2046";
+		reg = <0>;
+		spi-max-frequency = <2600000>;
+		interrupt-parent = <&gpio>;
+		interrupts = <58 IRQ_TYPE_EDGE_FALLING>;
+		pendown-gpio = <&gpio 58 GPIO_ACTIVE_LOW>;
+		ti,vref-delay-usecs = /bits/ 16 <100>;
+		ti,pressure-max = /bits/ 16 <1024>;
+		ti,debounce-max = /bits/ 16 <10>;
+		ti,debounce-tol = /bits/ 16 <150>;
+		ti,debounce-rep = /bits/ 16 <1>;
+	};
 };
