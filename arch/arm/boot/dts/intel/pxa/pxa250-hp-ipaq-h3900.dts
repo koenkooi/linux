@@ -644,6 +644,20 @@
 		speaker-gpios = <&asic3 28 GPIO_ACTIVE_HIGH>;
 		jack-gpios = <&asic2 7 GPIO_ACTIVE_LOW>;
 	};
+
+	/*
+	 * GPIO3_BT_PWR_ON, ASIC3 bank B bit 11 (offset 27), powers the
+	 * Bluetooth module and is the only control line: there is no reset
+	 * line and no settle delay. The pin comes up low from
+	 * htc,gpio-default-output-low, so the radio starts off.
+	 */
+	rfkill-bluetooth {
+		compatible = "rfkill-gpio";
+		label = "bluetooth";
+		radio-type = "bluetooth";
+		shutdown-gpios = <&asic3 27 GPIO_ACTIVE_HIGH>;
+		default-blocked;
+	};
 };
 
 /*
@@ -807,6 +821,30 @@
 		groups = "P15";
 		function = "nCS_1";
 		low-power-enable;
+	};
+
+	btuart_pins: btuart-pins {
+		btuart-rxd-pins {
+			groups = "P42";
+			function = "BTRXD";
+		};
+
+		btuart-txd-pins {
+			groups = "P43";
+			function = "BTTXD";
+			low-power-disable;
+		};
+
+		btuart-cts-pins {
+			groups = "P44";
+			function = "BTCTS";
+		};
+
+		btuart-rts-pins {
+			groups = "P45";
+			function = "BTRTS";
+			low-power-disable;
+		};
 	};
 
 	ffuart_pins: ffuart-pins {
@@ -1005,6 +1043,17 @@
 
 &ffuart {
 	pinctrl-0 = <&ffuart_pins>;
+	pinctrl-names = "default";
+
+	status = "okay";
+};
+
+/*
+ * Serial link of the Bluetooth module of the h3970 and h3975; the h3950
+ * and h3955 leave the module unpopulated and nothing answers there.
+ */
+&btuart {
+	pinctrl-0 = <&btuart_pins>;
 	pinctrl-names = "default";
 
 	status = "okay";
