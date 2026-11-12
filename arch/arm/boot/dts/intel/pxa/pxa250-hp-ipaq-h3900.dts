@@ -136,6 +136,26 @@
 	};
 
 	/*
+	 * The two CompactFlash sockets of an expansion pack, on the PXA's own
+	 * PC Card interface. Card detect and the card interrupt are PXA GPIOs
+	 * 3, 7 (socket 0) and 12, 13 (socket 1); the reset of the card in
+	 * socket 0 is bit 8 of the ASIC2 GPIO bank, the per-card line next to
+	 * the whole-pack reset of the sleeve node. The node is disabled
+	 * because the socket driver looks it up and assigns it to the socket
+	 * device it registers once a pack has been detected.
+	 */
+	pcmcia {
+		compatible = "hp,ipaq-h3900-pcmcia";
+		status = "disabled";
+
+		detect-gpios = <&gpio 3 GPIO_ACTIVE_LOW>;
+		ready-gpios = <&gpio 7 GPIO_ACTIVE_HIGH>;
+		detect1-gpios = <&gpio 12 GPIO_ACTIVE_LOW>;
+		ready1-gpios = <&gpio 13 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&asic2 8 GPIO_ACTIVE_HIGH>;
+	};
+
+	/*
 	 * ASIC2 companion chip on nCS_5, 0x15000000, interrupting the SoC on
 	 * GPIO10 (rising edge), one of the pads that can wake a PXA25x.
 	 * interrupt-parent is spelled out because the root's is the SoC
