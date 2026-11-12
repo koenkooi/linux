@@ -23,7 +23,8 @@ description: |
   design, which differ in fitted parts such as memory, flash, the SoC
   revision and the radios: hp,ipaq-h2200 covers the h2200, h2210, h2212
   and h2215; hp,ipaq-h3900 the h3950, h3955, h3970 and h3975;
-  hp,ipaq-h5000 the h5150, h5450, h5455, h5550 and h5555.
+  hp,ipaq-h5000 the h5150, h5450, h5455, h5550 and h5555; hp,ipaq-hx4700
+  the hx4700.
 
 properties:
   $nodename:
@@ -37,5 +38,10 @@ properties:
               - hp,ipaq-h3900
               - hp,ipaq-h5000
           - const: marvell,pxa250
+      - description: Boards built around the PXA270
+        items:
+          - enum:
+              - hp,ipaq-hx4700
+          - const: marvell,pxa270
 
 additionalProperties: true
