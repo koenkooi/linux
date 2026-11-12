@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/pcmcia/hp,ipaq-hx4700-pcmcia.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HP iPAQ hx4700 CompactFlash socket
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description: |
+  The CompactFlash socket of the HP iPAQ hx4700, wired to the first of the
+  PXA27x's PC Card sockets. The card's address and data signals ride the
+  SoC's own PC Card interface, whose pins the board muxes, but they are
+  buffered by the ASIC3 companion chip, so the node has no register window
+  or interrupt of its own. The socket driver programs the buffering through
+  the ASIC3 node the "hp,asic3" property points to.
+
+  Card detect is an ASIC3 GPIO input. The ready/interrupt line and the
+  card's reset are SoC GPIOs, and the supply of the socket is an output of
+  the EGPIO expander.
+
+properties:
+  $nodename:
+    const: pcmcia
+
+  compatible:
+    const: hp,ipaq-hx4700-pcmcia
+
+  hp,asic3:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the ASIC3 node (htc,asic3.yaml) that buffers the socket's
+      bus and whose GPIO banks carry the PC Card control signals.
+
+  detect-gpios:
+    maxItems: 1
+    description:
+      Card detect (CF_nCD), low while a card is seated. Must be usable as an
+      interrupt source so that insertion and removal are noticed.
+
+  ready-gpios:
+    maxItems: 1
+    description:
+      The card's ready/busy indication for memory cards and interrupt
+      request for I/O cards (CF_RNB). Must be usable as an interrupt
+      source.
+
+  reset-gpios:
+    maxItems: 1
+    description:
+      The card's RESET pin (CF_RESET).
+
+  power-gpios:
+    maxItems: 1
+    description:
+      Enable for the socket's 3.3 V supply (CF_3V3_ON).
+
+required:
+  - compatible
+  - hp,asic3
+  - detect-gpios
+  - ready-gpios
+  - reset-gpios
+  - power-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    pcmcia {
+        compatible = "hp,ipaq-hx4700-pcmcia";
+
+        hp,asic3 = <&asic3>;
+        detect-gpios = <&asic3 52 GPIO_ACTIVE_LOW>;
+        ready-gpios = <&gpio 60 GPIO_ACTIVE_HIGH>;
+        reset-gpios = <&gpio 114 GPIO_ACTIVE_HIGH>;
+        power-gpios = <&egpio0 4 GPIO_ACTIVE_HIGH>;
+    };
+...
