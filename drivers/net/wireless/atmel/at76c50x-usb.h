@@ -413,10 +413,7 @@ struct at76_priv {
 	int scan_min_time;	/* scan min channel time */
 	int scan_max_time;	/* scan max channel time */
 	int scan_mode;		/* SCAN_TYPE_ACTIVE, SCAN_TYPE_PASSIVE */
-	int scan_need_any;	/* if set, need to scan for any ESSID */
 	bool scanning;		/* if set, the scan is running */
-
-	u16 assoc_id;		/* current association ID, if associated */
 
 	u8 pm_mode;		/* power management mode */
 	u32 pm_period;		/* power management period in microseconds */
@@ -434,7 +431,6 @@ struct at76_priv {
 	struct mib_fw_version fw_version;
 
 	unsigned int device_unplugged:1;
-	unsigned int netdev_registered:1;
 	struct set_mib_buffer mib_buf;	/* global buffer for set_mib calls */
 
 	int beacon_period;	/* period of mgmt beacons, Kus */
