@@ -163,8 +163,14 @@
 			dallas,active-high;
 			dallas,reset-recover-delay-ms = <1>;
 
+			/*
+			 * hx4700-ac first: the gauge takes a charge status
+			 * from the first supplier that has one.
+			 */
 			battery {
 				compatible = "maxim,ds2760";
+				power-supplies = <&hx4700_ac>, <&hx4700_usb>;
+				monitored-battery = <&battery_cell>;
 			};
 		};
 	};
@@ -250,6 +256,47 @@
 	usb_connector: connector {
 		compatible = "gpio-usb-b-connector", "usb-b-connector";
 		vbus-gpios = <&asic3 62 GPIO_ACTIVE_LOW>;
+	};
+
+	/*
+	 * The two inputs of the TI BQ24022 charger, which prefers AC by
+	 * itself. ASIC3 GPIOD9 is low with the AC adapter plugged in. USB
+	 * presence is the connector's VBUS line, so the USB input follows
+	 * the transceiver instead of requesting it a second time. ISET2,
+	 * GPIO96, selects the USB charge current: 100 mA low, 500 mA high;
+	 * the charger ignores it on AC. No charge status line of the
+	 * charger is known to reach a GPIO, so neither input reports one.
+	 *
+	 * The CE input, GPIO72, is low to charge and serves both inputs.
+	 * The AC node holds it: gpio-charger asserts it at probe, so the
+	 * charger runs from whichever input is present without any action
+	 * from userspace, and "inhibit-charge" in the node's
+	 * charge_behaviour stops it.
+	 */
+	hx4700_ac: hx4700-ac {
+		compatible = "gpio-charger";
+		charger-type = "mains";
+		gpios = <&asic3 57 GPIO_ACTIVE_LOW>;
+		charge-enable-gpios = <&gpio 72 GPIO_ACTIVE_LOW>;
+	};
+
+	hx4700_usb: hx4700-usb {
+		compatible = "usb-vbus-charger";
+		usb-phy = <&usb_connector>;
+		charge-current-limit-gpios = <&gpio 96 GPIO_ACTIVE_HIGH>;
+		charge-current-limit-mapping = <500000 0x1>, <100000 0x0>;
+		charge-current-limit-default-microamp = <100000>;
+	};
+
+	/*
+	 * The BQ24022 regulates at 4.2 V, which lets the DS2760 driver tell
+	 * a finished charge from a charger that is held off. The pack is
+	 * removable, so its capacity stays in the gauge's EEPROM.
+	 */
+	battery_cell: battery {
+		compatible = "simple-battery";
+		device-chemistry = "lithium-ion";
+		voltage-max-design-microvolt = <4200000>;
 	};
 };
 
