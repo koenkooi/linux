@@ -43,6 +43,31 @@
 		reg = <0xa0000000 0x04000000>; /* 64 MiB, ATAG_MEM overrides */
 	};
 
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		/*
+		 * Scanout buffers for the LCD controller. A buffer is a single
+		 * order-6 allocation, which fails on this swapping 64 MiB
+		 * board, so the buffers come from a reusable CMA region that
+		 * movable pages may borrow while it is idle.
+		 *
+		 * ARM remaps a CMA region in whole 2 MiB page-middle-directory
+		 * entries and clears both 1 MiB halves of each one, so the
+		 * region has to be 2 MiB aligned and sized: a 1 MiB region left
+		 * the next MiB unmapped and the first access to it was a
+		 * kernel paging fault. 2 MiB holds twelve 320x240 RGB565
+		 * buffers with CMA_ALIGNMENT set to 2.
+		 */
+		lcdc_pool: lcdc-pool@a2000000 {
+			compatible = "shared-dma-pool";
+			reusable;
+			reg = <0xa2000000 0x00200000>;
+		};
+	};
+
 	/*
 	 * NOR flash on nCS_0: two Intel 28F128J3A (16 MiB, 16 bit each) in a
 	 * 2x16 interleave, one 32 MiB CFI window with a 32 bit bus. The
@@ -334,6 +359,68 @@
 			cd-gpios = <&asic2 6 GPIO_ACTIVE_LOW>;
 		};
 	};
+
+	/*
+	 * The 320x240 16bpp reflective TFT, scanned by the LCD controller
+	 * over GPIO58-77 (LCD_LDD_0..15 plus FCLK, LCLK, PCLK and BIAS, muxed
+	 * by the pin state of &lcdc). No part number for the glass is known,
+	 * so the panel is named for the machine it is fitted to; its timings
+	 * live in the panel driver.
+	 *
+	 * The five supply rails are ASIC3 bank B outputs, GPIO number 16
+	 * plus the bit: B6 is 22, B7 is 23, B5 is 21, B3 is 19 and B1 is
+	 * 17. The chip drives all of them low from probe onwards, which keeps
+	 * the panel safe before its driver binds.
+	 */
+	panel {
+		compatible = "hp,ipaq-h3900-panel";
+
+		lcd-on-gpios = <&asic3 22 GPIO_ACTIVE_HIGH>;
+		lcd-pci-gpios = <&asic3 23 GPIO_ACTIVE_HIGH>;
+		lcd-5v-gpios = <&asic3 21 GPIO_ACTIVE_HIGH>;
+		lcd-nv-gpios = <&asic3 19 GPIO_ACTIVE_HIGH>;
+		lcd-9v-gpios = <&asic3 17 GPIO_ACTIVE_HIGH>;
+
+		/*
+		 * The controller scans the glass in 320x240 landscape order
+		 * while the handheld is held as a portrait device. The panel
+		 * orientation reaches the console as a quarter-turn software
+		 * rotation, so no fbcon= argument is needed on the command
+		 * line.
+		 */
+		rotation = <90>;
+		backlight = <&frontlight>;
+
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&lcdc_out>;
+			};
+		};
+	};
+
+	/*
+	 * The panel is reflective and lit from the front, hence the label.
+	 * PWM0 of ASIC2 sets the brightness and ASIC3 bank B bit 13, GPIO 29,
+	 * powers the light, active high. The handhelds.org 2.6 code sets both
+	 * to turn the light on and clears both to turn it off.
+	 *
+	 * The period in "pwms" is only a unit for the duty arithmetic of
+	 * pwm-backlight: the PWM driver always programs the board's fixed
+	 * period of 10 and scales the requested duty ratio into that, and no
+	 * frequency is known for this divider and period pair.
+	 *
+	 * The levels are raw duty counts out of that period of 10. Level 0 is
+	 * off and the others start at 4, the smallest count that the duty
+	 * floor of the PWM driver (about 33%) lets through, so no listed
+	 * level is clamped. The default is that floor.
+	 */
+	frontlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&asic2_pwm 0 100000>;
+		enable-gpios = <&asic3 29 GPIO_ACTIVE_HIGH>;
+		brightness-levels = <0 4 5 6 7 8 9 10>;
+		default-brightness-level = <1>;
+	};
 };
 
 /*
@@ -533,6 +620,129 @@
 			low-power-disable;
 		};
 	};
+
+	/* The panel's data and control lines; all sleep low. */
+	lcdc_pins: lcdc-pins {
+		lcd-ldd0-pins {
+			groups = "P58";
+			function = "LDD<0>";
+			low-power-disable;
+		};
+
+		lcd-ldd1-pins {
+			groups = "P59";
+			function = "LDD<1>";
+			low-power-disable;
+		};
+
+		lcd-ldd2-pins {
+			groups = "P60";
+			function = "LDD<2>";
+			low-power-disable;
+		};
+
+		lcd-ldd3-pins {
+			groups = "P61";
+			function = "LDD<3>";
+			low-power-disable;
+		};
+
+		lcd-ldd4-pins {
+			groups = "P62";
+			function = "LDD<4>";
+			low-power-disable;
+		};
+
+		lcd-ldd5-pins {
+			groups = "P63";
+			function = "LDD<5>";
+			low-power-disable;
+		};
+
+		lcd-ldd6-pins {
+			groups = "P64";
+			function = "LDD<6>";
+			low-power-disable;
+		};
+
+		lcd-ldd7-pins {
+			groups = "P65";
+			function = "LDD<7>";
+			low-power-disable;
+		};
+
+		lcd-ldd8-pins {
+			groups = "P66";
+			function = "LDD<8>";
+			low-power-disable;
+		};
+
+		lcd-ldd9-pins {
+			groups = "P67";
+			function = "LDD<9>";
+			low-power-disable;
+		};
+
+		lcd-ldd10-pins {
+			groups = "P68";
+			function = "LDD<10>";
+			low-power-disable;
+		};
+
+		lcd-ldd11-pins {
+			groups = "P69";
+			function = "LDD<11>";
+			low-power-disable;
+		};
+
+		lcd-ldd12-pins {
+			groups = "P70";
+			function = "LDD<12>";
+			low-power-disable;
+		};
+
+		lcd-ldd13-pins {
+			groups = "P71";
+			function = "LDD<13>";
+			low-power-disable;
+		};
+
+		lcd-ldd14-pins {
+			groups = "P72";
+			function = "LDD<14>";
+			low-power-disable;
+		};
+
+		lcd-ldd15-pins {
+			groups = "P73";
+			function = "LDD<15>";
+			low-power-disable;
+		};
+
+		lcd-fclk-pins {
+			groups = "P74";
+			function = "LCD_FCLK";
+			low-power-disable;
+		};
+
+		lcd-lclk-pins {
+			groups = "P75";
+			function = "LCD_LCLK";
+			low-power-disable;
+		};
+
+		lcd-pclk-pins {
+			groups = "P76";
+			function = "LCD_PCLK";
+			low-power-disable;
+		};
+
+		lcd-acbias-pins {
+			groups = "P77";
+			function = "LCD_ACBIAS";
+			low-power-disable;
+		};
+	};
 };
 
 &ffuart {
@@ -540,4 +750,22 @@
 	pinctrl-names = "default";
 
 	status = "okay";
+};
+
+/*
+ * 16 is the panel's RGB565 data width over LCD_LDD_0..15. The register
+ * window, interrupt and clock come from pxa2xx.dtsi.
+ */
+&lcdc {
+	memory-region = <&lcdc_pool>;
+	pinctrl-0 = <&lcdc_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+
+	port {
+		lcdc_out: endpoint {
+			remote-endpoint = <&panel_in>;
+			bus-width = <16>;
+		};
+	};
 };
