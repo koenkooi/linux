@@ -24,6 +24,7 @@ obj-$(CONFIG_MACH_PXA27X_DT)	+= pxa-dt.o
 obj-$(CONFIG_MACH_PXA3XX_DT)	+= pxa-dt.o
 obj-$(CONFIG_MACH_H2200)	+= h2200.o h2200_pm.o h2200_bt.o
 obj-$(CONFIG_MACH_H3900)	+= h3900.o h3900_pm.o
+obj-$(CONFIG_MACH_H4700)	+= hx4700.o
 obj-$(CONFIG_MACH_H5000)	+= h5000.o h5000_bt.o h5000_pm.o h5000_wlan.o
 
 # 3rd Party Dev Platforms

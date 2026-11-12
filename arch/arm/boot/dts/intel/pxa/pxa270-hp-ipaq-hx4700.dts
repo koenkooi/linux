@@ -53,6 +53,8 @@
 		      <0x04000000 0x04000000>;
 		bank-width = <4>;
 		vpp-gpios = <&gpio 91 GPIO_ACTIVE_HIGH>;
+		pinctrl-0 = <&ncs1_pins>;
+		pinctrl-names = "default";
 
 		partitions {
 			compatible = "fixed-partitions";
@@ -102,6 +104,8 @@
 			     <66 IRQ_TYPE_EDGE_FALLING>;
 		interrupt-names = "core", "sd";
 		reset-gpios = <&gpio 71 GPIO_ACTIVE_LOW>;
+		pinctrl-0 = <&ncs3_pins>;
+		pinctrl-names = "default";
 
 		gpio-controller;
 		#gpio-cells = <2>;
@@ -159,6 +163,8 @@
 		reg = <0x14000000 0x4>;
 		htc,reg-width = <16>;
 		htc,bus-width = <16>;
+		pinctrl-0 = <&ncs5_pins>;
+		pinctrl-names = "default";
 		#address-cells = <1>;
 		#size-cells = <0>;
 
@@ -183,8 +189,281 @@
 		output-high;
 		line-name = "RS232_ON";
 	};
+
+	/* Held high at run time, as by the former mainline board file. */
+	cpu-gp-nreset-hog {
+		gpio-hog;
+		gpios = <81 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "CPU_GP_nRESET";
+	};
+
+	cpu-hw-nreset-hog {
+		gpio-hog;
+		gpios = <116 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "CPU_HW_nRESET";
+	};
+};
+
+/*
+ * Pin muxing and sleep levels of the PXA pads, those of the former
+ * mainline board file. A pad with a consumer node gets its state from that
+ * node; the chip selects of the flash, the ASIC3 and the EGPIO CPLD are
+ * among them, so that those probes wait for the pin controller. The pads
+ * that the board uses without a consumer node (plain GPIOs, nCS4, the SDRAM
+ * chip selects, the PC Card strobes, the I2C, STUART and I2S pads) are set
+ * by the default state of the pin controller itself when it probes.
+ *
+ * low-power-disable and low-power-enable select the level an output pad is
+ * driven to while the SoC sleeps; a pad without either keeps the sleep
+ * level the boot loader programmed. Inputs are not driven in sleep, and a
+ * plain GPIO is an output in sleep only while its consumer drives it.
+ */
+&pinctrl {
+	pinctrl-names = "default";
+	pinctrl-0 = <&board_pins>;
+
+	board_pins: board-pins {
+		/*
+		 * GSM_IRQ, ASIC3_IRQ, W3220_IRQ, nWLAN_IRQ, TSC2046_nPENIRQ,
+		 * nSDIO_IRQ, DS1WM_IRQ and GSM_READY
+		 */
+		gpio-in-pins {
+			groups = "P10", "P12", "P13", "P14", "P58", "P66", "P107",
+				 "P108";
+			function = "gpio_in";
+		};
+
+		/*
+		 * BQ24022_nCHARGE_EN and BQ24022_ISET2: low in sleep, so the
+		 * charger stays enabled, at 100 mA from USB. The binding has
+		 * no state that keeps the run-time level in sleep.
+		 */
+		charger-pins {
+			groups = "P72", "P96";
+			function = "gpio_in";
+			low-power-disable;
+		};
+
+		/*
+		 * W3220_nRESET, ASIC3_nRESET, CPU_GP_nRESET, TSC2046_CS and
+		 * CPU_HW_nRESET
+		 */
+		gpio-sleep-high-pins {
+			groups = "P61", "P71", "P81", "P88", "P116";
+			function = "gpio_in";
+			low-power-enable;
+		};
+
+		/*
+		 * USBC_PUEN, the D+ pullup, which the device controller drops
+		 * before suspend; FLASH_VPEN, high only around a program or
+		 * erase operation; SYNAPTICS_POWER_ON
+		 */
+		gpio-sleep-low-pins {
+			groups = "P76", "P91", "P102";
+			function = "gpio_in";
+			low-power-disable;
+		};
+
+		nsdcs2-pins {
+			groups = "P20";
+			function = "nSDCS<2>";
+			low-power-enable;
+		};
+
+		nsdcs3-pins {
+			groups = "P21";
+			function = "nSDCS<3>";
+			low-power-enable;
+		};
+
+		ncs4-pins {
+			groups = "P80";
+			function = "nCS<4>";
+			low-power-enable;
+		};
+
+		/* The CompactFlash socket */
+		pcmcia-npoe-pins {
+			groups = "P48";
+			function = "nPOE";
+			low-power-enable;
+		};
+
+		pcmcia-npwe-pins {
+			groups = "P49";
+			function = "nPWE";
+			low-power-enable;
+		};
+
+		pcmcia-npior-pins {
+			groups = "P50";
+			function = "nPIOR";
+			low-power-enable;
+		};
+
+		pcmcia-npiow-pins {
+			groups = "P51";
+			function = "nPIOW";
+			low-power-enable;
+		};
+
+		pcmcia-npce2-pins {
+			groups = "P54";
+			function = "nPCE<2>";
+			low-power-enable;
+		};
+
+		pcmcia-npreg-pins {
+			groups = "P55";
+			function = "nPREG";
+			low-power-enable;
+		};
+
+		pcmcia-npwait-pins {
+			groups = "P56";
+			function = "nPWAIT";
+		};
+
+		pcmcia-niois16-pins {
+			groups = "P57";
+			function = "nIOS16";
+		};
+
+		pcmcia-npce1-pins {
+			groups = "P85";
+			function = "nPCE<1>";
+			low-power-enable;
+		};
+
+		pcmcia-psktsel-pins {
+			groups = "P104";
+			function = "PSKTSEL";
+			low-power-enable;
+		};
+
+		i2c-scl-pins {
+			groups = "P117";
+			function = "SCL_IN";
+		};
+
+		i2c-sda-pins {
+			groups = "P118";
+			function = "SDA_IN";
+		};
+
+		/* The former IrDA port */
+		stuart-rxd-pins {
+			groups = "P46";
+			function = "STD_RXD";
+		};
+
+		stuart-txd-pins {
+			groups = "P47";
+			function = "STD_TXD";
+			low-power-enable;
+		};
+
+		i2s-bitclk-pins {
+			groups = "P28";
+			function = "I2S_BITCLK_OUT";
+			low-power-disable;
+		};
+
+		i2s-sdata-in-pins {
+			groups = "P29";
+			function = "I2S_SDATA_IN";
+		};
+
+		i2s-sdata-out-pins {
+			groups = "P30";
+			function = "I2S_SDATA_OUT";
+			low-power-disable;
+		};
+
+		i2s-sync-pins {
+			groups = "P31";
+			function = "I2S_SYNC";
+			low-power-disable;
+		};
+
+		i2s-sysclk-pins {
+			groups = "P113";
+			function = "I2S_SYSCLK";
+			low-power-disable;
+		};
+	};
+
+	/* The second flash bank */
+	ncs1_pins: ncs1-pins {
+		groups = "P15";
+		function = "nCS<1>";
+		low-power-enable;
+	};
+
+	ncs3_pins: ncs3-pins {
+		groups = "P79";
+		function = "nCS<3>";
+		low-power-enable;
+	};
+
+	ncs5_pins: ncs5-pins {
+		groups = "P33";
+		function = "nCS<5>";
+		low-power-enable;
+	};
+
+	ffuart_pins: ffuart-pins {
+		ffuart-rxd-pins {
+			groups = "P34";
+			function = "FFRXD";
+		};
+
+		ffuart-cts-pins {
+			groups = "P35";
+			function = "FFCTS";
+		};
+
+		ffuart-dcd-pins {
+			groups = "P36";
+			function = "FFDCD";
+		};
+
+		ffuart-dsr-pins {
+			groups = "P37";
+			function = "FFDSR";
+		};
+
+		ffuart-ri-pins {
+			groups = "P38";
+			function = "FFRI";
+		};
+
+		ffuart-txd-pins {
+			groups = "P39";
+			function = "FFTXD";
+			low-power-enable;
+		};
+
+		ffuart-dtr-pins {
+			groups = "P40";
+			function = "FFDTR";
+			low-power-enable;
+		};
+
+		ffuart-rts-pins {
+			groups = "P41";
+			function = "FFRTS";
+			low-power-enable;
+		};
+	};
 };
 
 &ffuart {
+	pinctrl-0 = <&ffuart_pins>;
+	pinctrl-names = "default";
+
 	status = "okay";
 };
