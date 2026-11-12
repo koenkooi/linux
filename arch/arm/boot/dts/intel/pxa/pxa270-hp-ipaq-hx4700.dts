@@ -12,8 +12,8 @@
  *
  * pxa27x.dtsi has no static memory controller node or chip-select
  * ranges, so the devices on the static chip selects are described at
- * their raw physical addresses: the NOR flash on nCS0 and nCS1, the ASIC3
- * on nCS3 and the EGPIO CPLD on nCS5.
+ * their raw physical addresses: the NOR flash on nCS0 and nCS1, the display
+ * on nCS2, the ASIC3 on nCS3 and the EGPIO CPLD on nCS5.
  *
  * Copyright (C) 2026 Koen Kooi
  */
@@ -88,6 +88,46 @@
 				reg = <0x07fc0000 0x00040000>;
 			};
 		};
+	};
+
+	/*
+	 * ATI Imageon W3220 display controller on nCS2. The "fb" window is the
+	 * whole 2 MiB of on-chip SDRAM the chip maps at chip offset 0x800000,
+	 * of which the scanout buffer uses the bottom part and the video
+	 * overlay and the command ring the rest. The "wrap" window, at chip
+	 * offset 0x80000, is the host's view of the command processor ring.
+	 * W3220_nRESET, GPIO61, is released once at probe and not toggled
+	 * again; the other lines are the panel supply and control sequence.
+	 */
+	display@8000000 {
+		compatible = "amd,imageon-w3220";
+		reg = <0x08000000 0x10>, <0x08010000 0x2000>,
+		      <0x08800000 0x200000>, <0x08080000 0x40000>;
+		reg-names = "cfg", "reg", "fb", "wrap";
+		pinctrl-0 = <&ncs2_pins>;
+		pinctrl-names = "default";
+		reset-gpios = <&gpio 61 GPIO_ACTIVE_LOW>;
+		sqn-gpios = <&gpio 84 GPIO_ACTIVE_HIGH>;
+		lvdd-gpios = <&gpio 110 GPIO_ACTIVE_HIGH>;
+		avdd-gpios = <&gpio 111 GPIO_ACTIVE_HIGH>;
+		slin1-gpios = <&gpio 70 GPIO_ACTIVE_HIGH>;
+		panel-reset-gpios = <&gpio 62 GPIO_ACTIVE_LOW>;
+		pc1-gpios = <&gpio 59 GPIO_ACTIVE_HIGH>;
+		n2v7-gpios = <&gpio 112 GPIO_ACTIVE_HIGH>;
+		backlight = <&backlight>;
+	};
+
+	/*
+	 * Backlight on PWM1, GPIO17, the unit at 0x40c00000. There is no
+	 * separate enable line. The period is the 30923 ns the stock driver
+	 * uses, and the default is half of the 0 to 200 range.
+	 */
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&pwm2 30923>;
+		brightness-levels = <0 200>;
+		num-interpolated-steps = <200>;
+		default-brightness-level = <100>;
 	};
 
 	/*
@@ -330,11 +370,12 @@
 /*
  * Pin muxing and sleep levels of the PXA pads, those of the former
  * mainline board file. A pad with a consumer node gets its state from that
- * node; the chip selects of the flash, the ASIC3 and the EGPIO CPLD are
- * among them, so that those probes wait for the pin controller. The pads
- * that the board uses without a consumer node (plain GPIOs, nCS4, the SDRAM
- * chip selects, the PC Card strobes, the I2C, STUART and I2S pads) are set
- * by the default state of the pin controller itself when it probes.
+ * node; the chip selects of the flash, the display, the ASIC3 and the EGPIO
+ * CPLD are among them, so that those probes wait for the pin controller.
+ * The pads that the board uses without a consumer node (plain GPIOs, nCS4,
+ * the SDRAM chip selects, the PC Card strobes, the I2C, STUART and I2S
+ * pads) are set by the default state of the pin controller itself when it
+ * probes.
  *
  * low-power-disable and low-power-enable select the level an output pad is
  * driven to while the SoC sleeps; a pad without either keeps the sleep
@@ -598,6 +639,18 @@
 			low-power-disable;
 		};
 	};
+
+	ncs2_pins: ncs2-pins {
+		groups = "P78";
+		function = "nCS<2>";
+		low-power-enable;
+	};
+
+	pwm1_pins: pwm1-pins {
+		groups = "P17";
+		function = "PWM_OUT<1>";
+		low-power-disable;
+	};
 };
 
 &ffuart {
@@ -668,4 +721,9 @@
 			};
 		};
 	};
+};
+
+&pwm2 {
+	pinctrl-0 = <&pwm1_pins>;
+	pinctrl-names = "default";
 };
