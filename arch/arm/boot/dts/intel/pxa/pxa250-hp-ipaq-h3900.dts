@@ -625,6 +625,25 @@
 		compatible = "gpio-usb-b-connector", "usb-b-connector";
 		vbus-gpios = <&asic2 10 GPIO_ACTIVE_LOW>;
 	};
+
+	/*
+	 * The audio card of the UDA1380. speaker-gpios is GPIO3_SPK_ON, ASIC3
+	 * bank B bit 12 (offset 16 + 12 = 28), an active high amplifier
+	 * enable. jack-gpios is ASIC2 GPIO2 bit 7 (EAR_IN_N), which reads low
+	 * while a plug is inserted. A GPIO phandle resolves through the
+	 * gpiochip of &asic2 like the card detect of the mmc node does. The
+	 * only microphone is built in and biased by the codec itself, so
+	 * there is no line for it.
+	 */
+	sound {
+		compatible = "hp,ipaq-h3900-audio";
+
+		cpu-dai = <&i2s>;
+		audio-codec = <&uda1380>;
+
+		speaker-gpios = <&asic3 28 GPIO_ACTIVE_HIGH>;
+		jack-gpios = <&asic2 7 GPIO_ACTIVE_LOW>;
+	};
 };
 
 /*
@@ -825,6 +844,41 @@
 		};
 	};
 
+	/*
+	 * The I2S pads. The output pads sleep low so the I2S clocks are
+	 * stopped in suspend.
+	 */
+	i2s_pins: i2s-pins {
+		i2s-bitclk-pins {
+			groups = "P28";
+			function = "I2S_BITCLK_OUT";
+			low-power-disable;
+		};
+
+		i2s-sdata-in-pins {
+			groups = "P29";
+			function = "I2S_SDATA_IN";
+		};
+
+		i2s-sdata-out-pins {
+			groups = "P30";
+			function = "I2S_SDATA_OUT";
+			low-power-disable;
+		};
+
+		i2s-sync-pins {
+			groups = "P31";
+			function = "I2S_SYNC";
+			low-power-disable;
+		};
+
+		i2s-sysclk-pins {
+			groups = "P32";
+			function = "I2S_SYSCLK";
+			low-power-disable;
+		};
+	};
+
 	/* The panel's data and control lines; all sleep low. */
 	lcdc_pins: lcdc-pins {
 		lcd-ldd0-pins {
@@ -982,4 +1036,43 @@
 &pxa25x_udc {
 	pullup-gpios = <&gpio 20 GPIO_ACTIVE_HIGH>;
 	status = "okay";
+};
+
+/*
+ * The I2S block of pxa2xx.dtsi, which the audio card above uses, with its
+ * pads muxed by its own pin state.
+ */
+&i2s {
+	pinctrl-0 = <&i2s_pins>;
+	pinctrl-names = "default";
+
+	status = "okay";
+};
+
+/*
+ * UDA1380 audio codec on the plain PXA25x I2C controller, at 0x18. i2c1
+ * is the alias of &pxai2c1, which makes the codec component
+ * "uda1380-codec.1-0018". reset-gpios is GPIO3_AUD_RESET, ASIC3 bank B
+ * bit 10 (offset 26), and power-gpios GPIO3_AUD_PWR_ON, bit 14 (offset
+ * 30); both are active high, the codec driver powers the chip with
+ * power-gpios and then pulses reset-gpios high and low. dac-clk selects
+ * the word-select PLL, which locks to the I2S frame clock the PXA always
+ * drives, so the DAC does not depend on GPIO32 (I2S_SYSCLK) reaching the
+ * codec's SYSCLK pin. The ADC clock is left at its default. The PLL is
+ * powered per stream by the codec driver, so recording and playing at
+ * the same time is expected to silence playback.
+ */
+&pxai2c1 {
+	status = "okay";
+
+	uda1380: codec@18 {
+		compatible = "nxp,uda1380";
+		reg = <0x18>;
+
+		reset-gpios = <&asic3 26 GPIO_ACTIVE_HIGH>;
+		power-gpios = <&asic3 30 GPIO_ACTIVE_HIGH>;
+		dac-clk = "wspll";
+
+		#sound-dai-cells = <0>;
+	};
 };
