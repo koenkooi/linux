@@ -1900,14 +1900,18 @@ static int at76_mac80211_start(struct ieee80211_hw *hw)
 		goto error;
 	}
 
-	at76_startup_device(priv);
+	ret = at76_startup_device(priv);
+	if (ret < 0) {
+		usb_kill_urb(priv->rx_urb);
+		goto error;
+	}
 
 	at76_start_monitor(priv);
 
 error:
 	mutex_unlock(&priv->mtx);
 
-	return 0;
+	return ret < 0 ? ret : 0;
 }
 
 static void at76_mac80211_stop(struct ieee80211_hw *hw, bool suspend)
@@ -2049,6 +2053,7 @@ static int at76_hw_scan(struct ieee80211_hw *hw,
 
 	if (ret < 0) {
 		wiphy_err(priv->hw->wiphy, "CMD_SCAN failed: %d\n", ret);
+		ieee80211_wake_queues(hw);
 		goto exit;
 	}
 
@@ -2059,7 +2064,7 @@ static int at76_hw_scan(struct ieee80211_hw *hw,
 exit:
 	mutex_unlock(&priv->mtx);
 
-	return 0;
+	return ret < 0 ? ret : 0;
 }
 
 static int at76_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
