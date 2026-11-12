@@ -173,6 +173,10 @@ struct samcop {
 
 	struct samcop_gclk gclk;
 	struct samcop_clk_gate gates[SAMCOP_NR_CLK_GATES];
+
+	/* Register values saved across suspend, see samcop_suspend(). */
+	u32 saved_clockcontrol;
+	u32 saved_intmsk;
 };
 
 /*
@@ -341,11 +345,35 @@ static int samcop_ic_irq_set_type(struct irq_data *d, unsigned int type)
 	return 0;
 }
 
+/*
+ * SAMCOP has no wake-configuration register: any enabled, unmasked source in
+ * any tier pulls the one shared ASIC_INT_N, so arming a hwirq for wakeup
+ * reduces to arming the chained parent, PXA GPIO10. All three chips forward
+ * to the same s->irq; irq_set_irq_wake() refcounts through wake_depth, so
+ * children of different tiers arming and disarming independently balance
+ * out. Without this callback enable_irq_wake() on any SAMCOP line fails with
+ * -ENXIO, as it did for gpio-keys on HAMCOP. It arms nothing until the
+ * parent pin itself is configured as a wake source.
+ *
+ * IRQCHIP_MASK_ON_SUSPEND lets genirq mask every non-wake source at suspend
+ * while an IRQD_WAKEUP_STATE one keeps asserting, which a blanket IC_INTMSK
+ * write cannot do. The two chained sub-demux descriptors are skipped by
+ * suspend_device_irqs(), so genirq leaves IC sources 5 and 25 unmasked.
+ */
+static int samcop_irq_set_wake(struct irq_data *d, unsigned int on)
+{
+	struct samcop *s = irq_data_get_irq_chip_data(d);
+
+	return irq_set_irq_wake(s->irq, on);
+}
+
 static struct irq_chip samcop_ic_irq_chip = {
 	.name		= "samcop-ic",
 	.irq_ack	= samcop_ic_irq_ack,
 	.irq_mask	= samcop_ic_irq_mask,
 	.irq_unmask	= samcop_ic_irq_unmask,
+	.irq_set_wake	= samcop_irq_set_wake,
+	.flags		= IRQCHIP_MASK_ON_SUSPEND,
 	.irq_set_type	= samcop_ic_irq_set_type,
 };
 
@@ -429,6 +457,8 @@ static struct irq_chip samcop_gpio_irq_chip = {
 	.irq_ack	= samcop_gpio_irq_ack,
 	.irq_mask	= samcop_gpio_irq_mask,
 	.irq_unmask	= samcop_gpio_irq_unmask,
+	.irq_set_wake	= samcop_irq_set_wake,
+	.flags		= IRQCHIP_MASK_ON_SUSPEND,
 	.irq_set_type	= samcop_gpio_irq_set_type,
 };
 
@@ -479,6 +509,8 @@ static struct irq_chip samcop_eps_irq_chip = {
 	.irq_ack	= samcop_eps_irq_ack,
 	.irq_mask	= samcop_eps_irq_mask,
 	.irq_unmask	= samcop_eps_irq_unmask,
+	.irq_set_wake	= samcop_irq_set_wake,
+	.flags		= IRQCHIP_MASK_ON_SUSPEND,
 };
 
 static int samcop_irq_domain_map(struct irq_domain *d, unsigned int virq,
@@ -2080,9 +2112,69 @@ void samcop_set_gpio_a_pullup(struct device *samcop_dev, u32 mask, u32 bits)
 }
 EXPORT_SYMBOL_GPL(samcop_set_gpio_a_pullup);
 
+/* ---------------------------------------------------------------------
+ * Suspend/resume: save IC_INTMSK and ClockControl, restore ClockControl
+ * first and then IC_INTMSK. Chip state beyond those two registers is not
+ * saved here.
+ * ---------------------------------------------------------------------
+ */
+
+/*
+ * samcop.selective_suspend_mask=1 stops samcop_suspend() force-masking all
+ * 26 IC sources and leaves the masking to genirq. The blanket write also
+ * masks the wake-named sources (SD_WAKEUP, WAKEUP1-3), so a source armed
+ * with enable_irq_wake() would be masked out from under itself, and the
+ * chip has no separate wake register that survives that. With the write
+ * skipped, suspend_device_irqs() masks each non-wake source through the
+ * irq_chip callbacks (IRQCHIP_MASK_ON_SUSPEND) and leaves a wake source
+ * asserting; it runs at the head of dpm_suspend_noirq(), after this
+ * callback, so the job goes to a later writer rather than to nobody.
+ *
+ * Off by default, because it changes what the first suspend does and the
+ * blanket mask is the behaviour the vendor driver had. With it on, IC
+ * sources 5 and 25 stay unmasked across sleep, so any EPS or GPIO fan-out
+ * source still enabled in PCMCIA_IC or GPIO_ENINT2 can assert ASIC_INT_N
+ * whether or not it was asked to be a wake source.
+ */
+static bool selective_suspend_mask;
+module_param(selective_suspend_mask, bool, 0444);
+MODULE_PARM_DESC(selective_suspend_mask,
+		 "let genirq mask non-wake IC sources at suspend instead of force-masking all 26 (default off)");
+
+static int samcop_suspend(struct device *dev)
+{
+	struct samcop *s = dev_get_drvdata(dev);
+
+	/* A queued late-assert re-arm must not unmask a source after the
+	 * snapshot below.
+	 */
+	flush_delayed_work(&s->late_rearm);
+
+	s->saved_clockcontrol = samcop_read(s, SAMCOP_CPM_CLOCKCONTROL);
+	s->saved_intmsk = samcop_read(s, SAMCOP_IC_INTMSK);
+	if (!selective_suspend_mask)
+		samcop_write(s, SAMCOP_IC_INTMSK,
+			     GENMASK(SAMCOP_IC_NR_IRQS - 1, 0));
+
+	return 0;
+}
+
+static int samcop_resume(struct device *dev)
+{
+	struct samcop *s = dev_get_drvdata(dev);
+
+	samcop_write(s, SAMCOP_CPM_CLOCKCONTROL, s->saved_clockcontrol);
+	samcop_write(s, SAMCOP_IC_INTMSK, s->saved_intmsk);
+
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(samcop_pm_ops, samcop_suspend, samcop_resume);
+
 static struct platform_driver samcop_driver = {
 	.driver = {
 		.name	= "samcop",
+		.pm	= pm_sleep_ptr(&samcop_pm_ops),
 		.of_match_table = samcop_of_match,
 	},
 	.probe	= samcop_probe,
