@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/synaptics,navpoint.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Synaptics NavPoint touchpad
+
+maintainers:
+  - Koen Kooi <koen@dominion.thruhere.net>
+
+description:
+  Touchpad module that drives the clock and frame signals of its SPI link
+  and sends position packets to the host. It is therefore connected to a SPI
+  controller operating as a target, and its node must be named "slave".
+
+allOf:
+  - $ref: /schemas/spi/spi-peripheral-props.yaml#
+
+properties:
+  compatible:
+    const: synaptics,navpoint
+
+  vdd-supply:
+    description: Power supply of the module
+
+required:
+  - compatible
+  - vdd-supply
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    spi {
+        spi-slave;
+        #address-cells = <0>;
+        #size-cells = <0>;
+
+        slave {
+            compatible = "synaptics,navpoint";
+            vdd-supply = <&navpoint_vdd>;
+        };
+    };
