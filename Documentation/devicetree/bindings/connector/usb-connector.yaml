@@ -60,6 +60,12 @@ properties:
       VBUS 5V.
     maxItems: 1
 
+  interrupts:
+    description: Interrupt that reports a change of VBUS or ID. Only for a
+      gpio-usb-b-connector whose GPIO controller cannot map the GPIOs to
+      interrupts itself, otherwise the interrupts of the GPIOs are used.
+    maxItems: 1
+
   vbus-supply:
     description: A phandle to the regulator for USB VBUS if needed when host
       mode or dual role mode is supported.
