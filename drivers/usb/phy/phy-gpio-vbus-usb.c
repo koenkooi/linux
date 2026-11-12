@@ -12,6 +12,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
+#include <linux/irq.h>
 #include <linux/usb.h>
 #include <linux/workqueue.h>
 
@@ -275,7 +276,6 @@ static int gpio_vbus_set_suspend(struct usb_phy *phy, int suspend)
 static int gpio_vbus_probe(struct platform_device *pdev)
 {
 	struct gpio_vbus_data *gpio_vbus;
-	struct resource *res;
 	struct device *dev = &pdev->dev;
 	int err, irq;
 	unsigned long irqflags;
@@ -310,10 +310,18 @@ static int gpio_vbus_probe(struct platform_device *pdev)
 	}
 	gpiod_set_consumer_name(gpio_vbus->vbus_gpiod, "vbus_detect");
 
-	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (res) {
-		irq = res->start;
-		irqflags = (res->flags & IRQF_TRIGGER_MASK) | IRQF_SHARED;
+	/*
+	 * An interrupt of the node wins over gpiod_to_irq(): the sense line
+	 * may sit on a GPIO controller that has no interrupt for it, with the
+	 * change reported by an interrupt of the same chip. platform_get_irq()
+	 * defers while that interrupt controller is not up yet, which a bare
+	 * resource lookup at device creation time would silently miss.
+	 */
+	irq = platform_get_irq_optional(pdev, 0);
+	if (irq == -EPROBE_DEFER)
+		return irq;
+	if (irq > 0) {
+		irqflags = irq_get_trigger_type(irq) | IRQF_SHARED;
 	} else {
 		irq = gpiod_to_irq(gpio_vbus->vbus_gpiod);
 		irqflags = VBUS_IRQ_FLAGS;
