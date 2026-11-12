@@ -12,11 +12,16 @@
  * cpu_is_pxa255() at runtime (include/linux/soc/pxa/cpu.h) is how
  * board code tells the two apart.
  *
- * The memory node describes the 128 MiB of the h55xx. The h51xx and
- * h54xx have 64 MiB and must not inherit this value. The boot loader is
- * ATAGS-only, so the board boots from an appended DTB with
- * ARM_ATAG_DTB_COMPAT, which lets the boot loader's ATAG_MEM replace the
- * reg property (arch/arm/boot/compressed/atags_to_fdt.c).
+ * The memory node describes the 128 MiB of the h55xx. The boot loader is
+ * ATAGS-only and its RAM probe reports at most 64 MiB, and the board boots
+ * from an appended DTB with ARM_ATAG_DTB_COMPAT, which lets that ATAG_MEM
+ * replace the reg property (arch/arm/boot/compressed/atags_to_fdt.c). So
+ * the kernel does not rely on the value here: the machine descriptor in
+ * arch/arm/mach-pxa/h5000.c sizes SDRAM from the memory controller that
+ * the boot firmware programmed, and trims or extends the memory map to
+ * match, so no mem= argument is needed. The second SDRAM partition is only
+ * used when a write test finds RAM behind it, so a 64 MiB h51xx or h54xx
+ * is limited to its first partition.
  *
  * Every pad except the ones the pin controller owns is muxed by the
  * pxa2xx_mfp_config() table in arch/arm/mach-pxa/h5000.c, applied from an
