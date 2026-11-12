@@ -121,6 +121,32 @@ config DRM_PIXPAPER
 
 	  If M is selected, the module will be built as pixpaper.ko.
 
+config DRM_PXA_LCDC
+	tristate "DRM support for the Marvell PXA25x LCD controller"
+	depends on DRM && OF
+	depends on ARCH_PXA || COMPILE_TEST
+	depends on COMMON_CLK
+	depends on MMU
+	depends on FB_PXA=n
+	select DRM_CLIENT_SELECTION
+	select DRM_KMS_HELPER
+	select DRM_GEM_DMA_HELPER
+	select DRM_PANEL_BRIDGE
+	help
+	  DRM driver for the LCD controller integrated in the Marvell PXA25x
+	  application processor, driving a parallel RGB (DPI) panel described
+	  in the device tree. The controller scans system memory directly
+	  through its own frame-descriptor DMA engine, so the framebuffer is
+	  a physically contiguous GEM DMA object rather than a shadow buffer.
+
+	  Panel supplies and timings belong to a drm_panel driver reached over
+	  the OF graph, not to this driver. The legacy fbdev driver for the
+	  same hardware, CONFIG_FB_PXA, matches the same device tree node and
+	  is linked first, so this driver is only available when that one is
+	  disabled.
+
+	  If M is selected the module will be called pxa-lcdc.
+
 config DRM_SA11X0_LCDC
 	tristate "DRM support for the Intel/StrongARM SA-1100 LCD controller"
 	depends on DRM && OF
