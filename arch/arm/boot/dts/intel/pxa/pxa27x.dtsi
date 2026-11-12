@@ -46,6 +46,13 @@
 			status = "disabled";
 		};
 
+		/*
+		 * The PXA27x PWM blocks are interleaved: the unit at 0x40b00000 holds
+		 * PWM0 and, 0x10 further, PWM2, both on the CKEN0 clock; the unit at
+		 * 0x40c00000 holds PWM1 and PWM3 on CKEN1. The labels follow the
+		 * register addresses, not the hardware PWM numbers, so hardware PWM1
+		 * (the GPIO17 output) is pwm2 here.
+		 */
 		pwm0: pwm@40b00000 {
 			compatible = "marvell,pxa270-pwm", "marvell,pxa250-pwm";
 			reg = <0x40b00000 0x10>;
@@ -57,14 +64,14 @@
 			compatible = "marvell,pxa270-pwm", "marvell,pxa250-pwm";
 			reg = <0x40b00010 0x10>;
 			#pwm-cells = <1>;
-			clocks = <&clks CLK_PWM1>;
+			clocks = <&clks CLK_PWM0>;
 		};
 
 		pwm2: pwm@40c00000 {
 			compatible = "marvell,pxa270-pwm", "marvell,pxa250-pwm";
 			reg = <0x40c00000 0x10>;
 			#pwm-cells = <1>;
-			clocks = <&clks CLK_PWM0>;
+			clocks = <&clks CLK_PWM1>;
 		};
 
 		pwm3: pwm@40c00010 {
