@@ -219,11 +219,15 @@ static unsigned long h2200_pin_config[] __initdata = {
 	MFP_CFG_OUT(GPIO33, AF0, DRIVE_HIGH),
 
 	/*
-	 * PWM0 brightness + digital backlight enable. This table, not
+	 * Backlight: PWM0 brightness, then GPIO17 and the GPIO22 light
+	 * switch, whose run-time levels belong to pwm-backlight and to the
+	 * DT regulator on GPIO22; only direction/AF/sleep-state are
+	 * established here. This table, not
 	 * &pinctrl, is what puts GPIO16 in its PWM0 alternate function.
 	 */
 	GPIO16_PWM0_OUT,
 	MFP_CFG_OUT(GPIO17, AF0, DRIVE_LOW),
+	MFP_CFG_OUT(GPIO22, AF0, DRIVE_LOW),
 
 	/*
 	 * LCD data lines 58/59: the PXA255 LCD controller is unwired on
@@ -250,11 +254,6 @@ static unsigned long h2200_pin_config[] __initdata = {
 
 	/* Bootloader-present strap, no consumer yet */
 	GPIO62_GPIO,
-
-	/* Unclear-purpose GPIOs -- left muxed only, not driven or hogged;
-	 * verify they don't collide with the MediaQ path before hogging.
-	 */
-	MFP_CFG_OUT(GPIO22, AF0, DRIVE_LOW),
 
 	/*
 	 * Bluetooth module control: reset and power outputs, the module
