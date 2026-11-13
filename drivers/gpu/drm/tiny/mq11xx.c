@@ -224,6 +224,12 @@ MODULE_PARM_DESC(panel_seq, "h5xxx Sharp panel: WinCE power-on and power-off ord
 #define MQ1132_GE_BASE		0x200
 #define MQ1188_GE_BASE		0x1400
 
+/*
+ * In the MQ1188's undocumented 0x200 block (see mq11xx_h2200_init_regs[]),
+ * not the engine; on the MQ1132 this offset is an engine register.
+ */
+#define MQ1188_FRONTLIGHT	0x248
+
 /* Graphics engine registers, relative to the chip's engine bank. */
 #define MQ11XX_GE_COMMAND	0x00	/* ge00, starts the command */
 #define MQ11XX_GE_SIZE		0x04	/* ge01 */
@@ -615,6 +621,13 @@ struct mq11xx_variant {
 	 * wiring and no other brightness path.
 	 */
 	bool has_internal_pwm;
+	/*
+	 * Bits of MQ1188_FRONTLIGHT that the vendor front-light code sets
+	 * right after its own light switch goes on and clears after that
+	 * switch goes off. 0 leaves the register alone, which the h5xxx
+	 * needs: on its MQ1132 the offset is an engine register.
+	 */
+	u32 frontlight_mask;
 };
 
 /*
@@ -961,6 +974,7 @@ static const struct mq11xx_variant mq11xx_variant_h2200 = {
 	.fp_output_control = 0x9ffdfcfd,
 	/* Needed for MediaQ 1178/88 on h2200; opaque, see the file comment. */
 	.dc_config_8 = 0x86098609,
+	.frontlight_mask = BIT(19),
 };
 
 /* ------------------------------------------------------------------ */
@@ -2037,6 +2051,27 @@ static bool mq11xx_use_panel_seq(struct mq11xx_device *mq)
 	       !mq->envee_applied;
 }
 
+/*
+ * Skipped while the chip is unpowered: its registers are lost at
+ * mq11xx_power_down() and reloaded by the next mq11xx_hw_init().
+ */
+static void mq11xx_frontlight(struct mq11xx_device *mq, bool on)
+{
+	u32 val;
+
+	lockdep_assert_held(&mq->hw_lock);
+
+	if (!mq->variant->frontlight_mask || !mq->powered)
+		return;
+
+	val = readl(mq->regs + MQ1188_FRONTLIGHT);
+	if (on)
+		val |= mq->variant->frontlight_mask;
+	else
+		val &= ~mq->variant->frontlight_mask;
+	writel(val, mq->regs + MQ1188_FRONTLIGHT);
+}
+
 static void mq11xx_output_enable(struct mq11xx_device *mq)
 {
 	u32 val;
@@ -2123,6 +2158,14 @@ live:
 	 * take that lock from the PWM callbacks.
 	 */
 	backlight_enable(mq->backlight);
+
+	/*
+	 * After backlight_enable(), which drives the board's light switch:
+	 * the vendor code sets these bits after that switch, not before.
+	 */
+	mutex_lock(&mq->hw_lock);
+	mq11xx_frontlight(mq, true);
+	mutex_unlock(&mq->hw_lock);
 	return;
 
 out_unlock:
@@ -2149,6 +2192,8 @@ static void mq11xx_output_disable(struct mq11xx_device *mq)
 
 	if (!mq->powered)
 		goto out_unlock;
+
+	mq11xx_frontlight(mq, false);
 
 	mq11xx_irq_set_live(mq, false);
 
