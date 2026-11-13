@@ -39,11 +39,13 @@
 
 	/*
 	 * MediaQ 1178 panel backlight. GPIO16 (PWM0 output) drives
-	 * brightness via duty cycle; GPIO17 is the digital enable for the
-	 * backlight power transistor, active-high. Both pins are still muxed
-	 * by h2200.c's pxa2xx_mfp_config() table rather than by a &pinctrl
-	 * state, although drivers/pinctrl/pxa/pinctrl-pxa25x.c does describe
-	 * the "PWM0" function on GPIO16.
+	 * brightness via duty cycle and GPIO22 switches the light, see
+	 * bl_power below. GPIO17 is driven high while the light is on; the
+	 * vendor front-light driver uses it only to select its dimmest
+	 * levels, and its effect on the light is not established. The pins
+	 * are still muxed by h2200.c's pxa2xx_mfp_config() table rather than
+	 * by a &pinctrl state, although drivers/pinctrl/pxa/pinctrl-pxa25x.c
+	 * does describe the "PWM0" function on GPIO16.
 	 *
 	 * brightness-levels/num-interpolated-steps give a linear 0-1023
 	 * duty-cycle range with full brightness as the default, rather than
@@ -52,11 +54,29 @@
 	backlight: backlight {
 		compatible = "pwm-backlight";
 		pwms = <&pwm0 1000000>; /* 1 kHz */
+		power-supply = <&bl_power>;
 		enable-gpios = <&gpio 17 GPIO_ACTIVE_HIGH>;
 
 		brightness-levels = <0 1023>;
 		num-interpolated-steps = <1023>;
 		default-brightness-level = <1023>;
+	};
+
+	/*
+	 * PXA GPIO22 switches the front light, active-high: the vendor boot
+	 * loader drives it high to turn the light on, and the vendor
+	 * front-light driver drives it high and low to switch the light on
+	 * and off. Whether it gates the light's supply or an enable input is
+	 * not known. Nothing else drives the pin, so without a consumer it
+	 * keeps the level the boot loader left. Polarity comes from
+	 * enable-active-high alone: gpiolib ignores the phandle flag on a
+	 * regulator-fixed node's "gpios".
+	 */
+	bl_power: regulator-backlight {
+		compatible = "regulator-fixed";
+		regulator-name = "FRONTLIGHT_ON";
+		gpios = <&gpio 22 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
 	};
 
 	/*
